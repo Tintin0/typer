@@ -1,0 +1,23 @@
+# Typer configuration. Copied to ~/Library/Application Support/typer/config.toml
+# by install.sh. Edit that copy, then restart Typer to apply.
+
+enabled = true
+completion_enabled = true
+typo_correction_enabled = true
+grammar_correction_enabled = false
+
+# Leave empty to auto-pick the first .gguf in the Models directory.
+model_path = ""
+
+max_completion_words = 7      # length of each suggestion chunk
+min_context_chars = 6         # don't suggest until this much has been typed
+debounce_ms = 25              # delay before generating; low = snappier
+idle_reset_seconds = 20       # clear the buffer after this long with no typing
+temperature = 0.0             # (reserved; sampling is tuned in the helper)
+
+# Broader-context sources (all on-device). Set any to false to disable.
+window_context_enabled = true     # read surrounding text via Accessibility
+style_memory_enabled = true       # learn from your own recent writing (local only)
+clipboard_context_enabled = true  # include recently copied text
+screen_context_enabled = true     # screenshot + OCR (needs Screen Recording)
+background_refresh_seconds = 4.0   # how often the background context is refreshed

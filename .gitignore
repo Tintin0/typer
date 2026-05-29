@@ -1,0 +1,21 @@
+# Build artifacts
+target/
+*.o
+*.dylib
+build/
+
+# Models (downloaded by install.sh; never commit — large + licensed separately)
+*.gguf
+Models/
+
+# Python (legacy)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Local style/personalization data
+style.txt
