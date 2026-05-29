@@ -1328,12 +1328,38 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     }
 
     func caretPoint() -> NSPoint? {
-        guard let element = focusedElement(), let rect = boundsForSelectedRange(element: element) else { return nil }
+        guard let element = focusedElement() else { return nil }
+        // Native AppKit text views answer AXBoundsForRange. Chromium/Electron and
+        // WebKit (Discord, Slack, VS Code, Chrome, Safari) don't — they expose the
+        // caret via the AXTextMarker API instead. Try both.
+        guard let rect = boundsForSelectedRange(element: element) ?? textMarkerCaretRect(element: element) else { return nil }
         // rect is already in AppKit (bottom-left) coordinates. Place the ghost
         // text just after the caret, baseline-aligned with the caret line.
         let point = NSPoint(x: rect.maxX + 2, y: rect.minY - 2)
         log("caret point=\(point) from rect=\(rect)")
         return point
+    }
+
+    // Caret rect via the WebKit/Chromium AXTextMarker attributes. These are private
+    // string-named AX attributes (not in the public constants) but are read the same
+    // way; the marker-range value is opaque and just passed straight through.
+    func textMarkerCaretRect(element: AXUIElement) -> CGRect? {
+        var markerRange: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "AXSelectedTextMarkerRange" as CFString, &markerRange) == .success,
+              let markerRange else { return nil }
+        var boundsRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(element, "AXBoundsForTextMarkerRange" as CFString, markerRange, &boundsRef) == .success,
+              let boundsRef else { return nil }
+        var rect = CGRect.zero
+        guard AXValueGetValue(boundsRef as! AXValue, .cgRect, &rect) else { return nil }
+        // A collapsed caret comes back zero-width, so validate directly here rather
+        // than via isPlausibleCaretRect (which assumes a non-zero width).
+        let r = axRectToAppKit(rect)
+        guard r.origin.x.isFinite, r.origin.y.isFinite, r.height >= 4, r.height <= 200, r.width <= 2000 else { return nil }
+        if r.origin.x == 0 && r.origin.y == 0 { return nil }
+        guard NSScreen.screens.contains(where: { $0.frame.intersects(r.insetBy(dx: -2, dy: -2)) }) else { return nil }
+        log("[\(activeAppKey)] caret via text marker rect=\(r)")
+        return r
     }
 
     func focusedElementPoint() -> NSPoint? {
