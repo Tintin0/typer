@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Typer — local autocomplete that lives at your cursor</title>
+    <meta
+      name="description"
+      content="A faint suggestion at your caret, in almost any macOS app. Type along it and it shrinks. The model never leaves your Mac — no cloud, no account."
+    />
+    <meta property="og:title" content="Typer — local autocomplete for macOS" />
+    <meta
+      property="og:description"
+      content="Ghost text at your cursor, in any app. Tab takes a word, ` takes the line. Everything runs on-device."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://typr.frgmt.xyz" />
+    <meta name="theme-color" content="#0c0b0a" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <a class="skip" href="#install">Skip to install</a>
+
+    <header class="nav" aria-label="Primary">
+      <a class="brand" href="/">
+        <span class="brand-glyph" aria-hidden="true">⌨</span>
+        <span class="brand-word">Typer<b class="brand-caret" aria-hidden="true"></b></span>
+      </a>
+      <nav class="nav-links">
+        <a href="#how">How it feels</a>
+        <a href="#local">On-device</a>
+        <a href="#context">Context</a>
+        <a href="#install">Install</a>
+        <a class="nav-gh" href="https://github.com/frgmt0/typer">GitHub →</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- HERO: the product itself, running in the page -->
+      <section class="hero">
+        <div class="hero-head">
+          <p class="kicker">autocomplete for macOS · <span class="alpha">alpha</span></p>
+          <h1>
+            It guesses the rest.<br />
+            You just keep typing.
+          </h1>
+          <p class="lede">
+            A quiet grey suggestion shows up wherever you're writing. Keep going
+            and it melts away, word by word. No tab to another window, no asking,
+            no waiting on a server somewhere — the next few words are just there
+            the moment you want them.
+          </p>
+        </div>
+
+        <!-- the real thing -->
+        <figure class="stage" aria-label="A working demo of Typer's ghost-text autocomplete">
+          <figcaption class="stage-label">
+            <span class="dot" aria-hidden="true"></span> this is the live thing — click it and type
+          </figcaption>
+          <div
+            class="editor"
+            id="editor"
+            tabindex="0"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Try Typer: start typing and a grey suggestion will appear"
+          >
+            <div class="doc">
+              <span class="ink" id="ink"></span><b class="caret" id="caret" aria-hidden="true"></b
+              ><span class="ghost" id="ghost"></span>
+            </div>
+            <span class="placeholder" id="hint">Start typing — the grey words are the model guessing ahead.</span>
+          </div>
+          <div class="keys" aria-hidden="true">
+            <span class="key" data-key="tab"><kbd>Tab</kbd> take a word</span>
+            <span class="key" data-key="tick"><kbd>`</kbd> take the line</span>
+            <span class="key"><kbd>Esc</kbd> dismiss</span>
+            <span class="key ghost-key">…or just type through it</span>
+          </div>
+        </figure>
+
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#install">Install it (one script)</a>
+          <a class="btn btn-ghost" href="https://github.com/frgmt0/typer">Read the source</a>
+        </div>
+      </section>
+
+      <!-- HOW IT FEELS: type-through, the real differentiator -->
+      <section id="how" class="band">
+        <div class="band-text" data-reveal>
+          <p class="eyebrow">the feeling</p>
+          <h2>Type <em>into</em> the suggestion. It won't fight you.</h2>
+          <p>
+            Most autocomplete flickers and rewrites itself every time you touch a
+            key, so you end up reading instead of writing. Typer stays still. Type
+            what it guessed and the grey just fades, one letter at a time. Change
+            your mind and it quietly steps back.
+          </p>
+          <p class="aside">
+            You stay inside the sentence the whole time. It disappears into the
+            writing instead of becoming one more thing to manage.
+          </p>
+        </div>
+        <div class="band-demo">
+          <div class="replay" id="replay" aria-hidden="true">
+            <span class="r-ink"></span><b class="r-caret"></b><span class="r-ghost"></span>
+          </div>
+          <p class="replay-note" id="replayNote">watch the grey shrink as the black catches up</p>
+        </div>
+      </section>
+
+      <!-- PRIVACY: the emotional pitch, no architecture -->
+      <section id="local" class="local">
+        <header class="section-head" data-reveal>
+          <p class="eyebrow">yours alone</p>
+          <h2>What you write stays on your machine. Full stop.</h2>
+          <p class="section-sub">
+            No account. No upload. No "we value your privacy" fine print. Typer
+            does its thinking right where you are — so the email you're drafting,
+            the message you haven't sent, the idea you're still figuring out, none
+            of it ever leaves the room.
+          </p>
+        </header>
+
+        <ul class="claims" data-reveal>
+          <li><span class="claim-k">nothing</span> leaves your laptop</li>
+          <li><span class="claim-k">no</span> account, ever</li>
+          <li><span class="claim-k">works</span> with the wifi off</li>
+          <li><span class="claim-k">forgets</span> you on command</li>
+        </ul>
+
+        <p class="local-foot">
+          It can pick up the way you write so suggestions sound like you and not a
+          robot. Don't want that? Switch it off and it forgets you on the spot.
+        </p>
+      </section>
+
+      <!-- CONTEXT -->
+      <section id="context" class="context">
+        <header class="section-head" data-reveal>
+          <p class="eyebrow">why it actually fits</p>
+          <h2>It pays attention, so the words sound like yours.</h2>
+        </header>
+        <div class="ctx-grid" data-reveal>
+          <article>
+            <h3>Knows the thread</h3>
+            <p>It reads what's already in front of you and finishes <em>this</em> thought — not some generic one.</p>
+            <span class="tag">private</span>
+          </article>
+          <article>
+            <h3>Keeps your voice</h3>
+            <p>It picks up the way you actually write, so suggestions land in your tone instead of auto-text mush.</p>
+            <span class="tag">private</span>
+          </article>
+          <article>
+            <h3>Remembers your last copy</h3>
+            <p>That name, link, or snippet you just copied is ready to drop in the moment you reach for it.</p>
+            <span class="tag">private</span>
+          </article>
+          <article>
+            <h3>Goes where you type</h3>
+            <p>Email, editor, chat, search bar — it's the same quiet helper everywhere, not a single special box.</p>
+            <span class="tag">private</span>
+          </article>
+        </div>
+      </section>
+
+      <!-- INSTALL -->
+      <section id="install" class="install">
+        <div class="install-cta" data-reveal>
+          <p class="eyebrow">try it</p>
+          <h2>One command. Then start typing.</h2>
+          <p class="section-sub">
+            Free, open source, and it sets itself up. A
+            <span class="mb">⌨</span> shows up in your menu bar and you're going.
+          </p>
+
+          <pre class="code"><span class="c-cmt"># macOS 14+ · Apple Silicon</span>
+git clone https://github.com/frgmt0/typer.git && <span class="c-dim">cd</span> typer && ./install.sh</pre>
+          <button class="copy-btn" id="copyBtn" type="button">Copy the command</button>
+
+          <p class="byo">
+            It'll ask for permission to watch what you type — that's the only way a
+            helper at your cursor can work, and it's all kept on your Mac.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-row">
+        <span class="brand-word small">Typer<b class="brand-caret" aria-hidden="true"></b></span>
+        <nav class="foot-links">
+          <a href="https://github.com/frgmt0/typer">GitHub</a>
+          <a href="https://github.com/frgmt0/typer/blob/main/LICENSE">MIT License</a>
+          <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
+        </nav>
+      </div>
+      <p class="foot-fine">
+        Runs locally. Brings its own model. Forgets you when you tell it to.
+        <span class="foot-dim">A frgmt project.</span>
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

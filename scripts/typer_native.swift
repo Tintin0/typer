@@ -212,48 +212,58 @@ final class SuggestionOverlay: NSPanel {
         orderOut(nil)
     }
 
-    func showCompletion(_ text: String, at point: NSPoint) {
+    // Match the app's text size from the caret line height so the ghost sits inline.
+    private func fontSize(for lineHeight: CGFloat) -> CGFloat {
+        min(max(lineHeight * 0.62, 11), 30)
+    }
+
+    func showCompletion(_ text: String, at point: NSPoint, lineHeight: CGFloat) {
         label.attributedStringValue = NSAttributedString(
             string: text,
             attributes: [
-                .font: NSFont.systemFont(ofSize: 15),
-                .foregroundColor: NSColor.labelColor.withAlphaComponent(0.55)
+                .font: NSFont.systemFont(ofSize: fontSize(for: lineHeight)),
+                .foregroundColor: NSColor.labelColor.withAlphaComponent(0.5)
             ]
         )
-        place(width: min(max(label.intrinsicContentSize.width + 8, 80), 640), height: 28, at: point)
+        placeInline(at: point, lineHeight: lineHeight)
     }
 
-    func showTypo(original: String, replacement: String, at rect: CGRect) {
-        let s = NSMutableAttributedString(string: original + "  →  " + replacement)
-        s.addAttributes([
+    func showTypo(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
+        let fs = fontSize(for: lineHeight)
+        let s = NSMutableAttributedString()
+        s.append(NSAttributedString(string: original, attributes: [
+            .font: NSFont.systemFont(ofSize: fs),
             .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.75)
-        ], range: NSRange(location: 0, length: original.count))
-        s.addAttributes([
-            .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.9),
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
-        ], range: NSRange(location: original.count + 5, length: replacement.count))
+            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)
+        ]))
+        s.append(NSAttributedString(string: " → " + replacement, attributes: [
+            .font: NSFont.systemFont(ofSize: fs, weight: .semibold),
+            .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)
+        ]))
         label.attributedStringValue = s
-        place(width: min(max(label.intrinsicContentSize.width + 18, 120), 520), height: 30,
-              at: NSPoint(x: rect.minX, y: rect.maxY + 4))
+        placeInline(at: point, lineHeight: lineHeight)
     }
 
-    func showGrammar(original: String, replacement: String, at rect: CGRect) {
-        let s = NSMutableAttributedString(string: replacement)
-        s.addAttributes([
+    func showGrammar(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
+        label.attributedStringValue = NSAttributedString(string: replacement, attributes: [
+            .font: NSFont.systemFont(ofSize: fontSize(for: lineHeight), weight: .medium),
             .underlineStyle: NSUnderlineStyle.single.rawValue,
             .underlineColor: NSColor.systemYellow,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9),
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium)
-        ], range: NSRange(location: 0, length: replacement.count))
-        label.attributedStringValue = s
-        place(width: min(max(label.intrinsicContentSize.width + 18, 160), 720), height: 32,
-              at: NSPoint(x: rect.minX, y: rect.maxY + 6))
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9)
+        ])
+        placeInline(at: point, lineHeight: lineHeight)
     }
 
-    private func place(width: CGFloat, height: CGFloat, at point: NSPoint) {
-        label.frame = NSRect(x: 4, y: 2, width: width - 8, height: height - 4)
-        var frame = NSRect(x: point.x, y: point.y, width: width, height: height)
+    // `point` is the caret's right edge (x) and bottom (y). The panel is exactly the
+    // caret line height, so the single-line label is vertically centered on the
+    // caret line — the suggestion renders inline with the user's text.
+    private func placeInline(at point: NSPoint, lineHeight: CGFloat) {
+        let h = max(lineHeight, 14)
+        let w = min(max(label.intrinsicContentSize.width + 6, 30), 760)
+        let textH = label.intrinsicContentSize.height
+        // Center the text vertically within the caret-line-height panel.
+        label.frame = NSRect(x: 3, y: (h - textH) / 2, width: w - 6, height: textH)
+        var frame = NSRect(x: point.x, y: point.y, width: w, height: h)
         if let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) ?? NSScreen.main {
             let v = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             frame.origin.x = min(max(frame.origin.x, v.minX), v.maxX - frame.width)
@@ -321,12 +331,14 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     var active: MLXSuggestion?          // typo / grammar diff suggestions
     var completion: ActiveCompletion?   // the inline completion being typed into
     var lastCaretPoint: NSPoint?
+    var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
     // Screenshot-based caret cache for apps without AX caret geometry. We compute it
     // occasionally (it is slow) and extrapolate horizontally as the user types.
     var shotCaretPoint: NSPoint?
     var shotCaretAt = Date.distantPast
     var shotCaretBufferLen = 0
     var shotCaretCharWidth: CGFloat = 9
+    var shotCaretHeight: CGFloat = 18
     var shotCaretApp = ""
     var shotCaretComputing = false
     // Speculative prefetch: the next chunk, generated while the user finishes the
@@ -589,8 +601,8 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     func showCompletionRemainder() {
         guard let comp = completion, !comp.done else { overlay.orderOut(nil); return }
         let point = currentCaretPoint()
-        log("[\(activeAppKey)] SHOW remainder=\(comp.remainder.prefix(40).debugDescription) at=\(point)")
-        overlay.showCompletion(comp.remainder, at: point)
+        log("[\(activeAppKey)] SHOW remainder=\(comp.remainder.prefix(40).debugDescription) at=\(point) h=\(lastCaretHeight)")
+        overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight)
     }
 
     // Tab: realize the next word of the prediction (we insert it; the user did not
@@ -815,12 +827,10 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         acceptedWords = 0
         suggestions += 1
         rebuildMenu()
-        // Cheap placement: anchor just left of the caret (the word we just finished).
-        let rect = caretPoint().map { CGRect(x: max($0.x - 70, 0), y: $0.y, width: 70, height: 18) }
-            ?? selectedOrWordRect()
-            ?? CGRect(x: 400, y: 400, width: 80, height: 18)
-        overlay.showTypo(original: word, replacement: fix, at: rect)
-        log("[\(activeAppKey)] typo '\(word)' -> '\(fix)'")
+        // Inline at the caret line, same as completions.
+        let point = currentCaretPoint()
+        overlay.showTypo(original: word, replacement: fix, at: point, lineHeight: lastCaretHeight)
+        log("[\(activeAppKey)] typo '\(word)' -> '\(fix)' at=\(point)")
         return true
     }
 
@@ -1045,6 +1055,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
             let typedSince = max(0, buffer.count - shotCaretBufferLen)
             let extrapolated = NSPoint(x: p.x + CGFloat(typedSince) * shotCaretCharWidth, y: p.y)
             lastCaretPoint = extrapolated
+            lastCaretHeight = shotCaretHeight
             return extrapolated
         }
         return lastCaretPoint ?? focusedElementPoint() ?? NSPoint(x: 400, y: 400)
@@ -1066,8 +1077,9 @@ final class TyperApp: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.shotCaretComputing = false
                 guard appKey == self.activeAppKey, let res else { return }
-                self.shotCaretPoint = NSPoint(x: res.rect.maxX + 2, y: res.rect.minY - 2)
+                self.shotCaretPoint = NSPoint(x: res.rect.maxX + 2, y: res.rect.minY)
                 self.shotCaretCharWidth = res.charWidth
+                self.shotCaretHeight = res.rect.height
                 self.shotCaretBufferLen = bufLen
                 self.shotCaretAt = Date()
                 self.shotCaretApp = appKey
@@ -1149,12 +1161,12 @@ final class TyperApp: NSObject, NSApplicationDelegate {
             maybePrefetch()
         case "typo":
             active = sug
-            guard let original = sug.original, let replacement = sug.replacement, let rect = selectedOrWordRect() else { overlay.orderOut(nil); return }
-            overlay.showTypo(original: original, replacement: replacement, at: rect)
+            guard let original = sug.original, let replacement = sug.replacement else { overlay.orderOut(nil); return }
+            overlay.showTypo(original: original, replacement: replacement, at: currentCaretPoint(), lineHeight: lastCaretHeight)
         case "grammar":
             active = sug
-            guard let original = sug.original, let replacement = sug.replacement, let rect = selectedOrWordRect() else { overlay.orderOut(nil); return }
-            overlay.showGrammar(original: original, replacement: replacement, at: rect)
+            guard let original = sug.original, let replacement = sug.replacement else { overlay.orderOut(nil); return }
+            overlay.showGrammar(original: original, replacement: replacement, at: currentCaretPoint(), lineHeight: lastCaretHeight)
         default:
             overlay.orderOut(nil)
         }
@@ -1333,10 +1345,11 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         // WebKit (Discord, Slack, VS Code, Chrome, Safari) don't — they expose the
         // caret via the AXTextMarker API instead. Try both.
         guard let rect = boundsForSelectedRange(element: element) ?? textMarkerCaretRect(element: element) else { return nil }
-        // rect is already in AppKit (bottom-left) coordinates. Place the ghost
-        // text just after the caret, baseline-aligned with the caret line.
-        let point = NSPoint(x: rect.maxX + 2, y: rect.minY - 2)
-        log("caret point=\(point) from rect=\(rect)")
+        // rect is already in AppKit (bottom-left) coordinates. Return the caret's
+        // right edge + bottom; the line height lets the overlay render inline.
+        lastCaretHeight = rect.height
+        let point = NSPoint(x: rect.maxX + 2, y: rect.minY)
+        log("caret point=\(point) h=\(rect.height) from rect=\(rect)")
         return point
     }
 
@@ -1476,9 +1489,9 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    @objc func testCompletion() { overlay.showCompletion(" predicted words appear inline", at: caretPoint() ?? NSPoint(x: 400, y: 400)) }
-    @objc func testTypo() { overlay.showTypo(original: "peopel", replacement: "people", at: selectedOrWordRect() ?? CGRect(x: 400, y: 400, width: 80, height: 20)) }
-    @objc func testGrammar() { overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: selectedOrWordRect() ?? CGRect(x: 400, y: 400, width: 160, height: 20)) }
+    @objc func testCompletion() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showCompletion(" predicted words appear inline", at: p, lineHeight: lastCaretHeight) }
+    @objc func testTypo() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showTypo(original: "peopel", replacement: "people", at: p, lineHeight: lastCaretHeight) }
+    @objc func testGrammar() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: p, lineHeight: lastCaretHeight) }
     @objc func quit() { NSApp.terminate(nil) }
 }
 
