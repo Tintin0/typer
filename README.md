@@ -219,10 +219,25 @@ Everything is local. The model runs on your machine; nothing is sent anywhere.
 - Mid-word completions are suppressed (the small base model isn't reliable at them).
 - Quality depends heavily on the model you choose.
 
+## Battery
+
+The model runs on the GPU, so battery use scales with how often it generates. Typer
+keeps this in check:
+
+- It generates on a **pause**, not on every keystroke (`debounce_ms`, default 110).
+- **Battery saver** (on by default) stretches the debounce and disables speculative
+  prefetch while on battery or in Low Power Mode — toggle in the menu (it shows
+  "throttling now" when active), or tune `battery_saver` / `battery_debounce_ms` /
+  `prefetch_enabled` in the config.
+- For maximum battery life, use a **smaller model** (the single biggest lever) and/or
+  raise `debounce_ms`.
+
 ## Troubleshooting
 
 - **No suggestions / `AX trusted=false` in the log** → grant Accessibility to
   Typer, then relaunch. After a rebuild, re-grant unless you set up stable signing.
+- **Battery draining fast** → it's the model's GPU use. Make sure Battery saver is on
+  (menu), raise `debounce_ms`, or switch to a smaller GGUF. See **Battery** above.
 - **Suggestions appear at the bottom of the screen** → that app exposes no caret to
   Accessibility (often a terminal); enable Screen Recording for the OCR-based locator.
 - **Garbage completions** → try a different / base model; the sampling temperature

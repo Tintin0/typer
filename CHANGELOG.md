@@ -3,6 +3,29 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (battery)
+
+Typer was draining the battery hard (one user went full → 37% in ~2h). The model
+runs on the GPU, and the app was firing a full inference far more often than it
+needed to. Fixes:
+
+- **Generate on a pause, not on every key.** The debounce was 25ms — *shorter* than
+  the gap between keystrokes (~80–200ms), so the "wait" expired between nearly every
+  character and we ran a full model inference each time. Default debounce is now
+  **110ms**, so generation fires once you actually pause. (Imperceptible to typing
+  feel; the suggestion still streams in.)
+- **Battery saver (on by default).** On battery or in Low Power Mode, Typer stretches
+  the debounce to 300ms and turns off speculative prefetch (which otherwise runs a
+  *second* inference as you type along a suggestion — ~2× the GPU work). Desktops and
+  plugged-in laptops are unaffected. Toggle in the menu; the item shows
+  "(throttling now)" while it's active. New config: `battery_saver`,
+  `battery_debounce_ms`, `prefetch_enabled`.
+- **Fewer CPU wakeups reading the model's output.** The helper's streamed response was
+  read one byte at a time (a `poll`+`read` syscall per character); it now reads in 4KB
+  chunks. macOS energy impact is dominated by wakeups, so this matters.
+- Background context (window text / clipboard) also refreshes less often while saving
+  power.
+
 ## Alpha — 2026-05-30 (overlay polish)
 
 - **Ghost no longer overlaps the text you're typing.** Our keyboard tap fires before

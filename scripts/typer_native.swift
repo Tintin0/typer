@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
+import IOKit.ps
 import ScreenCaptureKit
 import Vision
 
@@ -31,6 +32,29 @@ func dlog(_ message: @autoclosure () -> String) {
     if debugLoggingEnabled { log(message()) }
 }
 
+// Power-source awareness so we can throttle the (GPU-heavy) model when running on
+// battery. Polling IOKit on every keystroke is wasteful, so the battery state is
+// cached and refreshed lazily (no idle timer — checked only when we're about to
+// generate). On a desktop with no battery this always reports AC, so nothing is
+// throttled there.
+final class PowerState {
+    static let shared = PowerState()
+    private var cachedOnBattery = false
+    private var checkedAt = Date.distantPast
+
+    func onBattery() -> Bool {
+        if Date().timeIntervalSince(checkedAt) > 5 {
+            // kIOPSTimeRemainingUnlimited is returned only when on AC power.
+            cachedOnBattery = IOPSGetTimeRemainingEstimate() != kIOPSTimeRemainingUnlimited
+            checkedAt = Date()
+        }
+        return cachedOnBattery
+    }
+
+    // Low Power Mode OR running on battery → back off to save energy.
+    var saving: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled || onBattery() }
+}
+
 struct TyperConfig {
     var enabled = true
     var completionEnabled = true
@@ -39,8 +63,16 @@ struct TyperConfig {
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
     var minContextChars = 6
-    var debounceMs = 25   // low: the first suggestion should appear without stopping
+    // Trailing debounce before a generation fires. Must be longer than the gap
+    // between keystrokes (~80–200ms) so we generate once per *pause* rather than
+    // once per *key* — at 25ms we fired a full model inference on nearly every
+    // character, which is the main battery drain.
+    var debounceMs = 110
     var idleResetSeconds = 20
+    // Battery / energy.
+    var prefetchEnabled = true    // speculatively fetch the next chunk (≈2× inference)
+    var batterySaver = true       // throttle on battery / Low Power Mode
+    var batteryDebounceMs = 300   // debounce used while battery-saving (prefetch off too)
     // Broader-context sources. All on-device. Each degrades gracefully if its data
     // is unavailable (e.g. AX-hostile apps, or Screen Recording not granted).
     var windowContextEnabled = true   // read surrounding text in the focused window via AX
@@ -73,6 +105,9 @@ struct TyperConfig {
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
             case "debounce_ms": cfg.debounceMs = Int(value) ?? cfg.debounceMs
             case "idle_reset_seconds": cfg.idleResetSeconds = Int(value) ?? cfg.idleResetSeconds
+            case "prefetch_enabled": cfg.prefetchEnabled = value == "true"
+            case "battery_saver": cfg.batterySaver = value == "true"
+            case "battery_debounce_ms": cfg.batteryDebounceMs = Int(value) ?? cfg.batteryDebounceMs
             case "window_context_enabled": cfg.windowContextEnabled = value == "true"
             case "style_memory_enabled": cfg.styleMemoryEnabled = value == "true"
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
@@ -132,6 +167,7 @@ final class MLXClient {
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
+    private var readBuffer = Data()   // leftover bytes past the last newline (chunked reads)
     private let lock = NSLock()
 
     init(cfg: TyperConfig) { self.cfg = cfg }
@@ -170,6 +206,33 @@ final class MLXClient {
         process = p
         input = inPipe.fileHandleForWriting
         output = outPipe.fileHandleForReading
+        readBuffer.removeAll(keepingCapacity: true)
+    }
+
+    // Reads one '\n'-terminated line from the helper, reading in CHUNKS (not a syscall
+    // per byte) and buffering any bytes past the newline for the next call. macOS
+    // energy impact is dominated by CPU wakeups, so the old byte-at-a-time poll/read
+    // (≈2 syscalls per character of a streamed response) was a real, avoidable drain.
+    private func readResponseLine(timeoutMs: Int32 = 8000) throws -> Data? {
+        guard let fd = output?.fileDescriptor else { return nil }
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+        while true {
+            if let nl = readBuffer.firstIndex(of: 0x0A) {
+                let line = readBuffer.subdata(in: readBuffer.startIndex..<nl)
+                readBuffer.removeSubrange(readBuffer.startIndex...nl)
+                return line
+            }
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
+            let r = poll(&pfd, 1, remaining)
+            if r == 0 { throw NSError(domain: "Typer", code: 5, userInfo: [NSLocalizedDescriptionKey: "helper read timeout"]) }
+            if r < 0 { if errno == EINTR { continue }; throw NSError(domain: "Typer", code: 6, userInfo: [NSLocalizedDescriptionKey: "poll failed"]) }
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let n = read(fd, &chunk, chunk.count)
+            if n < 0 { if errno == EINTR { continue }; throw NSError(domain: "Typer", code: 7, userInfo: [NSLocalizedDescriptionKey: "read failed"]) }
+            if n == 0 { return readBuffer.isEmpty ? nil : { let d = readBuffer; readBuffer.removeAll(); return d }() }
+            readBuffer.append(contentsOf: chunk[0..<n])
+        }
     }
 
     // Sends one request and reads the streaming response. `onPartial` is invoked
@@ -185,7 +248,7 @@ final class MLXClient {
         do {
             try input?.write(contentsOf: data)
             while true {
-                guard let line = try output?.readLine(), !line.isEmpty else {
+                guard let line = try readResponseLine(), !line.isEmpty else {
                     throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper exited"])
                 }
                 let res = try decoder.decode(StreamLine.self, from: line)
@@ -208,27 +271,6 @@ final class MLXClient {
     // Lock-safe warm-up so the launch-time start() can't double-spawn against the
     // first real request().
     func warmUp() { lock.lock(); defer { lock.unlock() }; try? start() }
-}
-
-extension FileHandle {
-    // Reads one '\n'-terminated line, but never blocks longer than `timeoutMs` — a
-    // hung helper otherwise holds the request lock forever and wedges the serial
-    // background queue (caret/background features stop working until relaunch).
-    func readLine(timeoutMs: Int32 = 8000) throws -> Data? {
-        var data = Data()
-        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
-        while true {
-            var pfd = pollfd(fd: fileDescriptor, events: Int16(POLLIN), revents: 0)
-            let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
-            let r = poll(&pfd, 1, remaining)
-            if r == 0 { throw NSError(domain: "Typer", code: 5, userInfo: [NSLocalizedDescriptionKey: "helper read timeout"]) }
-            if r < 0 { if errno == EINTR { continue }; throw NSError(domain: "Typer", code: 6, userInfo: [NSLocalizedDescriptionKey: "poll failed"]) }
-            let chunk = try read(upToCount: 1)
-            guard let chunk, !chunk.isEmpty else { return data.isEmpty ? nil : data }
-            if chunk[0] == 0x0A { return data }
-            data.append(chunk)
-        }
-    }
 }
 
 // Layer-based ghost renderer: SF system font, a soft trailing taper (the text fades
@@ -631,6 +673,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         menu.addItem(toggleItem("Skip terminal apps", key: "disable_in_terminals", value: cfg.disableInTerminals))
+        let batt = toggleItem("Battery saver", key: "battery_saver", value: cfg.batterySaver)
+        if cfg.batterySaver && PowerState.shared.saving { batt.title = "Battery saver (throttling now)" }
+        menu.addItem(batt)
         menu.addItem(.separator())
 
         let ctx = NSMenu()
@@ -684,6 +729,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
         case "screen_context_enabled": cfg.screenContextEnabled = v
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
+        case "battery_saver": cfg.batterySaver = v
         default: break
         }
         writeConfig(key, v ? "true" : "false")
@@ -1039,6 +1085,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // in the background (as if they had typed through the rest) so it can appear
     // with zero perceived latency on exhaustion.
     func maybePrefetch() {
+        // Prefetch roughly doubles inference; skip it entirely while saving power.
+        guard cfg.prefetchEnabled, !powerSaving else { return }
         guard let comp = completion, !comp.done else { return }
         guard comp.chars.count - comp.consumed <= 12, !prefetchInFlight, !requestInFlight else { return }
         let predicted = String((buffer + comp.remainder).suffix(500))
@@ -1071,9 +1119,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    // True when we should trim energy use: battery-saver enabled AND on battery or in
+    // Low Power Mode. Drives a longer debounce and disables speculative prefetch.
+    var powerSaving: Bool { cfg.batterySaver && PowerState.shared.saving }
+
     func scheduleGenerate() {
         debounce?.invalidate()
-        debounce = Timer.scheduledTimer(withTimeInterval: Double(cfg.debounceMs) / 1000.0, repeats: false) { [weak self] _ in
+        let ms = powerSaving ? max(cfg.debounceMs, cfg.batteryDebounceMs) : cfg.debounceMs
+        debounce = Timer.scheduledTimer(withTimeInterval: Double(ms) / 1000.0, repeats: false) { [weak self] _ in
             self?.generate()
         }
     }
@@ -1542,7 +1595,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Refresh the cached background off the hot path, throttled by time + app key.
     func refreshBackgroundIfNeeded() {
         let key = activeAppKey
-        let fresh = Date().timeIntervalSince(backgroundRefreshedAt) < cfg.backgroundRefreshSeconds && key == backgroundKey
+        // Refresh less often while saving power (fewer AX/screenshot wakeups).
+        let interval = powerSaving ? max(cfg.backgroundRefreshSeconds, 10.0) : cfg.backgroundRefreshSeconds
+        let fresh = Date().timeIntervalSince(backgroundRefreshedAt) < interval && key == backgroundKey
         if fresh || backgroundRefreshing { return }
         backgroundRefreshing = true
         // Snapshot cfg flags + frontmost PID on main (cfg mutates on main; NSWorkspace

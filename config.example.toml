@@ -11,9 +11,16 @@ model_path = ""
 
 max_completion_words = 7      # length of each suggestion chunk
 min_context_chars = 6         # don't suggest until this much has been typed
-debounce_ms = 25              # delay before generating; low = snappier
+debounce_ms = 110             # pause-before-generating; should exceed your between-key
+                              # gap so we generate once per PAUSE, not once per key
+                              # (too low = a model run on nearly every keystroke = battery drain)
 idle_reset_seconds = 20       # clear the buffer after this long with no typing
 # (sampling — temperature/top-k/min-p — is tuned in scripts/llama_server.cpp)
+
+# Energy. The model runs on the GPU, so fewer/longer-debounced runs = less battery.
+prefetch_enabled = true       # speculatively fetch the next chunk (snappier, ~2× inference)
+battery_saver = true          # on battery / Low Power Mode: longer debounce + no prefetch
+battery_debounce_ms = 300     # debounce used while battery-saving
 
 # Broader-context sources (all on-device). Set any to false to disable.
 window_context_enabled = true     # read surrounding text via Accessibility
