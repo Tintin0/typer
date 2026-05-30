@@ -449,7 +449,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var requestInFlight = false
     var rerequestNeeded = false
     var lastTrailing = ""               // text right after the caret (for repeat-drop)
-    var pasteboardBusy = false          // serialize clipboard save/paste/restore
+    var pasteboardBusy = false          // serialize clipboard save/paste/restore (typo fallback)
+    var suppressKeyDowns = 0            // ignore our own synthesized insertion keystrokes
+    var suppressExpiry = Date.distantPast
     var acceptedWords = 0
     var shift = false
     var ctrl = false
@@ -647,6 +649,12 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if IsSecureEventInputEnabled() {
             if completion != nil || active != nil { clearSuggestion() }
             return Unmanaged.passUnretained(event)
+        }
+        // Ignore the synthetic keystrokes WE injected to insert an accepted
+        // suggestion — otherwise they'd be re-processed as fresh user typing.
+        if type == .keyDown, suppressKeyDowns > 0 {
+            if Date() <= suppressExpiry { suppressKeyDowns -= 1; return Unmanaged.passUnretained(event) }
+            suppressKeyDowns = 0      // window expired; don't swallow a real keystroke
         }
         syncActiveApp()
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
@@ -1514,8 +1522,24 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    // Insert accepted text by synthesizing a single Unicode keystroke event — no
+    // pasteboard involved, so the user's clipboard is never touched (no loss, no
+    // leak, no races). We arm a suppression window so our own injected keystroke
+    // isn't re-processed as user typing.
     func insert(_ text: String) {
-        withPasteboard(text) { self.postPaste() }
+        let units = Array(text.replacingOccurrences(of: "\r", with: "").utf16)
+        guard !units.isEmpty else { return }
+        suppressKeyDowns += 1
+        suppressExpiry = Date().addingTimeInterval(1.0)
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return }
+        units.withUnsafeBufferPointer { buf in
+            down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: buf.baseAddress)
+            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: buf.baseAddress)
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
     }
 
     func replacePreviousWord(with text: String) {

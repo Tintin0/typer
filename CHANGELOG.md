@@ -3,6 +3,21 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (insertion + drift)
+
+- **Accepting no longer touches your clipboard.** Inserted text is now typed via a
+  synthesized Unicode keystroke (idea from [cotabby](https://github.com/FuJacob/cotabby))
+  instead of a copy/paste, with a self-suppression guard so it isn't re-processed as
+  typing. The pasteboard path remains only for the (off-by-default) typo fallback.
+- **Less ghost drift while typing through a suggestion** — the overlay re-anchors to
+  the real caret at each word boundary (handles line-wrap), and shifts by measured
+  width within a word.
+- Completions keep settling in long fields / after a pause (staleness check is now
+  robust to buffer truncation and idle-reset).
+- Mid-line completions are suppressed whenever any text remains on the line after the
+  caret. Helper clears its KV cache on context front-truncation. Removed dead config
+  knobs. Fixed a screenshot-capture result race.
+
 ## Alpha — 2026-05-30 (hardening pass)
 
 Adversarial review of the whole codebase (concurrency, the C++ helper, pipeline
