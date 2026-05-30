@@ -419,15 +419,18 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     let statusMenu = NSMenu()
     let overlay = SuggestionOverlay()
-    var eventTap: CFMachPort?
+    var observerTap: CFMachPort?        // listen-only: never gates input delivery
+    var acceptTap: CFMachPort?          // consuming: enabled only while a suggestion shows
     var buffer = ""
     var lastInput = Date()
     var activeAppKey = "unknown"
     var buffersByApp: [String: String] = [:]
     var lastInputByApp: [String: Date] = [:]
     var debounce: Timer?
-    var active: MLXSuggestion?          // typo / grammar diff suggestions
-    var completion: ActiveCompletion?   // the inline completion being typed into
+    // The accept tap is enabled exactly while a suggestion is on screen, so Typer is
+    // out of the keystroke-consuming path the rest of the time.
+    var active: MLXSuggestion? { didSet { refreshAcceptTap() } }      // typo / grammar diff
+    var completion: ActiveCompletion? { didSet { refreshAcceptTap() } } // inline completion
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
     var caretHeightFloor: CGFloat?      // smallest caret height seen this focus session
@@ -612,97 +615,109 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openLog() { NSWorkspace.shared.open(typerLogURL) }
 
     func setupEventTap() {
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
-            | (1 << CGEventType.tapDisabledByTimeout.rawValue) | (1 << CGEventType.tapDisabledByUserInput.rawValue)
-        let callback: CGEventTapCallBack = { _, type, event, refcon in
-            let app = Unmanaged<TyperApp>.fromOpaque(refcon!).takeUnretainedValue()
-            return app.handle(type: type, event: event)
+        let disableMask = (1 << CGEventType.tapDisabledByTimeout.rawValue) | (1 << CGEventType.tapDisabledByUserInput.rawValue)
+        // Observer: listen-only at the head. Listen-only taps do NOT gate event
+        // delivery on the callback returning, so a slow main thread can never stall
+        // global keystrokes in other apps. This watches typing and builds state.
+        let observerMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | disableMask
+        let observerCB: CGEventTapCallBack = { _, type, event, refcon in
+            Unmanaged<TyperApp>.fromOpaque(refcon!).takeUnretainedValue().observe(type: type, event: event)
+            return Unmanaged.passUnretained(event)
         }
-        eventTap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                     place: .headInsertEventTap,
-                                     options: .defaultTap,
-                                     eventsOfInterest: CGEventMask(mask),
-                                     callback: callback,
-                                     userInfo: Unmanaged.passUnretained(self).toOpaque())
-        guard let eventTap else {
-            log("ERROR event tap creation failed; Accessibility/Input Monitoring permission likely missing for Typer.app")
+        observerTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                        options: .listenOnly, eventsOfInterest: CGEventMask(observerMask),
+                                        callback: observerCB, userInfo: Unmanaged.passUnretained(self).toOpaque())
+        guard let observerTap else {
+            log("ERROR observer tap creation failed; Accessibility permission likely missing for Typer.app")
             return
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: eventTap, enable: true)
-        log("event tap enabled")
+        CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(kCFAllocatorDefault, observerTap, 0), .commonModes)
+        CGEvent.tapEnable(tap: observerTap, enable: true)
+
+        // Accept tap: a consuming .defaultTap at the tail that only grabs Tab/backtick.
+        // It is enabled ONLY while a suggestion is visible (refreshAcceptTap), so when
+        // nothing is showing Typer consumes no keys at all.
+        let acceptMask = (1 << CGEventType.keyDown.rawValue) | disableMask
+        let acceptCB: CGEventTapCallBack = { _, type, event, refcon in
+            Unmanaged<TyperApp>.fromOpaque(refcon!).takeUnretainedValue().accept(type: type, event: event)
+        }
+        acceptTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap,
+                                      options: .defaultTap, eventsOfInterest: CGEventMask(acceptMask),
+                                      callback: acceptCB, userInfo: Unmanaged.passUnretained(self).toOpaque())
+        if let acceptTap {
+            CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(kCFAllocatorDefault, acceptTap, 0), .commonModes)
+            CGEvent.tapEnable(tap: acceptTap, enable: false)   // off until a suggestion shows
+        }
+        log("event taps installed (observer + accept)")
     }
 
-    func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Self-heal: macOS disables the tap if a callback ever runs too long (e.g. a
-        // slow synchronous AX read into a hung app). Re-enable instead of dying.
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
-            log("event tap re-enabled after \(type == .tapDisabledByTimeout ? "timeout" : "user-input")")
-            return nil
-        }
-        // PRIVACY: while macOS secure input is active (login window, password fields,
-        // sudo prompts, 1Password, etc.) capture NOTHING — don't buffer, log, learn,
-        // read AX, or generate. This is the standard keylogger guard.
-        if IsSecureEventInputEnabled() {
+    // Enable the consuming accept tap exactly while a suggestion is on screen.
+    func refreshAcceptTap() {
+        guard let acceptTap else { return }
+        CGEvent.tapEnable(tap: acceptTap, enable: completion != nil || active != nil)
+    }
+
+    private func reEnable(_ tap: CFMachPort?, _ label: String) {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        log("\(label) tap re-enabled")
+    }
+
+    // Listen-only: observes typing, builds the buffer, drives generation. Never
+    // consumes Tab/backtick (the accept tap does that).
+    func observe(type: CGEventType, event: CGEvent) {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { reEnable(observerTap, "observer"); return }
+        if IsSecureEventInputEnabled() {                 // never capture during secure input
             if completion != nil || active != nil { clearSuggestion() }
-            return Unmanaged.passUnretained(event)
+            return
         }
-        // Ignore the synthetic keystrokes WE injected to insert an accepted
-        // suggestion. Matched by exact tag, so a fast real keystroke is never
-        // mistaken for ours (the count-based guard could swallow a quick second Tab,
-        // which skipped words).
-        if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker {
-            return Unmanaged.passUnretained(event)
-        }
+        if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return }  // our own insertion
         syncActiveApp()
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        if type == .keyUp {
-            setModifier(code, down: false)
-            return Unmanaged.passUnretained(event)
-        }
-        guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+        if type == .keyUp { setModifier(code, down: false); return }
+        guard type == .keyDown else { return }
         setModifier(code, down: true)
         let flags = event.flags
         let hasCommandLikeModifier = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
 
-        if code == CGKeyCode(kVK_Tab) {
-            if acceptCompletionWord() { return nil }
-            if acceptOneWord() { return nil }       // typo / grammar
-            return Unmanaged.passUnretained(event)
-        }
+        if code == CGKeyCode(kVK_Tab) { return }         // accept tap handles Tab
         if code == CGKeyCode(kVK_ANSI_Grave) {
-            if acceptCompletionAll() { return nil }
-            if acceptAll() { return nil }            // typo / grammar
-            return Unmanaged.passUnretained(event)
+            // Backtick is "accept all" while a suggestion shows (accept tap consumes
+            // it); otherwise it's a literal character the user is typing.
+            if completion != nil || active != nil { return }
         }
-        if code == CGKeyCode(kVK_Escape) {
-            clearSuggestion()
-            return Unmanaged.passUnretained(event)
-        }
+        if code == CGKeyCode(kVK_Escape) { clearSuggestion(); return }
         if code == CGKeyCode(kVK_Delete) {
             if !buffer.isEmpty { buffer.removeLast() }
-            saveActiveAppState()
-            clearSuggestion()        // editing backward always cancels the prediction
-            scheduleGenerate()
-            return Unmanaged.passUnretained(event)
+            saveActiveAppState(); clearSuggestion(); scheduleGenerate(); return
         }
         if code == CGKeyCode(kVK_Return) {
-            // In chat/search fields Return usually submits. Reset so the next message
-            // does not inherit stale context; Shift-Return still records a newline.
             if flags.contains(.maskShift) { push("\n") } else {
                 if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
                 buffer = ""; saveActiveAppState(); clearSuggestion()
             }
-            return Unmanaged.passUnretained(event)
+            return
         }
-        if hasCommandLikeModifier || cmd || ctrl || alt { return Unmanaged.passUnretained(event) }
+        if hasCommandLikeModifier || cmd || ctrl || alt { return }
         if let chars = event.keyboardString, !chars.isEmpty {
-            dlog("[\(activeAppKey)] key code=\(code)")   // never log the typed characters
+            dlog("[\(activeAppKey)] key code=\(code)")
             handleTyping(chars)
-        } else {
-            log("key nochars code=\(code)")
+        }
+    }
+
+    // Consuming tap, enabled only while a suggestion is visible: grabs Tab/backtick.
+    func accept(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Restore the CORRECT state (enabled only if a suggestion is visible), not an
+        // unconditional enable — otherwise it could consume Tab with nothing showing.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { refreshAcceptTap(); return nil }
+        guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+        if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return Unmanaged.passUnretained(event) }
+        let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        if code == CGKeyCode(kVK_Tab) {
+            if acceptCompletionWord() { return nil }
+            if acceptOneWord() { return nil }
+        } else if code == CGKeyCode(kVK_ANSI_Grave) {
+            if acceptCompletionAll() { return nil }
+            if acceptAll() { return nil }
         }
         return Unmanaged.passUnretained(event)
     }
