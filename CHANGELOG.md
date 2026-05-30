@@ -3,6 +3,22 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (stability + control)
+
+- **Fixed words being skipped on fast Tab.** Injected insertion events are now
+  tagged and ignored by exact marker, so a quick second Tab is never mistaken for
+  our own event (the old count/timing guard raced it).
+- **Reworked the event taps** (idea from cotabby): a **listen-only observer** that
+  can never stall global keystrokes in other apps, plus a **consuming accept tap
+  that's only active while a suggestion is on screen** — the rest of the time Typer
+  consumes no keys at all. This is the main stability fix.
+- **Per-app disable + terminal skip.** Menu → "Disable in <app>" and "Skip terminal
+  apps". Typer stays silent there.
+- **Clipboard is only used when relevant** — a long copied blob is ignored unless it
+  shares a word with what you're writing.
+- **Menu → Reset All Data…** wipes learned style + stats (with a confirmation),
+  keeping your settings.
+
 ## Alpha — 2026-05-30 (insertion + drift)
 
 - **Accepting no longer touches your clipboard.** Inserted text is now typed via a

@@ -50,6 +50,8 @@ struct TyperConfig {
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
     var debugLogging = false            // when true, logs include typed text/snippets
+    var disabledApps: Set<String> = []  // bundle IDs where Typer stays silent
+    var disableInTerminals = false      // skip terminal apps entirely
 
     static func load() -> TyperConfig {
         var cfg = TyperConfig()
@@ -77,6 +79,8 @@ struct TyperConfig {
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds
             case "debug_logging": cfg.debugLogging = value == "true"
+            case "disable_in_terminals": cfg.disableInTerminals = value == "true"
+            case "disabled_apps": cfg.disabledApps = Set(value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
             default: break
             }
         }
@@ -552,6 +556,16 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggleItem("Enabled", key: "enabled", value: cfg.enabled))
         menu.addItem(toggleItem("Completions", key: "completion_enabled", value: cfg.completionEnabled))
         menu.addItem(toggleItem("Typo correction", key: "typo_correction_enabled", value: cfg.typoEnabled))
+
+        // Per-app disable for the app currently being typed in.
+        let (curBundle, curName) = currentAppBundleAndName()
+        if !curBundle.isEmpty, curBundle != "no.bundle" {
+            let item = NSMenuItem(title: "Disable in \(curName)", action: #selector(toggleDisableCurrentApp), keyEquivalent: "")
+            item.state = cfg.disabledApps.contains(curBundle) ? .on : .off
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(toggleItem("Skip terminal apps", key: "disable_in_terminals", value: cfg.disableInTerminals))
         menu.addItem(.separator())
 
         let ctx = NSMenu()
@@ -562,6 +576,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: ""))
@@ -795,6 +810,54 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return "\(bundle)|\(name)"
     }
 
+    // Parse the "bundle|name" activeAppKey back into its parts.
+    func currentAppBundleAndName() -> (bundle: String, name: String) {
+        let parts = activeAppKey.split(separator: "|", maxSplits: 1).map(String.init)
+        return (parts.first ?? "", parts.count > 1 ? parts[1] : (parts.first ?? ""))
+    }
+
+    static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty",
+        "dev.warp.Warp-Stable", "net.kovidgoyal.kitty", "io.alacritty",
+        "com.github.wez.wezterm", "co.zeit.hyper", "org.tabby"
+    ]
+
+    // True when Typer should stay silent in the current app (per-app disable or a
+    // terminal when terminal-skip is on).
+    func isAppDisabled() -> Bool {
+        let (bundle, _) = currentAppBundleAndName()
+        if cfg.disabledApps.contains(bundle) { return true }
+        if cfg.disableInTerminals && TyperApp.terminalBundleIDs.contains(bundle) { return true }
+        return false
+    }
+
+    @objc func toggleDisableCurrentApp() {
+        let (bundle, _) = currentAppBundleAndName()
+        guard !bundle.isEmpty, bundle != "no.bundle" else { return }
+        if cfg.disabledApps.contains(bundle) { cfg.disabledApps.remove(bundle) } else { cfg.disabledApps.insert(bundle) }
+        writeConfig("disabled_apps", cfg.disabledApps.sorted().joined(separator: ","))
+        if isAppDisabled() { clearSuggestion() }
+        rebuildMenu()
+    }
+
+    @objc func resetData() {
+        let alert = NSAlert()
+        alert.messageText = "Reset all Typer data?"
+        alert.informativeText = "Clears your learned writing style and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        styleMemory.clear()
+        stats = TyperStats(); stats.save()
+        buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
+        cachedBackground = ""; lastTrailing = ""
+        clearSuggestion()
+        updateStatusTitle()
+        log("user reset all data")
+    }
+
     func syncActiveApp() {
         let key = currentAppKey()
         if key == activeAppKey { return }
@@ -936,6 +999,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func generate() {
         syncActiveApp()
+        if isAppDisabled() { clearSuggestion(); return }    // per-app / terminal disable
         // Single-flight: only one request may be in the helper at a time. Firing one
         // per keystroke (with ~400ms latency) backlogs the helper and every result
         // comes back stale — the cause of "nothing ever shows". If a request is in
@@ -1200,7 +1264,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return String(collected.joined(separator: "\n").suffix(limit))
     }
 
-    func clipboardText(limit: Int) -> String {
+    func clipboardText(limit: Int, relevantTo context: String) -> String {
         let pb = NSPasteboard.general
         // Skip clipboard content password managers mark concealed/transient — never
         // feed a copied password/secret into the prompt or logs.
@@ -1211,6 +1275,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let s = pb.string(forType: .string) else { return "" }
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard t.count >= 8 else { return "" }
+        // Relevance: only fold the clipboard into the prompt if it's a short snippet
+        // OR shares a meaningful word with what the user is currently writing. Stops
+        // unrelated copied blobs from steering completions.
+        if t.count > 60 {
+            let ctxWords = Set(context.lowercased().split { !$0.isLetter }.map(String.init).filter { $0.count >= 4 })
+            let shares = t.lowercased().split { !$0.isLetter }.map(String.init).contains { $0.count >= 4 && ctxWords.contains($0) }
+            guard shares else { return "" }
+        }
         return String(t.prefix(limit))
     }
 
@@ -1398,6 +1470,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let wantScreen = cfg.screenContextEnabled
         let wantClipboard = cfg.clipboardContextEnabled
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let recentText = String(buffer.suffix(300))   // for clipboard relevance
         backgroundQueue.async {
             var parts: [String] = []
             // Prefer clean AX text. Only fall back to (noisier) OCR when AX gives us
@@ -1413,7 +1486,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if o.count > 40 { parts.append(o) }
             }
             if wantClipboard {
-                let c = self.clipboardText(limit: 200)
+                let c = self.clipboardText(limit: 200, relevantTo: recentText)
                 if !c.isEmpty { parts.append("Clipboard: " + c) }
             }
             let bg = parts.joined(separator: "\n")

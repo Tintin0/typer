@@ -26,6 +26,11 @@ background_refresh_seconds = 4.0   # how often the background context is refresh
 # Typer always skips capture entirely while macOS secure input is active
 # (password fields, login window, sudo prompts), regardless of this setting.
 debug_logging = false
+
+# Where Typer stays silent. Use the menu (Disable in <app> / Skip terminal apps)
+# or set here. disabled_apps is a comma-separated list of bundle IDs.
+disable_in_terminals = false
+disabled_apps = ""
 # Note: caret placement still uses a screenshot fallback (with Screen Recording)
 # only when Accessibility/text-marker caret is unavailable; that is separate from
 # screen_context_enabled above.
