@@ -13,11 +13,13 @@ const rebuildBtn = document.getElementById("rebuild") as HTMLButtonElement;
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 let genToken = 0; // cancels an in-flight generation if the user rebuilds
 
-const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/:.-_&@#";
+const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/:.-_&@#$%*+=<>";
+const FRONTIER = 5; // how many unsettled glyphs flicker ahead of the locked text
 
-// "diffusion" text reveal: the line churns through random glyphs and resolves
-// left-to-right into the real command, matching the cubes denoising into place.
-function generate(text: string, dur = 1500): Promise<void> {
+// The command is "spat out" of the indicator: it grows left-to-right from
+// nothing, with a few flickering glyphs riding the frontier (flowy, terminal-ish)
+// that settle into the real characters. The text is born, not unmasked.
+function generate(text: string, dur = 1700): Promise<void> {
   const token = ++genToken;
   cmd.classList.remove("lit");
   cmdLine.classList.add("typing");
@@ -36,8 +38,10 @@ function generate(text: string, dur = 1500): Promise<void> {
       let out = "";
       for (let i = 0; i < text.length; i++) {
         const ch = text[i];
-        if (i < locked || ch === " ") out += ch;
-        else out += GLYPHS[(Math.random() * GLYPHS.length) | 0];
+        if (i < locked || ch === " ") out += ch; // settled
+        else if (i < locked + FRONTIER)
+          out += GLYPHS[(Math.random() * GLYPHS.length) | 0]; // flickering frontier
+        else break; // not emitted yet -> the line grows out of nothing
       }
       cmdLine.textContent = out;
       if (p < 1) {
@@ -60,7 +64,7 @@ const scene = initScene(
     reveal.hidden = false;
     requestAnimationFrame(() => {
       reveal.classList.add("show");
-      generate(CMD);
+      generate(CMD).then(() => scene?.doneGenerating());
     });
   },
   // onRebuilt: the word flew back together

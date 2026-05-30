@@ -16,11 +16,17 @@ const GRAVITY = -17;
 const RESTITUTION = 0.4;
 const FRICTION = 0.74;
 
-type Phase = "idle" | "shatter" | "gather" | "fallen" | "rebuild";
+type Phase = "idle" | "shatter" | "loader" | "fallen" | "rebuild";
+
+const LOADER_N = 18; // cubes in the typing indicator
+const LOADER_SPACING = 0.17;
+const LOADER_Y = 0.95; // sits above the centred text block
+const WAVE_SPEED = 7;
 
 export interface Scene3D {
   shatter(): void;
   rebuild(): void;
+  doneGenerating(): void; // text finished -> dissolve the indicator
   dispose(): void;
 }
 
@@ -86,9 +92,8 @@ export function initScene(
   const quat = new Float32Array(count * 4);
   const angvel = new Float32Array(count * 3);
   const sc = new Float32Array(count).fill(1); // per-cube scale
-  const builder = new Uint8Array(count); // cubes that rise to "generate" the panel
-  const gStart = new Float32Array(count * 3); // gather start (floor) pos
-  const gTarget = new Float32Array(count * 3); // gather target (cloud) pos
+  const gStart = new Float32Array(count * 3); // rise start (floor) pos
+  const loaderIdx: number[] = []; // the indicator cubes, left-to-right
 
   const tmpQ = new THREE.Quaternion();
   const tmpE = new THREE.Euler();
@@ -157,6 +162,69 @@ export function initScene(
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(mesh);
 
+  // --- background streamers: faded ribbons drifting in a flowy field --------
+  const NSTREAM = 16;
+  const SEG = 44;
+  const streamGroup = new THREE.Group();
+  streamGroup.renderOrder = -1;
+  scene.add(streamGroup);
+  interface Streamer {
+    geom: THREE.BufferGeometry;
+    arr: Float32Array;
+    baseY: number;
+    baseZ: number;
+    amp: number;
+    freq: number;
+    speed: number;
+    phase: number;
+    drift: number;
+    spanX: number;
+  }
+  const streamers: Streamer[] = [];
+  for (let i = 0; i < NSTREAM; i++) {
+    const arr = new Float32Array(SEG * 3);
+    const g = new THREE.BufferGeometry();
+    const a = new THREE.BufferAttribute(arr, 3);
+    a.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute("position", a);
+    const col = new THREE.Color().setHSL(0.55 + (i % 5) * 0.03, 0.5, 0.5);
+    const lmat = new THREE.LineBasicMaterial({
+      color: col,
+      transparent: true,
+      opacity: 0.12,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const line = new THREE.Line(g, lmat);
+    line.frustumCulled = false;
+    streamGroup.add(line);
+    streamers.push({
+      geom: g,
+      arr,
+      baseY: ((i / (NSTREAM - 1)) - 0.5) * 11 + (Math.random() - 0.5) * 1.2,
+      baseZ: -4 - Math.random() * 6,
+      amp: 0.6 + Math.random() * 1.6,
+      freq: 1 + Math.random() * 2.2,
+      speed: 0.18 + Math.random() * 0.5,
+      phase: Math.random() * Math.PI * 2,
+      drift: 0.08 + Math.random() * 0.22,
+      spanX: 16 + Math.random() * 10,
+    });
+  }
+  function updateStreamers(time: number) {
+    for (const s of streamers) {
+      for (let j = 0; j < SEG; j++) {
+        const t = j / (SEG - 1);
+        s.arr[j * 3] = (t - 0.5) * s.spanX + Math.sin(time * s.drift + s.phase) * 2.2;
+        s.arr[j * 3 + 1] =
+          s.baseY + Math.sin(t * Math.PI * s.freq + time * s.speed + s.phase) * s.amp;
+        s.arr[j * 3 + 2] = s.baseZ + Math.cos(t * Math.PI * 1.3 + time * 0.15) * 1.2;
+      }
+      s.geom.attributes.position.needsUpdate = true;
+    }
+  }
+
   const dummy = new THREE.Object3D();
   const cubeScale = new THREE.Vector3(1, 1, 1);
 
@@ -194,9 +262,10 @@ export function initScene(
   let shakeT = 0;
   let nextShake = 1.0;
   let fallTimer = 0;
-  let gatherT = 0;
+  let loaderT = 0;
+  let dissolving = false;
+  let dissolveT = 0;
   let rebuildT = 0;
-  const GATHER_DUR = 2.0;
   const rebuildFrom = new Float32Array(count * 3);
   const rebuildFromQ = new Float32Array(count * 4);
   const rebuildFromS = new Float32Array(count);
@@ -247,26 +316,16 @@ export function initScene(
     fallTimer = 0;
   }
 
-  // a horizontal cloud region (world units) where the "generator" cubes gather,
-  // sitting behind the centered text block
-  const cloudW = 5.4;
-  const cloudH = 2.6;
-
-  function initGather() {
-    // pick a spread-out subset of fallen cubes to rise and diffuse
-    const want = Math.min(count, 1400);
-    const stride = Math.max(1, Math.floor(count / want));
-    for (let i = 0; i < count; i++) {
-      builder[i] = i % stride === 0 ? 1 : 0;
-      if (builder[i]) {
-        const ix = i * 3;
-        gStart[ix] = pos[ix];
-        gStart[ix + 1] = pos[ix + 1];
-        gStart[ix + 2] = pos[ix + 2];
-        gTarget[ix] = (Math.random() - 0.5) * cloudW;
-        gTarget[ix + 1] = (Math.random() - 0.5) * cloudH;
-        gTarget[ix + 2] = -0.4 + (Math.random() - 0.5) * 0.6;
-      }
+  function initLoader() {
+    // pick a few spread-out fallen cubes to rise into a left-to-right indicator
+    loaderIdx.length = 0;
+    const stride = Math.max(1, Math.floor(count / LOADER_N));
+    for (let k = 0; k < LOADER_N; k++) {
+      const i = Math.min(count - 1, k * stride);
+      loaderIdx.push(i);
+      gStart[i * 3] = pos[i * 3];
+      gStart[i * 3 + 1] = pos[i * 3 + 1];
+      gStart[i * 3 + 2] = pos[i * 3 + 2];
     }
   }
 
@@ -292,6 +351,7 @@ export function initScene(
     raf = requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
     mat.uniforms.uTime.value += dt;
+    updateStreamers(mat.uniforms.uTime.value);
 
     if (phase === "idle") {
       idleT += dt;
@@ -362,29 +422,36 @@ export function initScene(
       fallTimer += dt;
       mat.uniforms.uBright.value = Math.max(0.5, 1 - fallTimer * 0.22);
       if (settled > count * 0.5 || fallTimer > 1.9) {
-        initGather();
-        onReveal(); // text "generates" while the cubes diffuse in
-        phase = "gather";
-        gatherT = 0;
+        initLoader();
+        onReveal(); // text starts streaming out of the indicator
+        phase = "loader";
+        loaderT = 0;
+        dissolving = false;
+        dissolveT = 0;
       }
-    } else if (phase === "gather") {
-      gatherT += dt;
-      const gt = Math.min(1, gatherT / GATHER_DUR);
-      const e = 1 - Math.pow(1 - gt, 3); // easeOutCubic -> converge
-      const noise = (1 - gt) * (1 - gt) * 0.7; // decaying diffusion jitter
-      mat.uniforms.uBright.value = 0.6 + gt * 0.5;
-      for (let i = 0; i < count; i++) {
-        if (!builder[i]) continue;
+    } else if (phase === "loader") {
+      loaderT += dt;
+      mat.uniforms.uBright.value = 1;
+      const rise = smoothstep(0, 0.55, loaderT); // diffuse up into the row
+      const noise = (1 - rise) * (1 - rise) * 0.5;
+      if (dissolving) dissolveT += dt;
+      const dis = dissolving ? smoothstep(0, 0.4, dissolveT) : 0;
+      for (let k = 0; k < loaderIdx.length; k++) {
+        const i = loaderIdx[k];
         const ix = i * 3;
-        const x = gStart[ix] + (gTarget[ix] - gStart[ix]) * e + (Math.random() - 0.5) * noise;
-        const y = gStart[ix + 1] + (gTarget[ix + 1] - gStart[ix + 1]) * e + (Math.random() - 0.5) * noise;
-        const z = gStart[ix + 2] + (gTarget[ix + 2] - gStart[ix + 2]) * e + (Math.random() - 0.5) * noise;
-        // settle orientation toward rest, then dissolve (shrink) as it locks in
+        const tx = (k - (LOADER_N - 1) / 2) * LOADER_SPACING;
+        const ph = loaderT * WAVE_SPEED - k * 0.55;
+        const wave = 0.5 + 0.5 * Math.sin(ph); // 0..1 travelling wave (frames)
+        const ty = LOADER_Y + Math.sin(ph) * 0.1 * rise;
+        const x = gStart[ix] + (tx - gStart[ix]) * rise + (Math.random() - 0.5) * noise;
+        const y = gStart[ix + 1] + (ty - gStart[ix + 1]) * rise + (Math.random() - 0.5) * noise;
+        const z = gStart[ix + 2] + (0 - gStart[ix + 2]) * rise + (Math.random() - 0.5) * noise;
+        // pulse the cubes with the wave once risen; shrink away on dissolve
+        const pulse = 0.55 + 0.55 * wave;
+        sc[i] = (1 - rise + rise * pulse) * (1 - dis);
         qA.set(quat[i * 4], quat[i * 4 + 1], quat[i * 4 + 2], quat[i * 4 + 3]);
         qB.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
-        qA.slerp(qB, e);
-        sc[i] = 1 - smoothstep(0.62, 1.0, gt);
-        // persist so a later rebuild starts from the real current state
+        qA.slerp(qB, rise);
         pos[ix] = x;
         pos[ix + 1] = y;
         pos[ix + 2] = z;
@@ -395,7 +462,7 @@ export function initScene(
         writeInstance(i, x, y, z, qA);
       }
       mesh.instanceMatrix.needsUpdate = true;
-      if (gt >= 1) phase = "fallen";
+      if (dissolving && dissolveT > 0.45) phase = "fallen";
     } else if (phase === "rebuild") {
       rebuildT = Math.min(1, rebuildT + dt * 1.3);
       const e = 1 - Math.pow(1 - rebuildT, 3);
@@ -427,6 +494,7 @@ export function initScene(
   }
 
   if (reduce) {
+    updateStreamers(0);
     renderer.render(scene, camera);
     onReveal();
   } else {
@@ -436,6 +504,12 @@ export function initScene(
   return {
     shatter: startShatter,
     rebuild: startRebuild,
+    doneGenerating() {
+      if (phase === "loader" && !dissolving) {
+        dissolving = true;
+        dissolveT = 0;
+      }
+    },
     dispose() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
