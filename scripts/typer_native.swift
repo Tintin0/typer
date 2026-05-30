@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
 import IOKit.ps
+import NaturalLanguage
 import ScreenCaptureKit
 import Vision
 
@@ -92,6 +93,11 @@ struct TyperConfig {
     // per caret update is very battery-heavy (it ran on the Neural Engine every ~1.2s
     // while typing in a terminal). Native and Electron/WebKit apps don't need it.
     var screenshotCaretEnabled = false
+    // Ambient "topic memory": periodically OCR the focused window, distill the salient
+    // entities/topics (not raw text), and resurface them later only when you type about
+    // one. Off by default (needs Screen Recording). topic_capture_seconds is the period.
+    var topicMemoryEnabled = false
+    var topicCaptureSeconds = 180.0
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
     var debugLogging = false            // when true, logs include typed text/snippets
@@ -125,6 +131,8 @@ struct TyperConfig {
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
             case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = value == "true"
+            case "topic_memory_enabled": cfg.topicMemoryEnabled = value == "true"
+            case "topic_capture_seconds": cfg.topicCaptureSeconds = Double(value) ?? cfg.topicCaptureSeconds
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds
             case "debug_logging": cfg.debugLogging = value == "true"
             case "disable_in_terminals": cfg.disableInTerminals = value == "true"
@@ -506,6 +514,152 @@ final class StyleMemory {
     }
 }
 
+// One distilled thing the user looked at on screen: the salient names/keywords plus a
+// short snippet to resurface, NOT the raw page text.
+struct TopicEntry: Codable {
+    let at: Double          // epoch seconds
+    let app: String
+    let title: String
+    let keys: [String]      // lowercased match keys (distinctive entity tokens)
+    let note: String        // short human-readable snippet to fold back into a prompt
+}
+
+// Ambient topic memory: a small, on-device, distilled record of what the user has
+// recently viewed (periodic OCR → entity extraction). Resurfaced into a prompt only
+// when the user later types about one of the stored entities. Capped, 0600, clearable.
+final class TopicMemory {
+    private let url: URL
+    private let maxEntries = 60
+    private let queue = DispatchQueue(label: "typer.topics", qos: .utility)
+    private let lock = NSLock()
+    private var cached: [TopicEntry]?
+
+    init() {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/typer")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        url = dir.appendingPathComponent("topics.json")
+    }
+
+    private func entries() -> [TopicEntry] {
+        lock.lock(); defer { lock.unlock() }
+        if cached == nil {
+            cached = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([TopicEntry].self, from: $0) } ?? []
+        }
+        return cached!
+    }
+
+    func record(_ e: TopicEntry) {
+        guard !e.keys.isEmpty else { return }
+        lock.lock()
+        var all = cached ?? (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([TopicEntry].self, from: $0) } ?? []
+        // Replace any prior capture of the same view (same app + title) so we keep the
+        // freshest snapshot rather than piling up duplicates of a page left open.
+        all.removeAll { $0.app == e.app && $0.title == e.title }
+        all.append(e)
+        if all.count > maxEntries { all.removeFirst(all.count - maxEntries) }
+        cached = all
+        lock.unlock()
+        persist(all)
+    }
+
+    // The note for the most recent entry whose keys appear in `text`, or nil. This is
+    // the "only when there's a clear entity match" gate.
+    func relevant(to text: String) -> String? {
+        let hay = " " + text.lowercased() + " "
+        for e in entries().reversed() {
+            if e.keys.contains(where: { hay.contains($0) }) { return e.note }
+        }
+        return nil
+    }
+
+    func count() -> Int { entries().count }
+
+    func clear() {
+        lock.lock(); cached = []; lock.unlock()
+        queue.async { try? FileManager.default.removeItem(at: self.url) }
+    }
+
+    private func persist(_ all: [TopicEntry]) {
+        queue.async {
+            guard let d = try? JSONEncoder().encode(all) else { return }
+            try? d.write(to: self.url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
+        }
+    }
+}
+
+// Common/UI words that slip past entity + noun extraction and would cause spurious
+// "you read about X" matches. Small on purpose.
+private let topicStopWords: Set<String> = [
+    "the","and","for","with","this","that","your","you","from","are","was","were","has",
+    "have","had","will","would","can","could","more","most","here","there","what","when",
+    "where","which","their","them","they","our","out","about","into","over","than","then",
+    "review","reviews","home","page","menu","sign","search","login","settings","help",
+    "terms","privacy","cookie","cookies","accept","share","follow","subscribe","news",
+    "available","rated","support","click","button","close","open","loading",
+]
+
+// Distill OCR'd screen text + a window title into (match keys, resurfacing note) using
+// Apple's on-device NaturalLanguage. Keys are the distinctive things the user is likely
+// to mention later: named-entity tokens (brands/products/people/places) plus repeated
+// content nouns (the topic/category). The note is the title plus the most informative
+// sentence or two — what gets folded back into a prompt when a key is later typed.
+func distillTopics(text raw: String, title rawTitle: String) -> (keys: [String], note: String) {
+    let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = raw.replacingOccurrences(of: "\r", with: "\n")
+    guard text.count >= 60 || title.count >= 6 else { return ([], "") }
+
+    var keys = Set<String>()
+    var phrases = Set<String>()   // entity phrases, for note sentence selection
+
+    // 1) Named entities (people / places / orgs / products), joined.
+    let nt = NLTagger(tagSchemes: [.nameType]); nt.string = text
+    nt.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType,
+                     options: [.omitWhitespace, .omitPunctuation, .joinNames]) { tag, range in
+        if let tag, [.personalName, .placeName, .organizationName].contains(tag) {
+            let s = String(text[range]).trimmingCharacters(in: .whitespaces)
+            if s.count >= 3, s.count <= 40 {
+                phrases.insert(s)
+                for tok in s.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) where tok.count >= 4 {
+                    let l = tok.lowercased(); if !topicStopWords.contains(l) { keys.insert(l) }
+                }
+                if s.contains(" "), s.count <= 24 { keys.insert(s.lowercased()) }
+            }
+        }
+        return keys.count < 30
+    }
+    // 2) Repeated content nouns — the topic/category words ("headphones", "mortgage").
+    var freq: [String: Int] = [:]
+    let lt = NLTagger(tagSchemes: [.lexicalClass]); lt.string = text
+    lt.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass,
+                     options: [.omitWhitespace, .omitPunctuation]) { tag, range in
+        if tag == .noun {
+            let l = String(text[range]).lowercased()
+            if l.count >= 4, !topicStopWords.contains(l) { freq[l, default: 0] += 1 }
+        }
+        return true
+    }
+    for (w, n) in freq where n >= 2 { keys.insert(w) }
+    if !title.isEmpty { phrases.insert(title) }
+    guard !keys.isEmpty else { return ([], "") }
+
+    // Note: title + up to two informative sentences that mention an entity.
+    let phraseLower = phrases.map { $0.lowercased() }
+    var sentences: [String] = []
+    let st = NLTokenizer(unit: .sentence); st.string = text
+    st.enumerateTokens(in: text.startIndex..<text.endIndex) { r, _ in
+        let s = text[r].trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.count >= 30, s.count <= 240, phraseLower.contains(where: { s.lowercased().contains($0) }) {
+            sentences.append(s)
+        }
+        return sentences.count < 2
+    }
+    var note = title.isEmpty ? "" : title
+    if !sentences.isEmpty { note += (note.isEmpty ? "" : " — ") + sentences.joined(separator: " ") }
+    return (Array(keys.prefix(24)), String(note.prefix(300)))
+}
+
 // Lightweight persisted acceptance stats — how often shown suggestions are taken
 // vs. typed past. Surfaced in the menu; foundation for tuning behavior over time.
 struct TyperStats: Codable {
@@ -602,6 +756,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // screen OCR + clipboard) is cached and refreshed off the hot path, never per
     // keystroke. Style memory personalizes regardless of app.
     let styleMemory = StyleMemory()
+    let topicMemory = TopicMemory()
+    var topicTimer: Timer?
+    var topicCapturing = false
     var cachedBackground = ""
     var backgroundRefreshedAt = Date.distantPast
     var backgroundKey = ""
@@ -620,14 +777,15 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log("initial app=\(activeAppKey)")
         client = LlamaClient(cfg: cfg)
         promptAccessibility()
-        if cfg.screenContextEnabled, !CGPreflightScreenCaptureAccess() {
-            // Triggers the one-time Screen Recording permission prompt. OCR context
+        if (cfg.screenContextEnabled || cfg.topicMemoryEnabled), !CGPreflightScreenCaptureAccess() {
+            // Triggers the one-time Screen Recording permission prompt. OCR/topic capture
             // simply stays empty until granted; everything else keeps working.
             CGRequestScreenCaptureAccess()
-            log("requested Screen Recording access (for OCR context)")
+            log("requested Screen Recording access (for screen capture)")
         }
         setupMenu()
         setupEventTap()
+        startTopicTimer()
         // Only spin up the model if inline completion is actually on (typo correction
         // is local-only). If it's off, the helper stays unspawned until it's enabled.
         if cfg.enabled, cfg.completionEnabled {
@@ -715,6 +873,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ctx.addItem(toggleItem("Clipboard", key: "clipboard_context_enabled", value: cfg.clipboardContextEnabled))
         ctx.addItem(toggleItem("Screen OCR (noisy)", key: "screen_context_enabled", value: cfg.screenContextEnabled))
         ctx.addItem(toggleItem("Screenshot caret (terminals; battery-heavy)", key: "screenshot_caret_enabled", value: cfg.screenshotCaretEnabled))
+        let topic = toggleItem("Remember what I read (\(topicMemory.count()))", key: "topic_memory_enabled", value: cfg.topicMemoryEnabled)
+        ctx.addItem(topic)
         ctx.addItem(toggleItem("Learn my style", key: "style_memory_enabled", value: cfg.styleMemoryEnabled))
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
@@ -764,6 +924,10 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = v
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
         case "battery_saver": cfg.batterySaver = v
+        case "topic_memory_enabled":
+            cfg.topicMemoryEnabled = v
+            if v, !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+            startTopicTimer()
         default: break
         }
         writeConfig(key, v ? "true" : "false")
@@ -991,13 +1155,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func resetData() {
         let alert = NSAlert()
         alert.messageText = "Reset all Typer data?"
-        alert.informativeText = "Clears your learned writing style and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
+        alert.informativeText = "Clears your learned writing style, remembered on-screen topics, and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         styleMemory.clear()
+        topicMemory.clear()
         stats = TyperStats(); stats.save()
         buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
         cachedBackground = ""; lastTrailing = ""
@@ -1466,8 +1631,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // `frontPID` is snapshotted on the main thread by the caller (NSWorkspace is
     // main-thread-affine). A class box carries the Task's result across the
     // semaphore so there's no write-after-return race on a local var.
-    final class CaptureBox { var value: (image: CGImage, frame: CGRect)? }
-    func captureFocusedWindow(frontPID: pid_t?) -> (image: CGImage, frame: CGRect)? {
+    final class CaptureBox { var value: (image: CGImage, frame: CGRect, title: String)? }
+    func captureFocusedWindow(frontPID: pid_t?) -> (image: CGImage, frame: CGRect, title: String)? {
         guard #available(macOS 14.0, *) else { return nil }
         let sem = DispatchSemaphore(value: 0)
         let box = CaptureBox()
@@ -1485,7 +1650,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             config.height = Int(win.frame.height)
             config.showsCursor = false
             if let img = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) {
-                box.value = (img, win.frame)
+                box.value = (img, win.frame, win.title ?? "")
             }
         }
         // Only read box.value if the Task actually finished (semaphore = happens-after).
@@ -1662,11 +1827,62 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // comes LAST so the base model continues it; style + background precede it to
     // bias tone and topic. Heavy background is only folded in when the field itself
     // is sparse (chat boxes), where it helps most and risks the least regression.
+    // Ambient topic capture: periodically OCR the focused window, distill its salient
+    // topics, and store them. Throttled by the timer (every topic_capture_seconds) and
+    // single-flighted, so it stays cheap.
+    func startTopicTimer() {
+        topicTimer?.invalidate(); topicTimer = nil
+        guard cfg.topicMemoryEnabled else { return }
+        let period = max(60, cfg.topicCaptureSeconds)
+        topicTimer = Timer.scheduledTimer(withTimeInterval: period, repeats: true) { [weak self] _ in self?.captureTopic() }
+        // One capture shortly after enabling/launch so it doesn't feel inert.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.captureTopic() }
+    }
+
+    func captureTopic() {
+        guard cfg.topicMemoryEnabled, !topicCapturing, cfg.enabled else { return }
+        if IsSecureEventInputEnabled() || isAppDisabled() { return }     // never capture secrets / disabled apps
+        // Topic memory is for content you read (sites, docs), not terminals — those are
+        // noisy (code/logs) and sensitive, so always skip them regardless of the
+        // terminal-completion setting.
+        if TyperApp.terminalBundleIDs.contains(currentAppBundleAndName().bundle) { return }
+        guard CGPreflightScreenCaptureAccess() else { return }
+        if powerSaving { return }                                        // skip the screenshot+OCR burst on battery saver
+        topicCapturing = true
+        let appKey = activeAppKey
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        backgroundQueue.async {
+            defer { DispatchQueue.main.async { self.topicCapturing = false } }
+            guard let cap = self.captureFocusedWindow(frontPID: frontPID), cap.image.width > 8 else { return }
+            let req = VNRecognizeTextRequest()
+            req.recognitionLevel = .accurate
+            req.usesLanguageCorrection = true
+            guard (try? VNImageRequestHandler(cgImage: cap.image, options: [:]).perform([req])) != nil,
+                  let obs = req.results else { return }
+            let text = obs.compactMap { o -> String? in
+                guard let c = o.topCandidates(1).first, c.confidence >= 0.4 else { return nil }
+                return c.string
+            }.joined(separator: "\n")
+            guard text.count >= 80 else { return }
+            let (keys, note) = distillTopics(text: text, title: cap.title)
+            guard !keys.isEmpty, !note.isEmpty else { return }
+            let appName = appKey.split(separator: "|").last.map(String.init) ?? appKey
+            self.topicMemory.record(TopicEntry(at: Date().timeIntervalSince1970, app: appName,
+                                               title: cap.title, keys: keys, note: note))
+            log("topic captured app=\(appName) keys=\(keys.count)")
+        }
+    }
+
     func assembledContext(immediate: String) -> String {
         var blocks: [String] = []
         if cfg.styleMemoryEnabled {
             let s = styleMemory.sample(maxChars: immediate.count < cfg.maxImmediateForBackground ? 300 : 140)
             if s.split(separator: " ").count >= 4 { blocks.append(s) }
+        }
+        // Resurface a recently-viewed topic ONLY when the user is now typing about it
+        // (a distinctive entity/keyword from it appears in their recent text).
+        if cfg.topicMemoryEnabled, let note = topicMemory.relevant(to: String(immediate.suffix(220))) {
+            blocks.append("(Earlier you read — \(note))")
         }
         if immediate.count < cfg.maxImmediateForBackground, !cachedBackground.isEmpty {
             blocks.append(String(cachedBackground.suffix(700)))

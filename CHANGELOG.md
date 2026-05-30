@@ -3,6 +3,24 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## topic memory — resurface what you were just reading
+
+A new opt-in context source. Every few minutes Typer OCRs the focused window (Apple
+Vision, on the Neural Engine — no extra model), distills the **salient topics** (named
+entities + repeated content nouns) and a short snippet via Apple's NaturalLanguage, and
+stores them locally. Later, when you start typing and mention one of those things, the
+snippet is folded into the prompt so it can help you recall it — e.g. read a product
+page, then tell a friend "those Sony headphones I saw…" and the details resurface.
+
+- **Distilled, not dumped.** It stores entities + a 1–2 sentence note, never the raw
+  screen text, and only injects it **when a distinctive keyword you read is actually in
+  what you're typing** (no influence otherwise).
+- **Cheap + private.** Capture is periodic (`topic_capture_seconds`, default 180, min
+  60), single-flighted, skipped on battery-saver, during secure input, in disabled
+  apps, and in **terminals** (noisy/sensitive). On-device; `topics.json` is `0600`;
+  cleared by Reset All Data. **Off by default** (needs Screen Recording). Toggle:
+  menu → Context sources → "Remember what I read".
+
 ## site — lazy-load Three.js on the landing page
 
 - `scene3d` (Three.js) is now a dynamic `import()` gated on WebGL + non-reduced-motion,

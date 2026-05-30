@@ -33,6 +33,13 @@ and a small GGUF model — no cloud, no account, no Apple Developer Program.
 - **Context-aware**: pulls in the surrounding text of the focused window and your
   recently copied text. (An optional screenshot-OCR context source exists but is
   **off by default** — it tended to be noisy.)
+- **Topic memory** (opt-in): every few minutes Typer can OCR the focused window (Apple
+  Vision, on-device), distill the **salient topics** — named entities + key nouns +
+  a short snippet — and store them locally. Later, when you type about one of those
+  things, the snippet is folded in so it can help you recall it (read a product page,
+  then mention it to a friend and the details resurface). It only injects when a
+  distinctive keyword you read appears in what you're typing — never raw screen text.
+  Off by default; needs Screen Recording; clearable; skips terminals/secure input.
 
 ### Keys
 
@@ -133,7 +140,8 @@ See [`config.example.toml`](config.example.toml) for all options, including:
 - `completion_enabled`, `typo_correction_enabled`
 - `max_completion_words`, `debounce_ms`, `min_context_chars`
 - the context toggles: `window_context_enabled`, `style_memory_enabled`,
-  `clipboard_context_enabled`, `screen_context_enabled`
+  `clipboard_context_enabled`, `screen_context_enabled`, `topic_memory_enabled`
+  (+ `topic_capture_seconds`)
 
 ### Sampling / prompt
 
