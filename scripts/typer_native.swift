@@ -280,7 +280,7 @@ final class SuggestionOverlay: NSPanel {
             frame.origin.y = min(max(frame.origin.y, v.minY), v.maxY - frame.height)
         }
         setFrame(frame, display: true)
-        orderFrontRegardless()
+        if !isVisible { orderFrontRegardless() }   // avoid a re-order flash on every update
     }
 }
 
@@ -374,6 +374,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     var completion: ActiveCompletion?   // the inline completion being typed into
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
+    var caretHeightFloor: CGFloat?      // smallest caret height seen this focus session
     // Screenshot-based caret cache for apps without AX caret geometry. We compute it
     // occasionally (it is slow) and extrapolate horizontally as the user types.
     var shotCaretPoint: NSPoint?
@@ -391,6 +392,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     // Single-flight generation: at most one request in the helper at a time.
     var requestInFlight = false
     var rerequestNeeded = false
+    var lastTrailing = ""               // text right after the caret (for repeat-drop)
     var acceptedWords = 0
     var shift = false
     var ctrl = false
@@ -638,10 +640,24 @@ final class TyperApp: NSObject, NSApplicationDelegate {
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
-            showCompletionRemainder()
+            // Anti-flicker: the caret advanced by exactly the width of what was typed,
+            // so shift the cached point by that width instead of re-querying AX (which
+            // is laggy/jittery on fast typing). Re-anchoring happens on a fresh
+            // suggestion, not on every consumed character.
+            if let p = lastCaretPoint {
+                lastCaretPoint = NSPoint(x: p.x + ghostWidth(text), y: p.y)
+            }
+            showCompletionRemainder(reanchor: false)
             maybePrefetch()
         }
         return true
+    }
+
+    // Rendered width of `s` at the current ghost font (used to advance the overlay
+    // as the user types through a suggestion without re-reading the caret).
+    func ghostWidth(_ s: String) -> CGFloat {
+        let fs = min(max(lastCaretHeight * 0.62, 11), 30)
+        return (s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: fs)]).width
     }
 
     func setModifier(_ code: CGKeyCode, down: Bool) {
@@ -684,6 +700,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         shotCaretPoint = nil
         shotCaretApp = ""
         lastCaretPoint = nil
+        caretHeightFloor = nil      // fresh font-size measurement per focus session
         log("[\(activeAppKey)] restored buffer chars=\(buffer.count)")
     }
 
@@ -713,10 +730,12 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         CharacterSet.whitespacesAndNewlines.contains(s) || CharacterSet.punctuationCharacters.contains(s)
     }
 
-    func showCompletionRemainder() {
+    // reanchor=true re-reads the caret from AX (fresh suggestion / new line);
+    // reanchor=false reuses the cached point (already shifted by typed width) to
+    // avoid per-keystroke AX jitter.
+    func showCompletionRemainder(reanchor: Bool = true) {
         guard let comp = completion, !comp.done else { overlay.orderOut(nil); return }
-        let point = currentCaretPoint()
-        log("[\(activeAppKey)] SHOW remainder=\(comp.remainder.prefix(40).debugDescription) at=\(point) h=\(lastCaretHeight)")
+        let point = reanchor ? currentCaretPoint() : (lastCaretPoint ?? currentCaretPoint())
         overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight)
     }
 
@@ -814,6 +833,9 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         if axContext != nil, let after = axCtx?.after, isMidLine(after: after) {
             log("[\(activeAppKey)] generate skipped mid-line"); clearSuggestion(); return
         }
+        // Remember the text right after the caret so we can drop completions that
+        // just repeat it (e.g. at end of a line that already has following text).
+        lastTrailing = (axContext != nil ? (axCtx?.after ?? "") : "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard cfg.enabled, context.count >= cfg.minContextChars else { log("[\(activeAppKey)] generate skipped context=\(context.count) source=\(contextSource)"); return }
         let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("?") { log("[\(activeAppKey)] generate skipped question"); clearSuggestion(); return }
@@ -861,6 +883,13 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         guard let text, !text.isEmpty else {
             if completion == nil { overlay.orderOut(nil) }
             return
+        }
+        // Drop completions that just repeat the text after the caret (showing only a
+        // partial mid-word remainder would be confusing) — regenerate instead.
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if !lastTrailing.isEmpty, !trimmed.isEmpty,
+           lastTrailing.hasPrefix(String(trimmed.prefix(min(trimmed.count, 12)))) {
+            log("drop completion repeating trailing text"); completion = nil; overlay.orderOut(nil); return
         }
         let chars = Array(text)
         if buffer == requestedBuffer {
@@ -1464,6 +1493,17 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         return !first.isWhitespace
     }
 
+    // AX caret height is inconsistent — the same field yields a tight line-height on
+    // one read and the whole field height on the next (when the precise BoundsForRange
+    // branch fails). Since the real line height never grows within a focus session,
+    // floor to the smallest seen so the ghost font never jumps comically large.
+    func stabilizeCaretHeight(_ h: CGFloat) -> CGFloat {
+        guard h > 0 else { return h }
+        let f = min(h, caretHeightFloor ?? h)
+        caretHeightFloor = f
+        return f
+    }
+
     func caretPoint() -> NSPoint? {
         guard let element = focusedElement() else { return nil }
         // Native AppKit text views answer AXBoundsForRange. Chromium/Electron and
@@ -1472,7 +1512,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         guard let rect = boundsForSelectedRange(element: element) ?? textMarkerCaretRect(element: element) else { return nil }
         // rect is already in AppKit (bottom-left) coordinates. Return the caret's
         // right edge + bottom; the line height lets the overlay render inline.
-        lastCaretHeight = rect.height
+        lastCaretHeight = stabilizeCaretHeight(rect.height)
         let point = NSPoint(x: rect.maxX + 2, y: rect.minY)
         log("caret point=\(point) h=\(rect.height) from rect=\(rect)")
         return point

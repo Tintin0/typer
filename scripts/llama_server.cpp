@@ -256,13 +256,15 @@ public:
             llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)special_biases.size(), special_biases.data()));
         }
         // Inline autocomplete wants the high-probability continuation, not a
-        // creative tangent. Keep a mild repetition penalty, then a low
-        // temperature with tight top-k/top-p so suggestions track what the user
-        // most likely meant to type.
-        llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, 1.08f, 0.0f, 0.0f));
+        // creative tangent. Mild repetition penalty, then a tight nucleus:
+        // top-k + top-p, plus MIN-P (drop any token below ~6% of the top token's
+        // probability) which is the key lever against "random word" drift, then a
+        // low temperature. Tuned conservative after comparing against cotabby.
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, 1.05f, 0.0f, 0.0f));
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.90f, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.20f));
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.80f, 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.06f, 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.12f));
         llama_sampler_chain_add(chain, llama_sampler_init_dist(0xC07A));
         for (auto tok : prompt_tokens) llama_sampler_accept(chain, tok);
         return chain;

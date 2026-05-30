@@ -3,6 +3,23 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (later)
+
+Stability/quality pass informed by studying the open-source
+[cotabby](https://github.com/FuJacob/cotabby):
+
+- **Steadier suggestions.** Added a `min-p` sampler (drop tokens below ~6% of the
+  top token's probability) and lowered temperature/top-p — far less "random word"
+  drift. Sampling is now temp 0.12, top-k 20, top-p 0.80, min-p 0.06, penalty 1.05.
+- **Less flicker while typing.** As you type *through* a suggestion the overlay now
+  advances by the measured character width instead of re-reading the (jittery) caret
+  from Accessibility on every keystroke; the panel also stops re-ordering itself on
+  each update.
+- **No more giant ghost text.** The ghost font is floored to the smallest caret
+  height seen per field, so an occasional bad Accessibility reading can't blow it up.
+- **Drop repeated text.** Completions that just repeat what's already after your
+  cursor are discarded instead of shown as a confusing partial.
+
 ## Alpha — 2026-05-30
 
 ### What you'll notice (plain language)
