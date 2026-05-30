@@ -251,8 +251,17 @@ final class LlamaClient {
     // Sends one request and reads the streaming response. `onPartial` is invoked
     // (on this background thread) for each partial completion; the final suggestion
     // is returned.
-    func request(task: String, context: String, maxWords: Int, onPartial: ((String) -> Void)? = nil) throws -> HelperSuggestion? {
-        lock.lock(); defer { lock.unlock() }
+    // `lowPriority` (speculative prefetch) yields the helper instead of waiting: if a
+    // foreground request already holds the lock, the prefetch is skipped rather than
+    // queued, so it can never delay real input.
+    func request(task: String, context: String, maxWords: Int, lowPriority: Bool = false,
+                 onPartial: ((String) -> Void)? = nil) throws -> HelperSuggestion? {
+        if lowPriority {
+            guard lock.try() else { return nil }
+        } else {
+            lock.lock()
+        }
+        defer { lock.unlock() }
         try start()
         let req = HelperRequest(task: task, context: context, max_words: maxWords)
         dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
@@ -619,7 +628,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setupMenu()
         setupEventTap()
-        DispatchQueue.global(qos: .utility).async { self.client.warmUp() }
+        // Only spin up the model if inline completion is actually on (typo correction
+        // is local-only). If it's off, the helper stays unspawned until it's enabled.
+        if cfg.enabled, cfg.completionEnabled {
+            DispatchQueue.global(qos: .utility).async { self.client.warmUp() }
+        }
     }
 
     func promptAccessibility() {
@@ -1122,7 +1135,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let appKey = activeAppKey
         let maxWords = cfg.maxCompletionWords
         backgroundQueue.async {
-            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords)) ?? nil
+            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lowPriority: true)) ?? nil
             DispatchQueue.main.async {
                 self.prefetchInFlight = false
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
