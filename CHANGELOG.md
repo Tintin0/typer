@@ -3,6 +3,13 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (menu-bar icon)
+
+- **The menu-bar item is now a keyboard icon + count**, not a bare `t|N` text label. A
+  text-only `NSStatusItem` can collapse to zero width and render *invisibly* (you
+  couldn't see Typer in the bar at all). An SF Symbol image renders reliably and is
+  easy to spot. The accepted-completion count sits next to it; it shows ⏸ when paused.
+
 ## Alpha — 2026-05-30 (battery — the real fix)
 
 The big one: **the app was burning a full CPU core continuously, even when idle and
