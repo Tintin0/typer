@@ -19,6 +19,10 @@ Stability/quality pass informed by studying the open-source
   height seen per field, so an occasional bad Accessibility reading can't blow it up.
 - **Drop repeated text.** Completions that just repeat what's already after your
   cursor are discarded instead of shown as a confusing partial.
+- **No more stray HTML tags.** Markup like `<em>` or `</strong>` that the model
+  occasionally emits is now stripped from suggestions (a `<` in `a < b` is kept).
+- **New menu-bar badge.** The icon is now `t|N`, where N is your running count of
+  accepted completions (updates live; shows `⏸` when paused).
 
 ## Alpha — 2026-05-30
 

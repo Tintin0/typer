@@ -358,10 +358,11 @@ struct TyperStats: Codable {
     }
 }
 
-final class TyperApp: NSObject, NSApplicationDelegate {
+final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cfg = TyperConfig.load()
     var client: MLXClient!
     var statusItem: NSStatusItem!
+    let statusMenu = NSMenu()
     let overlay = SuggestionOverlay()
     var eventTap: CFMachPort?
     var buffer = ""
@@ -442,9 +443,21 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     func setupMenu() {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "⌨︎"
+        statusMenu.delegate = self           // repopulate fresh each time it opens
+        statusItem.menu = statusMenu
+        updateStatusTitle()
         rebuildMenu()
     }
+
+    // The menu-bar badge: a "t" followed by the running count of completions taken.
+    func updateStatusTitle() {
+        let badge = "t|\(stats.accepted)"
+        statusItem?.button?.title = cfg.enabled ? badge : badge + " ⏸"
+    }
+
+    // NSMenuDelegate: rebuild on open so stats/toggles are always current without
+    // rebuilding the whole menu on every suggestion.
+    func menuNeedsUpdate(_ menu: NSMenu) { if menu === statusMenu { rebuildMenu() } }
 
     func disabledItem(_ title: String) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: nil, keyEquivalent: ""); i.isEnabled = false; return i
@@ -459,7 +472,8 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     }
 
     func rebuildMenu() {
-        let menu = NSMenu()
+        let menu = statusMenu
+        menu.removeAllItems()
         let model = (MLXClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
         menu.addItem(disabledItem("Typer — \(cfg.enabled ? "on" : "paused")"))
         menu.addItem(disabledItem("Model: \(model)"))
@@ -487,8 +501,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Typer", action: #selector(quit), keyEquivalent: "q"))
         for item in menu.items where item.action != nil && item.target == nil { item.target = self }
-        statusItem.menu = menu
-        statusItem.button?.title = cfg.enabled ? "⌨︎" : "⌨︎⏸"
+        updateStatusTitle()
     }
 
     func configURL() -> URL {
@@ -1659,7 +1672,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     @objc func testGrammar() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: p, lineHeight: lastCaretHeight) }
     // Persist stats at most ~once/sec (called from the hot path on accept/ignore).
     func statsTouched() {
-        rebuildMenu()
+        updateStatusTitle()              // cheap live badge; full menu rebuilds on open
         if statsSaveScheduled { return }
         statsSaveScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in

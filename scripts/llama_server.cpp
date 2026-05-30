@@ -141,6 +141,23 @@ static std::string limit_words(const std::string &s, int max_words) {
     return trim(out);
 }
 
+// Remove HTML/XML-like tags (<em>, </strong>, <br/>, ...) that small models
+// sometimes emit in prose. A '<' that is not followed by a letter or '/' (e.g.
+// "a < b") is left intact, so code/math comparisons survive.
+static std::string strip_html_tags(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == '<' && i + 1 < s.size() &&
+            (s[i + 1] == '/' || std::isalpha((unsigned char)s[i + 1]))) {
+            size_t close = s.find('>', i + 1);
+            if (close != std::string::npos && close - i <= 40) { i = close + 1; continue; }
+        }
+        out += s[i++];
+    }
+    return out;
+}
+
 static std::string first_line_clean(std::string s) {
     auto cut_marker = [&](const std::string &m) {
         size_t p = s.find(m);
@@ -154,6 +171,7 @@ static std::string first_line_clean(std::string s) {
     cut_marker("<turn|>");
     cut_marker("<|turn>model");
     cut_marker("<|turn>user");
+    s = strip_html_tags(s);
     return trim(s);
 }
 
