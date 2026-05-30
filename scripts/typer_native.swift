@@ -450,8 +450,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var rerequestNeeded = false
     var lastTrailing = ""               // text right after the caret (for repeat-drop)
     var pasteboardBusy = false          // serialize clipboard save/paste/restore (typo fallback)
-    var suppressKeyDowns = 0            // ignore our own synthesized insertion keystrokes
-    var suppressExpiry = Date.distantPast
+    let syntheticMarker: Int64 = 0x747970_725f696e   // tag on our injected events ("typr_in")
     var acceptedWords = 0
     var shift = false
     var ctrl = false
@@ -651,10 +650,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return Unmanaged.passUnretained(event)
         }
         // Ignore the synthetic keystrokes WE injected to insert an accepted
-        // suggestion — otherwise they'd be re-processed as fresh user typing.
-        if type == .keyDown, suppressKeyDowns > 0 {
-            if Date() <= suppressExpiry { suppressKeyDowns -= 1; return Unmanaged.passUnretained(event) }
-            suppressKeyDowns = 0      // window expired; don't swallow a real keystroke
+        // suggestion. Matched by exact tag, so a fast real keystroke is never
+        // mistaken for ours (the count-based guard could swallow a quick second Tab,
+        // which skipped words).
+        if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker {
+            return Unmanaged.passUnretained(event)
         }
         syncActiveApp()
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
@@ -1529,8 +1529,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func insert(_ text: String) {
         let units = Array(text.replacingOccurrences(of: "\r", with: "").utf16)
         guard !units.isEmpty else { return }
-        suppressKeyDowns += 1
-        suppressExpiry = Date().addingTimeInterval(1.0)
         let src = CGEventSource(stateID: .hidSystemState)
         guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return }
@@ -1538,6 +1536,10 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: buf.baseAddress)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: buf.baseAddress)
         }
+        // Tag so we recognize (and ignore) our own injected events exactly — never by
+        // count/timing, which races a fast real keystroke into being swallowed.
+        down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+        up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
     }
