@@ -6,9 +6,11 @@ to follow it, press <kbd>Tab</kbd> to take a word, or <kbd>`</kbd> to take the
 whole thing. Everything runs locally with [llama.cpp](https://github.com/ggml-org/llama.cpp)
 and a small GGUF model — no cloud, no account, no Apple Developer Program.
 
-> **Status: alpha.** It works and feels good in native apps, but rough edges
-> remain (placement in some Electron/terminal apps, latency, the occasional odd
-> completion). Feedback and PRs welcome.
+🌐 **[typr.frgmt.xyz](https://typr.frgmt.xyz)** · 📓 [Changelog](CHANGELOG.md)
+
+> **Status: alpha.** It feels good in native and Electron/WebKit apps now;
+> terminals and custom-drawn editors still have approximate caret placement, and
+> quality depends on your model. Feedback and PRs welcome.
 
 ---
 
@@ -69,9 +71,9 @@ Then grant permissions and launch (see below).
 
 - **Accessibility → enable Typer** — *required.* This is how Typer reads your
   keystrokes and text context and inserts accepted suggestions.
-- **Screen Recording → enable Typer** — *optional.* Enables caret placement and
-  screen-context in apps that don't expose their cursor to Accessibility
-  (Electron apps, terminals). Everything else works without it.
+- **Screen Recording → enable Typer** — *optional.* Only needed for caret placement
+  in apps that expose no cursor at all (terminals, custom editors) and for the
+  off-by-default screen-OCR context. Native and Electron/WebKit apps don't need it.
 
 ```bash
 open ~/Applications/Typer.app
@@ -153,22 +155,23 @@ placement, and context gathering are in
 ```
   keystrokes ─▶ Swift app (CGEvent tap, Accessibility)
                   │  builds context: text before cursor + window text +
-                  │  clipboard + screen OCR + your style sample
+                  │  clipboard + your style sample
                   ▼
             typer-llama-server  (C++ / llama.cpp, persistent JSONL process)
-                  │  <bos> + context  ──▶  next-word continuation
+                  │  <bos> + context  ──▶  streams next-word continuation
                   ▼
             ghost overlay at the caret;  Tab / ` / type-through to accept
 ```
 
 - **Why `<bos>`:** Gemma is trained with a leading begin-of-sequence token; without
   it the model produces repetitive garbage. The helper always prepends it.
-- **Speed feel:** the model runs ~once per 5–7-word chunk, not per keystroke —
-  while you type *along* a suggestion nothing is regenerated, and the next chunk is
-  prefetched in the background.
-- **Caret placement:** uses Accessibility (`AXBoundsForRange`) where available
-  (native AppKit apps); falls back to a screenshot + OCR locator for apps that
-  don't expose a cursor (Electron, terminals).
+- **Speed feel:** completions **stream** in word-by-word, and the model runs ~once
+  per 5–7-word chunk (not per keystroke) — while you type *along* a suggestion
+  nothing is regenerated, and the next chunk is prefetched in the background.
+- **Caret placement:** Accessibility `AXBoundsForRange` in native AppKit apps; the
+  `AXTextMarker` API in Chromium/WebKit apps (Discord, Slack, VS Code, Chrome,
+  Safari); and a screenshot + OCR locator as a last resort for apps that expose no
+  cursor at all (terminals, custom editors).
 
 ---
 
@@ -199,9 +202,10 @@ local prompt.
 
 ## Limitations (alpha)
 
-- Caret placement in some Electron/terminal apps needs Screen Recording and is
-  approximate.
-- Warm latency is ~0.4s; the first suggestion after you pause can lag.
+- Caret placement in terminals / custom-drawn editors is approximate and needs
+  Screen Recording (native + Electron/WebKit apps are exact).
+- The model streams, but full warm generation is still ~0.4s; very fast typists may
+  see brief flicker as suggestions update.
 - Mid-word completions are suppressed (the small base model isn't reliable at them).
 - Quality depends heavily on the model you choose.
 
@@ -209,10 +213,10 @@ local prompt.
 
 - **No suggestions / `AX trusted=false` in the log** → grant Accessibility to
   Typer, then relaunch. After a rebuild, re-grant unless you set up stable signing.
-- **Suggestions appear at the bottom of the screen** → that app doesn't expose a
-  caret to Accessibility; enable Screen Recording for the OCR-based locator.
-- **Garbage completions** → try a different/base model; lower `temperature` is
-  already set in the helper.
+- **Suggestions appear at the bottom of the screen** → that app exposes no caret to
+  Accessibility (often a terminal); enable Screen Recording for the OCR-based locator.
+- **Garbage completions** → try a different / base model; the sampling temperature
+  is already conservative in the helper.
 - **Watch the log:** `tail -f ~/Library/Logs/Typer.log`
 
 ## License
