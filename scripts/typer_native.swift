@@ -13,16 +13,25 @@ let typerLogURL = FileManager.default.homeDirectoryForCurrentUser
 // snippets) are suppressed so the log is not a plaintext keystroke transcript.
 var debugLoggingEnabled = false
 
-func log(_ message: String) {
-    let line = "\(Date()) \(message)\n"
+// A single long-lived handle written on a serial queue, so logging never re-opens the
+// file or blocks the (often main-thread) caller — the old open/seek/write/close per
+// call ran several times per keystroke on the hot path.
+let typerLogQueue = DispatchQueue(label: "typer.log", qos: .utility)
+private let typerLogHandle: FileHandle? = {
     if !FileManager.default.fileExists(atPath: typerLogURL.path) {
         FileManager.default.createFile(atPath: typerLogURL.path, contents: nil,
                                        attributes: [.posixPermissions: 0o600])
     }
-    if let handle = try? FileHandle(forWritingTo: typerLogURL) {
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data(line.utf8))
+    let h = try? FileHandle(forWritingTo: typerLogURL)
+    _ = try? h?.seekToEnd()
+    return h
+}()
+
+func log(_ message: String) {
+    let line = "\(Date()) \(message)\n"
+    typerLogQueue.async {
+        guard let h = typerLogHandle else { return }
+        try? h.write(contentsOf: Data(line.utf8))
     }
 }
 
@@ -426,6 +435,10 @@ final class StyleMemory {
     private let url: URL
     private let maxBytes = 40_000
     private let queue = DispatchQueue(label: "typer.style", qos: .utility)
+    // In-RAM mirror of style.txt, guarded by `lock`. `sample()`/`sentenceCount()` run
+    // on the main thread on the generation hot path, so they must never touch disk.
+    private let lock = NSLock()
+    private var cached: String?
 
     init() {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -434,27 +447,36 @@ final class StyleMemory {
         url = dir.appendingPathComponent("style.txt")
     }
 
+    // Lazy-load the file once, then serve from RAM.
+    private func contents() -> String {
+        lock.lock(); defer { lock.unlock() }
+        if cached == nil { cached = (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
+        return cached!
+    }
+
     func record(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Only keep substantive, sentence-like writing — not stray words.
         guard t.split(separator: " ").count >= 4 else { return }
+        lock.lock()
+        var existing = cached ?? (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        // Dedupe: skip if this exact line is among the most recent entries (the
+        // same buffer is flushed on both app-switch and Return).
+        if existing.split(separator: "\n").suffix(8).map(String.init).contains(t) { lock.unlock(); return }
+        existing += "\n" + t
+        if existing.utf8.count > maxBytes { existing = String(existing.suffix(maxBytes / 2)) }
+        cached = existing
+        lock.unlock()
         queue.async {
-            var existing = (try? String(contentsOf: self.url, encoding: .utf8)) ?? ""
-            // Dedupe: skip if this exact line is among the most recent entries (the
-            // same buffer is flushed on both app-switch and Return).
-            let recent = existing.split(separator: "\n").suffix(8).map(String.init)
-            if recent.contains(t) { return }
-            existing += "\n" + t
-            if existing.utf8.count > self.maxBytes { existing = String(existing.suffix(self.maxBytes / 2)) }
             try? existing.write(to: self.url, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
         }
     }
 
     func sample(maxChars: Int) -> String {
-        guard maxChars > 0, let raw = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        guard maxChars > 0 else { return "" }
         // Most-recent writing is most representative of current voice.
-        let lines = raw.split(separator: "\n").map(String.init).reversed()
+        let lines = contents().split(separator: "\n").map(String.init).reversed()
         var out: [String] = []
         var budget = maxChars
         for line in lines {
@@ -466,11 +488,13 @@ final class StyleMemory {
     }
 
     func sentenceCount() -> Int {
-        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
-        return raw.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        contents().split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
     }
 
-    func clear() { queue.async { try? FileManager.default.removeItem(at: self.url) } }
+    func clear() {
+        lock.lock(); cached = ""; lock.unlock()
+        queue.async { try? FileManager.default.removeItem(at: self.url) }
+    }
 }
 
 // Lightweight persisted acceptance stats — how often shown suggestions are taken
@@ -1168,6 +1192,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let promptContext = assembledContext(immediate: context)
         let maxWords = cfg.maxCompletionWords
         dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
+        // Anchor (an AX caret read) only on the FIRST painted partial; the user hasn't
+        // typed since the request (guard below), so the caret can't have moved while
+        // the rest of the tokens stream in — reuse the cached point instead of reading
+        // AX per token.
+        var firstPartial = true
         DispatchQueue.global(qos: .userInitiated).async {
             // Live preview: paint partial completions as they stream in, but only
             // while the user hasn't typed since the request (else it's the final
@@ -1176,7 +1205,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async {
                     guard appKey == self.activeAppKey, self.buffer == reqBuffer, !partial.isEmpty else { return }
                     self.completion = ActiveCompletion(chars: Array(partial))
-                    self.showCompletionRemainder(animate: true)
+                    self.showCompletionRemainder(reanchor: firstPartial, animate: firstPartial)
+                    firstPartial = false
                 }
             }
             let sug = try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, onPartial: onPartial)
@@ -1307,7 +1337,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let word = lastWordFromBuffer(), let fix = correction(for: word) else { return false }
         active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
         stats.shown += 1; statsTouched()
-        rebuildMenu()
         // Inline at the caret line, same as completions.
         let point = currentCaretPoint()
         overlay.showTypo(original: word, replacement: fix, at: point, lineHeight: lastCaretHeight)
@@ -1650,7 +1679,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         replaceTypo(original: original, with: replacement)
         stats.accepted += 1; statsTouched()
         clearSuggestion()
-        rebuildMenu()
         return true
     }
 
@@ -1771,7 +1799,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let caretIdx = String.Index(utf16Offset: cut, in: value)
         let before = String(String(value[..<caretIdx]).suffix(limit))
         let after = String(String(value[caretIdx...]).prefix(limit))
-        log("[\(activeAppKey)] AX text context valueChars=\(value.count) cursorUtf16=\(range.location) before=\(before.count) after=\(after.count)")
+        dlog("[\(activeAppKey)] AX text context valueChars=\(value.count) cursorUtf16=\(range.location) before=\(before.count) after=\(after.count)")
         return AXContext(before: before, after: after)
     }
 
@@ -1807,7 +1835,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // right edge + bottom; the line height lets the overlay render inline.
         lastCaretHeight = stabilizeCaretHeight(rect.height)
         let point = NSPoint(x: rect.maxX + 2, y: rect.minY)
-        log("caret point=\(point) h=\(rect.height) from rect=\(rect)")
+        dlog("caret point=\(point) h=\(rect.height) from rect=\(rect)")
         return point
     }
 
@@ -1829,7 +1857,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard r.origin.x.isFinite, r.origin.y.isFinite, r.height >= 4, r.height <= 200, r.width <= 2000 else { return nil }
         if r.origin.x == 0 && r.origin.y == 0 { return nil }
         guard NSScreen.screens.contains(where: { $0.frame.intersects(r.insetBy(dx: -2, dy: -2)) }) else { return nil }
-        log("[\(activeAppKey)] caret via text marker rect=\(r)")
+        dlog("[\(activeAppKey)] caret via text marker rect=\(r)")
         return r
     }
 
@@ -1846,7 +1874,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
         let rect = axRectToAppKit(CGRect(origin: point, size: size))
         let fallback = NSPoint(x: rect.minX + 12, y: rect.maxY - 24)
-        log("fallback focused element point=\(fallback) ax=\(point) size=\(size) converted=\(rect)")
+        dlog("fallback focused element point=\(fallback) ax=\(point) size=\(size) converted=\(rect)")
         return fallback
     }
 
@@ -1881,7 +1909,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func boundsForSelectedRange(element: AXUIElement) -> CGRect? {
         var rangeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rangeValue = rangeRef else { log("AX selected range unavailable"); return nil }
+              let rangeValue = rangeRef else { dlog("AX selected range unavailable"); return nil }
         var range = CFRange(location: 0, length: 0)
         guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
 
@@ -1906,39 +1934,42 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 1. Active selection: highlight the selected glyphs directly.
         if range.length > 0, let r = caret(from: range, anchor: { $0 }) {
-            log("AX selected rect loc=\(range.location) len=\(range.length) rect=\(r)")
+            dlog("AX selected rect loc=\(range.location) len=\(range.length) rect=\(r)")
             return r
         }
         // 2. Zero-length caret: some apps return a valid thin caret rect here.
         if let r = caret(from: range, anchor: { CGRect(x: $0.minX, y: $0.minY, width: 1, height: $0.height) }) {
-            log("AX caret direct loc=\(range.location) rect=\(r)")
+            dlog("AX caret direct loc=\(range.location) rect=\(r)")
             return r
         }
         // 3. cursorRectIsFromPreviousCharacter: anchor to the end of the prior glyph.
         if range.location > 0,
            let r = caret(from: CFRange(location: range.location - 1, length: 1),
                          anchor: { CGRect(x: $0.maxX, y: $0.minY, width: 1, height: $0.height) }) {
-            log("AX caret inferred from prev loc=\(range.location) rect=\(r)")
+            dlog("AX caret inferred from prev loc=\(range.location) rect=\(r)")
             return r
         }
         // 4. Anchor to the start of the next glyph.
         if let r = caret(from: CFRange(location: range.location, length: 1),
                          anchor: { CGRect(x: $0.minX, y: $0.minY, width: 1, height: $0.height) }) {
-            log("AX caret inferred from next loc=\(range.location) rect=\(r)")
+            dlog("AX caret inferred from next loc=\(range.location) rect=\(r)")
             return r
         }
         // 5. beginningOfParagraphRect: walk back to the line/paragraph start so we
         //    at least land on the correct text line when the exact glyph fails.
+        // Cap the back-scan: each step is a synchronous AXBoundsForRange IPC round-trip,
+        // so a deep scan can stall the main thread. 40 glyphs is plenty to recover the
+        // current line; beyond that we fall back rather than block.
         var lineStart = range.location
-        while lineStart > 0 && lineStart > range.location - 400 {
+        while lineStart > 0 && lineStart > range.location - 40 {
             if let r = caret(from: CFRange(location: lineStart - 1, length: 1),
                              anchor: { CGRect(x: $0.maxX, y: $0.minY, width: 1, height: $0.height) }) {
-                log("AX caret from paragraph scan loc=\(lineStart) rect=\(r)")
+                dlog("AX caret from paragraph scan loc=\(lineStart) rect=\(r)")
                 return r
             }
             lineStart -= 1
         }
-        log("AX bounds unavailable for range loc=\(range.location) len=\(range.length)")
+        dlog("AX bounds unavailable for range loc=\(range.location) len=\(range.length)")
         return nil
     }
 
