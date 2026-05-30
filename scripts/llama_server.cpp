@@ -304,7 +304,11 @@ public:
         llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.06f, 1));
         llama_sampler_chain_add(chain, llama_sampler_init_temp(0.12f));
         llama_sampler_chain_add(chain, llama_sampler_init_dist(0xC07A));
-        for (auto tok : prompt_tokens) llama_sampler_accept(chain, tok);
+        // Only the penalties sampler is stateful, with penalty_last_n = 64, so only the
+        // last 64 prompt tokens can affect sampling. Replaying the whole (up to ~1024)
+        // prompt through accept() every request is wasted work.
+        size_t start = prompt_tokens.size() > 64 ? prompt_tokens.size() - 64 : 0;
+        for (size_t i = start; i < prompt_tokens.size(); ++i) llama_sampler_accept(chain, prompt_tokens[i]);
         return chain;
     }
 
@@ -391,25 +395,13 @@ public:
     }
 };
 
-static std::string prompt_complete(const std::string &context, int max_words) {
+static std::string prompt_complete(const std::string &context) {
     // Gemma is trained with a leading <bos>. Without it the base model emits
     // degenerate, repetitive garbage ("the the The", "your help with your help
     // with your"). tokenize() runs with parse_special=true, so the literal
     // "<bos>" string is mapped to the real BOS token id. This single token is
     // the difference between incoherent and coherent continuations.
     return "<bos>" + context;
-}
-
-static std::string prompt_typo(const std::string &context, const std::string &word) {
-    return "<bos><|turn>user\nCorrect this last word if misspelled. Output only correction or OK. Context: " + context + "\nLast word: " + word + "<turn|>\n<|turn>model\n<|channel>final\n";
-}
-
-static std::string last_word(const std::string &s) {
-    int i = (int)s.size() - 1;
-    while (i >= 0 && !std::isalnum((unsigned char)s[i]) && s[i] != '\'') i--;
-    int end = i + 1;
-    while (i >= 0 && (std::isalnum((unsigned char)s[i]) || s[i] == '\'')) i--;
-    return end > i + 1 ? s.substr(i + 1, end - i - 1) : "";
 }
 
 int main(int argc, char **argv) {
@@ -431,7 +423,7 @@ int main(int argc, char **argv) {
             const char *tmpl = llama_model_chat_template(engine.model, nullptr);
             std::cerr << "chat_template=" << (tmpl ? tmpl : "(null)") << std::endl;
             auto t0 = std::chrono::steady_clock::now();
-            std::string out = first_line_clean(engine.generate(prompt_complete("I was walking to the store when I realized", 7), 14));
+            std::string out = first_line_clean(engine.generate(prompt_complete("I was walking to the store when I realized"), 14));
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             std::cerr << "loaded; sample=" << out << " latency_ms=" << ms << std::endl;
             return 0;
@@ -440,78 +432,69 @@ int main(int argc, char **argv) {
         std::string line;
         while (std::getline(std::cin, line)) {
             try {
-                std::string task = json_get_string(line, "task");
                 std::string context = json_get_string(line, "context");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
                 if (context.size() > 1600) context = context.substr(context.size() - 1600);
 
-                if (task == "typo") {
-                    std::string word = last_word(context);
-                    std::string out = limit_words(first_line_clean(engine.generate(prompt_typo(context, word), 8)), 2);
-                    if (out.empty() || out == "OK" || out == word) {
-                        std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
-                    } else {
-                        std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"typo\",\"original\":\"" << json_escape(word) << "\",\"replacement\":\"" << json_escape(out) << "\"}}\n" << std::flush;
-                    }
-                } else {
-                    int max_tokens = std::max(8, std::min(18, max_words + 7));
-                    bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
-                    bool ctx_ends_alnum = !context.empty() && std::isalnum((unsigned char)context.back());
+                int max_tokens = std::max(8, std::min(18, max_words + 7));
+                bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
+                bool ctx_ends_alnum = !context.empty() && std::isalnum((unsigned char)context.back());
 
-                    // The model signals a word boundary itself: a leading-space token
-                    // ("jumps" -> " jumps") means "new word"; no leading space ("etion"
-                    // after "autocompl", "!") means "continue this word / punctuation".
-                    bool first_seen = false, lead_space = false, suppressed = false;
-                    std::string last_emitted;
+                // The model signals a word boundary itself: a leading-space token
+                // ("jumps" -> " jumps") means "new word"; no leading space ("etion"
+                // after "autocompl", "!") means "continue this word / punctuation".
+                bool first_seen = false, lead_space = false, suppressed = false;
+                std::string last_emitted;
 
-                    auto shape = [&](const std::string &full) -> std::string {
+                // `cleaned` is first_line_clean(full), computed once by the caller.
+                // remove_echo is O(context) per call, so run it only for the FINAL
+                // result (dropEcho=true), never for every streamed partial.
+                auto shape = [&](const std::string &cleaned, bool dropEcho) -> std::string {
+                    std::string s = dropEcho ? remove_echo(cleaned, context) : cleaned;
+                    size_t nl = s.find('\n'); if (nl != std::string::npos) s.resize(nl);
+                    s = limit_words(s, max_words);
+                    if (!s.empty() && !ctx_ends_space && lead_space) s = " " + s;
+                    return s;
+                };
+
+                // Stream partial completions token-by-token so the UI shows the
+                // first word almost immediately instead of waiting for all of them.
+                std::string raw = engine.generate(prompt_complete(context), max_tokens,
+                    [&](const std::string &full) -> bool {
                         std::string s = first_line_clean(full);
-                        s = remove_echo(s, context);
-                        size_t nl = s.find('\n'); if (nl != std::string::npos) s.resize(nl);
-                        s = limit_words(s, max_words);
-                        if (!s.empty() && !ctx_ends_space && lead_space) s = " " + s;
-                        return s;
-                    };
-
-                    // Stream partial completions token-by-token so the UI shows the
-                    // first word almost immediately instead of waiting for all of them.
-                    std::string raw = engine.generate(prompt_complete(context, max_words), max_tokens,
-                        [&](const std::string &full) -> bool {
-                            std::string s = first_line_clean(full);
-                            if (s.empty()) return true;
-                            if (!first_seen) {
-                                first_seen = true;
-                                lead_space = std::isspace((unsigned char)full[0]) != 0;
-                                // Early mid-word suppression: stop before flashing a
-                                // wrong subword continuation.
-                                if (ctx_ends_alnum && !lead_space && std::isalnum((unsigned char)s[0])) {
-                                    suppressed = true; return false;
-                                }
+                        if (s.empty()) return true;
+                        if (!first_seen) {
+                            first_seen = true;
+                            lead_space = std::isspace((unsigned char)full[0]) != 0;
+                            // Early mid-word suppression: stop before flashing a
+                            // wrong subword continuation.
+                            if (ctx_ends_alnum && !lead_space && std::isalnum((unsigned char)s[0])) {
+                                suppressed = true; return false;
                             }
-                            std::string shaped = utf8_safe(shape(full));
-                            if (!shaped.empty() && shaped != last_emitted) {
-                                last_emitted = shaped;
-                                std::cout << "{\"p\":\"" << json_escape(shaped) << "\"}\n" << std::flush;
-                            }
-                            int wc = 0; bool inw = false;
-                            for (char c : shaped) { if (std::isspace((unsigned char)c)) { if (inw) wc++; inw = false; } else inw = true; }
-                            if (inw) wc++;
-                            // Stop at enough words, or at a natural sentence end.
-                            char last = shaped.empty() ? 0 : shaped.back();
-                            if (wc >= 3 && (last == '.' || last == '!' || last == '?')) return false;
-                            return wc < max_words;
-                        });
+                        }
+                        std::string shaped = utf8_safe(shape(s, false));
+                        if (!shaped.empty() && shaped != last_emitted) {
+                            last_emitted = shaped;
+                            std::cout << "{\"p\":\"" << json_escape(shaped) << "\"}\n" << std::flush;
+                        }
+                        int wc = 0; bool inw = false;
+                        for (char c : shaped) { if (std::isspace((unsigned char)c)) { if (inw) wc++; inw = false; } else inw = true; }
+                        if (inw) wc++;
+                        // Stop at enough words, or at a natural sentence end.
+                        char last = shaped.empty() ? 0 : shaped.back();
+                        if (wc >= 3 && (last == '.' || last == '!' || last == '?')) return false;
+                        return wc < max_words;
+                    });
 
-                    std::string out;
-                    if (!suppressed) {
-                        out = shape(raw);
-                        if (looks_bad_completion(out)) out.clear();
-                    }
-                    if (out.empty()) {
-                        std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
-                    } else {
-                        std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\"" << json_escape(out) << "\"}}\n" << std::flush;
-                    }
+                std::string out;
+                if (!suppressed) {
+                    out = shape(first_line_clean(raw), true);
+                    if (looks_bad_completion(out)) out.clear();
+                }
+                if (out.empty()) {
+                    std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
+                } else {
+                    std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\"" << json_escape(out) << "\"}}\n" << std::flush;
                 }
             } catch (const std::exception &e) {
                 std::cout << "{\"ok\":false,\"error\":\"" << json_escape(e.what()) << "\",\"suggestion\":null}\n" << std::flush;
