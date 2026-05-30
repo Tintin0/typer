@@ -231,14 +231,89 @@ extension FileHandle {
     }
 }
 
+// Layer-based ghost renderer: SF system font, a soft trailing taper (the text fades
+// at its right edge), and a one-shot shimmer sweep + fade-in when a fresh suggestion
+// appears (but not while typing through it).
+final class GhostView: NSView {
+    private let textLayer = CATextLayer()
+    private let shimmer = CAGradientLayer()
+    private let shimmerMask = CATextLayer()
+    private let taper = CAGradientLayer()
+    private let inset: CGFloat = 3
+
+    override init(frame: NSRect) { super.init(frame: frame); build() }
+    required init?(coder: NSCoder) { super.init(coder: coder); build() }
+
+    private func build() {
+        wantsLayer = true
+        let root = CALayer()
+        layer = root
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        for tl in [textLayer, shimmerMask] {
+            tl.contentsScale = scale; tl.truncationMode = .none; tl.isWrapped = false; tl.alignmentMode = .left
+        }
+        root.addSublayer(textLayer)
+
+        shimmer.startPoint = CGPoint(x: 0, y: 0.5); shimmer.endPoint = CGPoint(x: 1, y: 0.5)
+        shimmer.colors = [NSColor.clear.cgColor, NSColor.white.withAlphaComponent(0.6).cgColor, NSColor.clear.cgColor]
+        shimmer.mask = shimmerMask
+        shimmer.isHidden = true
+        root.addSublayer(shimmer)
+
+        // Trailing taper: a gradient mask that softens the last ~20px of the ghost.
+        taper.startPoint = CGPoint(x: 0, y: 0.5); taper.endPoint = CGPoint(x: 1, y: 0.5)
+        taper.colors = [NSColor.white.cgColor, NSColor.white.cgColor, NSColor.white.withAlphaComponent(0.35).cgColor]
+        root.mask = taper
+    }
+
+    func render(_ attr: NSAttributedString, fontSize fs: CGFloat, taperWidth: CGFloat, shimmer doShimmer: Bool) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)   // no implicit anim on text/move
+        let h = ceil(attr.size().height)
+        let f = CGRect(x: inset, y: (bounds.height - h) / 2, width: max(0, bounds.width - inset), height: h)
+        textLayer.string = attr
+        textLayer.frame = f
+        taper.frame = bounds
+        let fadeStart = bounds.width > taperWidth ? (bounds.width - taperWidth) / bounds.width : 0.55
+        taper.locations = [0, NSNumber(value: Double(fadeStart)), 1.0]
+        CATransaction.commit()
+        if doShimmer { runShimmer(text: attr.string, fontSize: fs, frame: f) } else { shimmer.isHidden = true }
+    }
+
+    private func runShimmer(text: String, fontSize fs: CGFloat, frame f: CGRect) {
+        shimmer.isHidden = false
+        shimmer.frame = bounds
+        shimmerMask.string = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: fs), .foregroundColor: NSColor.white])
+        shimmerMask.frame = f
+        shimmer.locations = [1.0, 1.0, 1.0]   // settle: band swept off the right edge
+        let band = CABasicAnimation(keyPath: "locations")
+        band.fromValue = [-0.6, -0.3, 0.0]
+        band.toValue = [1.0, 1.3, 1.6]
+        band.duration = 0.6
+        band.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in self?.shimmer.isHidden = true }
+        shimmer.add(band, forKey: "shimmer")
+        CATransaction.commit()
+    }
+
+    func fadeIn() {
+        guard let root = layer else { return }
+        let group = CAAnimationGroup()
+        let op = CABasicAnimation(keyPath: "opacity"); op.fromValue = 0.0; op.toValue = 1.0
+        let mv = CABasicAnimation(keyPath: "transform.translation.y"); mv.fromValue = -2.0; mv.toValue = 0.0
+        group.animations = [op, mv]; group.duration = 0.14
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        root.add(group, forKey: "in")
+    }
+}
+
 final class SuggestionOverlay: NSPanel {
-    let label = NSTextField(labelWithString: "")
+    private let ghost = GhostView(frame: NSRect(x: 0, y: 0, width: 420, height: 38))
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 420, height: 38),
-                   styleMask: [.borderless, .nonactivatingPanel],
-                   backing: .buffered,
-                   defer: false)
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
@@ -246,29 +321,17 @@ final class SuggestionOverlay: NSPanel {
         level = .statusBar
         collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
         hidesOnDeactivate = false
-        label.frame = NSRect(x: 0, y: 0, width: 420, height: 38)
-        label.isBezeled = false
-        label.drawsBackground = false
-        label.backgroundColor = .clear
-        label.lineBreakMode = .byTruncatingTail
-        contentView = label
+        contentView = ghost
         orderOut(nil)
     }
 
-    // Match the app's text size from the caret line height so the ghost sits inline.
-    private func fontSize(for lineHeight: CGFloat) -> CGFloat {
-        min(max(lineHeight * 0.62, 11), 30)
-    }
+    private func fontSize(for lineHeight: CGFloat) -> CGFloat { min(max(lineHeight * 0.62, 11), 30) }
 
-    func showCompletion(_ text: String, at point: NSPoint, lineHeight: CGFloat) {
-        label.attributedStringValue = NSAttributedString(
-            string: text,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: fontSize(for: lineHeight)),
-                .foregroundColor: NSColor.labelColor.withAlphaComponent(0.5)
-            ]
-        )
-        placeInline(at: point, lineHeight: lineHeight)
+    func showCompletion(_ text: String, at point: NSPoint, lineHeight: CGFloat, animate: Bool) {
+        let fs = fontSize(for: lineHeight)
+        let attr = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: fs), .foregroundColor: NSColor.labelColor.withAlphaComponent(0.5)])
+        place(attr, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: animate)
     }
 
     func showTypo(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
@@ -277,43 +340,44 @@ final class SuggestionOverlay: NSPanel {
         s.append(NSAttributedString(string: original, attributes: [
             .font: NSFont.systemFont(ofSize: fs),
             .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)
-        ]))
+            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)]))
         s.append(NSAttributedString(string: " → " + replacement, attributes: [
             .font: NSFont.systemFont(ofSize: fs, weight: .semibold),
-            .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)
-        ]))
-        label.attributedStringValue = s
-        placeInline(at: point, lineHeight: lineHeight)
+            .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)]))
+        place(s, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
     }
 
     func showGrammar(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
-        label.attributedStringValue = NSAttributedString(string: replacement, attributes: [
-            .font: NSFont.systemFont(ofSize: fontSize(for: lineHeight), weight: .medium),
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: NSColor.systemYellow,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9)
-        ])
-        placeInline(at: point, lineHeight: lineHeight)
+        let fs = fontSize(for: lineHeight)
+        let attr = NSAttributedString(string: replacement, attributes: [
+            .font: NSFont.systemFont(ofSize: fs, weight: .medium),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9)])
+        place(attr, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
     }
 
-    // `point` is the caret's right edge (x) and bottom (y). The panel is exactly the
-    // caret line height, so the single-line label is vertically centered on the
-    // caret line — the suggestion renders inline with the user's text.
-    private func placeInline(at point: NSPoint, lineHeight: CGFloat) {
+    // `point` is the caret's right edge (x) and bottom (y). The panel is the caret
+    // line height, so the text is vertically centered on the caret line (inline).
+    private func place(_ attr: NSAttributedString, fontSize fs: CGFloat, at point: NSPoint, lineHeight: CGFloat, shimmer: Bool) {
+        let textW = ceil(attr.size().width)
+        let taperW: CGFloat = 20
+        let w = min(textW + 8, 760)
         let h = max(lineHeight, 14)
-        let w = min(max(label.intrinsicContentSize.width + 6, 30), 760)
-        let textH = label.intrinsicContentSize.height
-        // Center the text vertically within the caret-line-height panel.
-        label.frame = NSRect(x: 3, y: (h - textH) / 2, width: w - 6, height: textH)
         var frame = NSRect(x: point.x, y: point.y, width: w, height: h)
         if let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) ?? NSScreen.main {
             let v = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             frame.origin.x = min(max(frame.origin.x, v.minX), v.maxX - frame.width)
             frame.origin.y = min(max(frame.origin.y, v.minY), v.maxY - frame.height)
         }
+        let wasVisible = isVisible
         setFrame(frame, display: true)
-        if !isVisible { orderFrontRegardless() }   // avoid a re-order flash on every update
+        ghost.frame = NSRect(origin: .zero, size: frame.size)
+        // Shimmer only on a genuinely fresh appearance — never while streaming updates
+        // or shrinking as the user types through it.
+        ghost.render(attr, fontSize: fs, taperWidth: taperW, shimmer: shimmer && !wasVisible)
+        if !wasVisible {
+            ghost.fadeIn()
+            orderFrontRegardless()
+        }
     }
 }
 
@@ -912,10 +976,10 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // reanchor=true re-reads the caret from AX (fresh suggestion / new line);
     // reanchor=false reuses the cached point (already shifted by typed width) to
     // avoid per-keystroke AX jitter.
-    func showCompletionRemainder(reanchor: Bool = true) {
+    func showCompletionRemainder(reanchor: Bool = true, animate: Bool = false) {
         guard let comp = completion, !comp.done else { overlay.orderOut(nil); return }
         let point = reanchor ? currentCaretPoint() : (lastCaretPoint ?? currentCaretPoint())
-        overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight)
+        overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight, animate: animate)
     }
 
     // Our tap callback runs BEFORE the host app applies the keystroke, so reading the
@@ -1002,7 +1066,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         prefetched = nil
         prefetchKey = ""
         stats.shown += 1; statsTouched()   // a promoted prefetch is a shown suggestion
-        showCompletionRemainder()
+        showCompletionRemainder(animate: true)
         log("promoted prefetch")
         return true
     }
@@ -1055,7 +1119,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async {
                     guard appKey == self.activeAppKey, self.buffer == reqBuffer, !partial.isEmpty else { return }
                     self.completion = ActiveCompletion(chars: Array(partial))
-                    self.showCompletionRemainder()
+                    self.showCompletionRemainder(animate: true)
                 }
             } : { _ in }
             let sug = try? self.client.request(task: task, context: promptContext, maxWords: maxWords, onPartial: onPartial)
@@ -1117,7 +1181,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             scheduleGenerate(); return         // typed off the prediction
         }
         stats.shown += 1; statsTouched()
-        showCompletionRemainder()
+        showCompletionRemainder(animate: true)
         maybePrefetch()
     }
 
@@ -1550,7 +1614,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let text = sug.text, !text.isEmpty else { completion = nil; overlay.orderOut(nil); return }
             active = nil
             completion = ActiveCompletion(chars: Array(text))
-            showCompletionRemainder()
+            showCompletionRemainder(animate: true)
             maybePrefetch()
         case "typo":
             active = sug
@@ -1931,7 +1995,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
 
-    @objc func testCompletion() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showCompletion(" predicted words appear inline", at: p, lineHeight: lastCaretHeight) }
+    @objc func testCompletion() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showCompletion(" predicted words appear inline", at: p, lineHeight: lastCaretHeight, animate: true) }
     @objc func testTypo() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showTypo(original: "peopel", replacement: "people", at: p, lineHeight: lastCaretHeight) }
     @objc func testGrammar() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: p, lineHeight: lastCaretHeight) }
     // Count text we inserted on the user's behalf (Tab/backtick) — the "saved typing".
