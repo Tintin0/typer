@@ -362,8 +362,15 @@ public:
     std::string generate(const std::string &prompt, int max_tokens,
                          const std::function<bool(const std::string &)> &on_token = nullptr) {
         auto toks = tokenize(prompt, false);
-        if ((int)toks.size() + max_tokens + 8 > n_ctx) {
-            toks.erase(toks.begin(), toks.begin() + ((int)toks.size() + max_tokens + 8 - n_ctx));
+        int over = (int)toks.size() + max_tokens + 8 - n_ctx;
+        if (over > 0) {
+            // Front-truncate to fit the context window. Clamp so at least one token
+            // remains, and invalidate the KV prefix cache: after a front shift the
+            // cached cells map to different source tokens, so reusing them by value
+            // match would splice semantically stale content into the prompt.
+            int drop = std::min(over, (int)toks.size() - 1);
+            if (drop > 0) toks.erase(toks.begin(), toks.begin() + drop);
+            last_prompt_tokens.clear();
         }
         prepare_prompt(toks);
 

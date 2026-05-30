@@ -13,7 +13,7 @@ max_completion_words = 7      # length of each suggestion chunk
 min_context_chars = 6         # don't suggest until this much has been typed
 debounce_ms = 25              # delay before generating; low = snappier
 idle_reset_seconds = 20       # clear the buffer after this long with no typing
-temperature = 0.0             # (reserved; sampling is tuned in the helper)
+# (sampling — temperature/top-k/min-p — is tuned in scripts/llama_server.cpp)
 
 # Broader-context sources (all on-device). Set any to false to disable.
 window_context_enabled = true     # read surrounding text via Accessibility

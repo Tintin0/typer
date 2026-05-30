@@ -40,9 +40,7 @@ struct TyperConfig {
     var maxCompletionWords = 7
     var minContextChars = 6
     var debounceMs = 25   // low: the first suggestion should appear without stopping
-    var activeTypingWindowMs = 3000
     var idleResetSeconds = 20
-    var temperature = 0.0
     // Broader-context sources. All on-device. Each degrades gracefully if its data
     // is unavailable (e.g. AX-hostile apps, or Screen Recording not granted).
     var windowContextEnabled = true   // read surrounding text in the focused window via AX
@@ -72,9 +70,7 @@ struct TyperConfig {
             case "max_completion_words": cfg.maxCompletionWords = Int(value) ?? cfg.maxCompletionWords
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
             case "debounce_ms": cfg.debounceMs = Int(value) ?? cfg.debounceMs
-            case "active_typing_window_ms": cfg.activeTypingWindowMs = Int(value) ?? cfg.activeTypingWindowMs
             case "idle_reset_seconds": cfg.idleResetSeconds = Int(value) ?? cfg.idleResetSeconds
-            case "temperature": cfg.temperature = Double(value) ?? cfg.temperature
             case "window_context_enabled": cfg.windowContextEnabled = value == "true"
             case "style_memory_enabled": cfg.styleMemoryEnabled = value == "true"
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
@@ -737,14 +733,16 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
-            // Anti-flicker: the caret advanced by exactly the width of what was typed,
-            // so shift the cached point by that width instead of re-querying AX (which
-            // is laggy/jittery on fast typing). Re-anchoring happens on a fresh
-            // suggestion, not on every consumed character.
-            if let p = lastCaretPoint {
+            // Anti-flicker vs. anti-drift balance: within a word, shift the cached
+            // point by the measured width of what was typed (no AX read = no
+            // per-keystroke jitter). At a whitespace boundary, re-read the real AX
+            // caret — this corrects any accumulated width drift and naturally handles
+            // line-wrap (the word jumped to a new line), which the shift can't.
+            let atBoundary = text.unicodeScalars.contains { isWordSeparator($0) }
+            if !atBoundary, let p = lastCaretPoint {
                 lastCaretPoint = NSPoint(x: p.x + ghostWidth(text), y: p.y)
             }
-            showCompletionRemainder(reanchor: false)
+            showCompletionRemainder(reanchor: atBoundary)
             maybePrefetch()
         }
         return true
@@ -990,20 +988,31 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log("drop completion repeating trailing text"); completion = nil; overlay.orderOut(nil); return
         }
         let chars = Array(text)
+        // What did the user type since the request? Robust to the 4000-char cap
+        // front-truncating the buffer or an idle-reset clearing it: match on a
+        // trailing anchor of the request-time buffer instead of a full hasPrefix.
+        let typedSince: [Character]
         if buffer == requestedBuffer {
-            completion = ActiveCompletion(chars: chars)
-        } else if buffer.hasPrefix(requestedBuffer) {
-            let typedSince = Array(buffer.dropFirst(requestedBuffer.count))
-            guard typedSince.count < chars.count, Array(chars[0..<typedSince.count]) == typedSince else {
-                scheduleGenerate(); return     // diverged from the prediction
+            typedSince = []
+        } else {
+            let anchor = String(requestedBuffer.suffix(80))
+            if anchor.count >= 8, let r = buffer.range(of: anchor, options: .backwards) {
+                typedSince = Array(buffer[r.upperBound...])
+            } else if buffer.hasPrefix(requestedBuffer) {
+                typedSince = Array(buffer.dropFirst(requestedBuffer.count))
+            } else {
+                scheduleGenerate(); return     // genuinely diverged — start over
             }
+        }
+        if typedSince.isEmpty {
+            completion = ActiveCompletion(chars: chars)
+        } else if typedSince.count < chars.count, Array(chars[0..<typedSince.count]) == typedSince {
             var comp = ActiveCompletion(chars: chars); comp.consumed = typedSince.count
             completion = comp
         } else {
-            scheduleGenerate(); return         // buffer reset / deleted — start over
+            scheduleGenerate(); return         // typed off the prediction
         }
         stats.shown += 1; statsTouched()
-        rebuildMenu()
         showCompletionRemainder()
         maybePrefetch()
     }
@@ -1205,11 +1214,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // (the modern replacement for the now-unavailable CGWindowListCreateImage).
     // Returns the image plus the window's screen frame (Quartz, top-left global),
     // which is needed to map OCR coordinates back to the screen.
-    func captureFocusedWindow() -> (image: CGImage, frame: CGRect)? {
+    // `frontPID` is snapshotted on the main thread by the caller (NSWorkspace is
+    // main-thread-affine). A class box carries the Task's result across the
+    // semaphore so there's no write-after-return race on a local var.
+    final class CaptureBox { var value: (image: CGImage, frame: CGRect)? }
+    func captureFocusedWindow(frontPID: pid_t?) -> (image: CGImage, frame: CGRect)? {
         guard #available(macOS 14.0, *) else { return nil }
         let sem = DispatchSemaphore(value: 0)
-        var result: (CGImage, CGRect)?
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let box = CaptureBox()
         Task {
             defer { sem.signal() }
             guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
@@ -1224,16 +1236,16 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             config.height = Int(win.frame.height)
             config.showsCursor = false
             if let img = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) {
-                result = (img, win.frame)
+                box.value = (img, win.frame)
             }
         }
-        _ = sem.wait(timeout: .now() + 1.5)
-        return result
+        // Only read box.value if the Task actually finished (semaphore = happens-after).
+        return sem.wait(timeout: .now() + 1.5) == .success ? box.value : nil
     }
 
-    func screenOCR(limit: Int) -> String {
+    func screenOCR(limit: Int, frontPID: pid_t?) -> String {
         guard CGPreflightScreenCaptureAccess() else { return "" }
-        guard let cap = captureFocusedWindow(), cap.image.width > 8, cap.image.height > 8 else { return "" }
+        guard let cap = captureFocusedWindow(frontPID: frontPID), cap.image.width > 8, cap.image.height > 8 else { return "" }
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate          // far fewer "8nd"/"htttsngtab" misreads
         req.usesLanguageCorrection = true
@@ -1261,12 +1273,12 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // (Electron, terminals, custom editors). Captures the focused window, OCRs it,
     // finds where the user's most-recently-typed text ends on screen, and returns
     // the caret rect there. Slow (~150ms), so callers must throttle/cache it.
-    func screenshotCaretRect(needle: String) -> (rect: CGRect, charWidth: CGFloat)? {
+    func screenshotCaretRect(needle: String, frontPID: pid_t?) -> (rect: CGRect, charWidth: CGFloat)? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
-        // `needle` (the tail of typed text to find on screen) is snapshotted on the
-        // main thread by the caller — never read self.buffer here (off-main).
+        // `needle` and `frontPID` are snapshotted on the main thread by the caller —
+        // never read self.buffer / NSWorkspace here (off-main).
         guard needle.count >= 3 else { return nil }
-        guard let cap = captureFocusedWindow(), cap.image.width > 8 else { return nil }
+        guard let cap = captureFocusedWindow(frontPID: frontPID), cap.image.width > 8 else { return nil }
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = false
@@ -1333,8 +1345,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Snapshot everything off `self` ON THE MAIN THREAD; the background closure
         // must not touch self.buffer (concurrent String mutation = crash).
         let needle = String(String(buffer.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines).suffix(18)).lowercased()
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         backgroundQueue.async {
-            let res = self.screenshotCaretRect(needle: needle)
+            let res = self.screenshotCaretRect(needle: needle, frontPID: frontPID)
             DispatchQueue.main.async {
                 self.shotCaretComputing = false
                 guard appKey == self.activeAppKey, let res else { return }
@@ -1356,10 +1369,12 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fresh = Date().timeIntervalSince(backgroundRefreshedAt) < cfg.backgroundRefreshSeconds && key == backgroundKey
         if fresh || backgroundRefreshing { return }
         backgroundRefreshing = true
-        // Snapshot cfg flags on main (toggleSetting mutates cfg on main → race).
+        // Snapshot cfg flags + frontmost PID on main (cfg mutates on main; NSWorkspace
+        // is main-affine).
         let wantWindow = cfg.windowContextEnabled
         let wantScreen = cfg.screenContextEnabled
         let wantClipboard = cfg.clipboardContextEnabled
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         backgroundQueue.async {
             var parts: [String] = []
             // Prefer clean AX text. Only fall back to (noisier) OCR when AX gives us
@@ -1371,7 +1386,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if w.count > 40 { parts.append(w); windowChars = w.count }
             }
             if wantScreen, windowChars < 120 {
-                let o = self.screenOCR(limit: 600)
+                let o = self.screenOCR(limit: 600, frontPID: frontPID)
                 if o.count > 40 { parts.append(o) }
             }
             if wantClipboard {
@@ -1616,11 +1631,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // editing "the qu|ick fox". Inline continuation there would be wrong, so we
     // suppress it — matching Cotypist's mid-line completion behavior.
     func isMidLine(after: String) -> Bool {
-        guard let first = after.first else { return false }
-        if first == "\n" || first == "\r" { return false }
-        // A space then end-of-text is effectively line end; a word character
-        // immediately after the caret means we're inside existing text.
-        return !first.isWhitespace
+        // Suppress if ANY real text remains on the current line after the caret
+        // (not just the immediately-adjacent char) — completing into "hello| world"
+        // is as wrong as "the qu|ick". Trailing whitespace before a newline is fine.
+        let restOfLine = after.prefix { $0 != "\n" && $0 != "\r" }
+        return restOfLine.contains { !$0.isWhitespace }
     }
 
     // AX caret height is inconsistent — the same field yields a tight line-height on
