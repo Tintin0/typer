@@ -162,15 +162,11 @@ export function initScene(
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(mesh);
 
-  // --- background streamers: faded ribbons drifting in a flowy field --------
+  // --- background streamers: faded chains of small cubes drifting in a flow --
   const NSTREAM = 16;
-  const SEG = 44;
-  const streamGroup = new THREE.Group();
-  streamGroup.renderOrder = -1;
-  scene.add(streamGroup);
+  const SEG = 40;
+  const SCOUNT = NSTREAM * SEG;
   interface Streamer {
-    geom: THREE.BufferGeometry;
-    arr: Float32Array;
     baseY: number;
     baseZ: number;
     amp: number;
@@ -179,30 +175,12 @@ export function initScene(
     phase: number;
     drift: number;
     spanX: number;
+    spin: number;
   }
   const streamers: Streamer[] = [];
   for (let i = 0; i < NSTREAM; i++) {
-    const arr = new Float32Array(SEG * 3);
-    const g = new THREE.BufferGeometry();
-    const a = new THREE.BufferAttribute(arr, 3);
-    a.setUsage(THREE.DynamicDrawUsage);
-    g.setAttribute("position", a);
-    const col = new THREE.Color().setHSL(0.55 + (i % 5) * 0.03, 0.5, 0.5);
-    const lmat = new THREE.LineBasicMaterial({
-      color: col,
-      transparent: true,
-      opacity: 0.12,
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const line = new THREE.Line(g, lmat);
-    line.frustumCulled = false;
-    streamGroup.add(line);
     streamers.push({
-      geom: g,
-      arr,
-      baseY: ((i / (NSTREAM - 1)) - 0.5) * 11 + (Math.random() - 0.5) * 1.2,
+      baseY: (i / (NSTREAM - 1) - 0.5) * 11 + (Math.random() - 0.5) * 1.2,
       baseZ: -4 - Math.random() * 6,
       amp: 0.6 + Math.random() * 1.6,
       freq: 1 + Math.random() * 2.2,
@@ -210,19 +188,72 @@ export function initScene(
       phase: Math.random() * Math.PI * 2,
       drift: 0.08 + Math.random() * 0.22,
       spanX: 16 + Math.random() * 10,
+      spin: 0.2 + Math.random() * 0.5,
     });
   }
-  function updateStreamers(time: number) {
-    for (const s of streamers) {
-      for (let j = 0; j < SEG; j++) {
-        const t = j / (SEG - 1);
-        s.arr[j * 3] = (t - 0.5) * s.spanX + Math.sin(time * s.drift + s.phase) * 2.2;
-        s.arr[j * 3 + 1] =
-          s.baseY + Math.sin(t * Math.PI * s.freq + time * s.speed + s.phase) * s.amp;
-        s.arr[j * 3 + 2] = s.baseZ + Math.cos(t * Math.PI * 1.3 + time * 0.15) * 1.2;
+  const sGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
+  const sMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      varying vec3 vN; varying vec3 vV; varying vec3 vI;
+      void main(){
+        vI = vec3(instanceMatrix[3]);
+        vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        vV = -mv.xyz;
+        vN = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+        gl_Position = projectionMatrix * mv;
       }
-      s.geom.attributes.position.needsUpdate = true;
+    `,
+    fragmentShader: `
+      precision highp float;
+      uniform float uTime;
+      varying vec3 vN; varying vec3 vV; varying vec3 vI;
+      vec3 hsv2rgb(vec3 c){
+        vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
+        return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+      }
+      void main(){
+        vec3 N = normalize(vN); vec3 V = normalize(vV);
+        float diff = 0.55 + 0.45 * max(dot(N, vec3(0.4,0.7,0.6)), 0.0);
+        // cool, slowly shifting tones so it sits behind the rainbow word
+        float hue = fract(0.55 + vI.y * 0.02 + vI.x * 0.01 + uTime * 0.02);
+        vec3 col = hsv2rgb(vec3(hue, 0.45, 0.85)) * diff;
+        gl_FragColor = vec4(col * 0.22, 0.22);
+      }
+    `,
+  });
+  const sMesh = new THREE.InstancedMesh(sGeo, sMat, SCOUNT);
+  sMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  sMesh.frustumCulled = false;
+  sMesh.renderOrder = -1;
+  scene.add(sMesh);
+  const sDummy = new THREE.Object3D();
+
+  function updateStreamers(time: number) {
+    sMat.uniforms.uTime.value = time;
+    let idx = 0;
+    for (let i = 0; i < NSTREAM; i++) {
+      const s = streamers[i];
+      for (let j = 0; j < SEG; j++, idx++) {
+        const t = j / (SEG - 1);
+        sDummy.position.set(
+          (t - 0.5) * s.spanX + Math.sin(time * s.drift + s.phase) * 2.2,
+          s.baseY + Math.sin(t * Math.PI * s.freq + time * s.speed + s.phase) * s.amp,
+          s.baseZ + Math.cos(t * Math.PI * 1.3 + time * 0.15) * 1.2,
+        );
+        sDummy.rotation.set(time * s.spin + i, time * s.spin * 0.7 + j, 0);
+        // taper the chain so it reads as a streamer (thin at the ends)
+        const taper = 0.35 + 0.65 * Math.sin(t * Math.PI);
+        sDummy.scale.setScalar(taper);
+        sDummy.updateMatrix();
+        sMesh.setMatrixAt(idx, sDummy.matrix);
+      }
     }
+    sMesh.instanceMatrix.needsUpdate = true;
   }
 
   const dummy = new THREE.Object3D();
