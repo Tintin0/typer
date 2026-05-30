@@ -3,6 +3,13 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## site — lazy-load Three.js on the landing page
+
+- `scene3d` (Three.js) is now a dynamic `import()` gated on WebGL + non-reduced-motion,
+  so the **initial JS bundle dropped from ~508 kB to ~3.7 kB**. The 505 kB scene chunk
+  is fetched only when the animation can actually run; reduced-motion / no-WebGL
+  visitors get just the command, no Three.js download.
+
 ## 6e85d46 — helper: cheaper per-token shaping + sampler setup
 
 - `make_sampler` accepts only the last 64 prompt tokens (the penalties window) instead

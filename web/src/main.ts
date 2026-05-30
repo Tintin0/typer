@@ -1,5 +1,8 @@
 import "./style.css";
-import { initScene } from "./scene3d";
+// `typeof import(...)` is a TYPE-only reference (erased at build), so the heavy
+// Three.js scene module is NOT in the initial bundle — it's loaded on demand below,
+// only when WebGL is present and motion isn't reduced.
+type SceneHandle = ReturnType<(typeof import("./scene3d"))["initScene"]>;
 
 const CMD = "git clone https://github.com/frgmt0/typer.git && cd typer && ./install.sh";
 
@@ -57,34 +60,63 @@ function generate(text: string, dur = 1700): Promise<void> {
   });
 }
 
-const scene = initScene(
-  canvas,
-  // onReveal: the word has shattered to the floor
-  () => {
-    reveal.hidden = false;
-    requestAnimationFrame(() => {
-      reveal.classList.add("show");
-      generate(CMD).then(() => scene?.doneGenerating());
-    });
-  },
-  // onRebuilt: the word flew back together
-  () => {
-    genToken++; // stop any in-flight generation
-    reveal.classList.remove("show");
-    cmd.classList.remove("lit");
-    cmdLine.textContent = "";
-    reveal.hidden = true;
-  },
-);
+let scene: SceneHandle | null = null;
 
-if (!scene) {
-  // no WebGL — just show the command
+// Show just the command (no 3D): for reduced-motion, no-WebGL, or load failure.
+function showStaticCommand() {
   document.body.classList.add("no-webgl");
   reveal.hidden = false;
   reveal.classList.add("show");
   cmdLine.textContent = CMD;
   cmd.classList.add("lit");
 }
+
+function hasWebGL(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
+
+// Load the Three.js scene only when it can actually be used; otherwise the visitor
+// never downloads/parses it.
+async function boot() {
+  if (reduce || !hasWebGL()) {
+    showStaticCommand();
+    return;
+  }
+  let initScene: (typeof import("./scene3d"))["initScene"];
+  try {
+    ({ initScene } = await import("./scene3d"));
+  } catch {
+    showStaticCommand();
+    return;
+  }
+  scene = initScene(
+    canvas,
+    // onReveal: the word has shattered to the floor
+    () => {
+      reveal.hidden = false;
+      requestAnimationFrame(() => {
+        reveal.classList.add("show");
+        generate(CMD).then(() => scene?.doneGenerating());
+      });
+    },
+    // onRebuilt: the word flew back together
+    () => {
+      genToken++; // stop any in-flight generation
+      reveal.classList.remove("show");
+      cmd.classList.remove("lit");
+      cmdLine.textContent = "";
+      reveal.hidden = true;
+    },
+  );
+  if (!scene) showStaticCommand();
+}
+
+boot();
 
 canvas.addEventListener("pointerdown", () => scene?.shatter());
 
