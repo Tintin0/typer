@@ -23,6 +23,10 @@ Stability/quality pass informed by studying the open-source
   occasionally emits is now stripped from suggestions (a `<` in `a < b` is kept).
 - **New menu-bar badge.** The icon is now `t|N`, where N is your running count of
   accepted completions (updates live; shows `⏸` when paused).
+- **Fun stats in the menu.** Opening the menu now shows how much you've
+  tab-completed — words, a scaling comparison ("≈ 0.3 Hobbits' worth of words",
+  "≈ 12% of a Harry Potter book", etc.), estimated typing time saved, and your
+  daily streak / active days. Tracked locally; builds up as you use it.
 
 ## Alpha — 2026-05-30
 
