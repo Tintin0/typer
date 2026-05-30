@@ -3,6 +3,47 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## 6e85d46 — helper: cheaper per-token shaping + sampler setup
+
+- `make_sampler` accepts only the last 64 prompt tokens (the penalties window) instead
+  of replaying the whole ~1024-token prompt through `accept()` every request.
+- The streaming callback runs `first_line_clean` once per token and skips the
+  O(context) `remove_echo` back-off scan on partials — only the final result de-echoes.
+- Dropped the unused `max_words` parameter from `prompt_complete`, and deleted the
+  dead LLM typo path (`prompt_typo`/`last_word`/task routing); typo correction is local
+  (`NSSpellChecker`), so the helper now only ever does completion.
+
+## 71a919d — prefetch yields the helper; no warmup when completions off
+
+- `LlamaClient.request` gained a `lowPriority` (try-lock) mode: a speculative prefetch
+  is skipped rather than queued if a foreground request holds the single helper, so it
+  can never delay real input.
+- The model isn't warmed at launch unless inline completion is enabled.
+
+## f59e3da — remove hot-path disk + logging I/O
+
+- `StyleMemory` keeps an in-RAM mirror, so `style.txt` is no longer read from disk on
+  every generation/prefetch (it was a synchronous main-thread read up to 40KB).
+- `log()` writes through one long-lived `FileHandle` on a serial queue instead of
+  open→seek→write→close per call; per-keystroke caret/AX diagnostics are now `dlog`
+  (gated off by default). These ran several times per keystroke on the main thread.
+- Streaming partials re-anchor (an AX caret read) only on the first frame, not per
+  token. The AX paragraph back-scan is capped at 40 (was 400) synchronous IPC calls.
+- Dropped a redundant `rebuildMenu()` from the typo show/accept path.
+
+## 5802e3e — cleanup: dead code, redundant modifier tracking, half-baked grammar
+
+- Deleted 7 unused functions (`focusedWindowBounds`, `replacePreviousWord`,
+  `selectedOrWordRect`, `textBeforeCursor`, the 3 `test*` stubs) and write-only fields
+  (`generationSerial`, `shift`, `acceptedWords`, `pendingTypoElement/Range`).
+- Dropped `keyUp` interest + `setModifier` and the Shift/Cmd/Ctrl/Opt booleans; the
+  keyDown's `event.flags` already carries modifier state, so the observer tap no longer
+  wakes on key *release* (≈half the observer callbacks).
+- Removed the half-implemented grammar feature (the helper never had a grammar branch)
+  and the LLM typo routing — completions-off now never invokes the helper at all.
+- Renamed `MLXClient`/`MLXRequest`/`MLXSuggestion` (the backend is GGUF/llama.cpp).
+- Net: ~120 fewer lines, no behavior change to the completion path.
+
 ## 3d12cb3 — menu-bar badge: keyboard SF Symbol + count
 
 A text-only `NSStatusItem` can lay out to zero width and render invisibly — the item
