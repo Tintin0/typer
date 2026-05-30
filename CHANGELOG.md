@@ -1,261 +1,174 @@
 # Changelog
 
-Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
-[typr.frgmt.xyz](https://typr.frgmt.xyz).
+Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
+commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
-## Alpha — 2026-05-30 (menu-bar icon)
+## 3d12cb3 — menu-bar badge: keyboard SF Symbol + count
 
-- **The menu-bar item is now a keyboard icon + count**, not a bare `t|N` text label. A
-  text-only `NSStatusItem` can collapse to zero width and render *invisibly* (you
-  couldn't see Typer in the bar at all). An SF Symbol image renders reliably and is
-  easy to spot. The accepted-completion count sits next to it; it shows ⏸ when paused.
+A text-only `NSStatusItem` can lay out to zero width and render invisibly — the item
+was present but unseeable in the bar. The button now carries an SF Symbol image
+(`keyboard`, template) with `imagePosition = .imageLeading` and the accepted count as
+the title (`⏸` when paused). The image is set once (guarded on `button.image == nil`);
+`updateStatusTitle()` only mutates the title thereafter.
 
-## Alpha — 2026-05-30 (battery — the real fix)
+## 5eb1393 — battery: kill accept-tap mach spin; screenshot-OCR caret off by default
 
-The big one: **the app was burning a full CPU core continuously, even when idle and
-not generating anything.** This — not the model — was the battery drain (one user got
-~3h of runtime). Found by sampling the process: ~60% CPU was being spent in
-`accept() → SLEventTapEnable → mach_msg`.
+Sampling the idle process showed ~60% CPU in `accept() → SLEventTapEnable →
+_CGSEnableEventTap → mach_msg` — a blocking WindowServer round-trip fired in a loop.
+This, not the model, was the drain.
 
-- **Fixed an event-tap enable/disable spin.** The consuming "accept" tap (which grabs
-  Tab/backtick) is toggled on only while a suggestion shows. Each toggle is a
-  *blocking* round-trip to the WindowServer, and on every `tapDisabled` notification we
-  re-issued it — including when nothing was showing, where our own disable echoed back
-  and we re-enabled in a tight loop. The tap state is now mirrored locally (no
-  redundant round-trips) and we never re-arm while idle. **Idle CPU went from ~60% to
-  0%.**
-- **Screenshot-OCR caret locator is now off by default.** For apps with no
-  Accessibility caret (terminals like Ghostty, custom editors) Typer used to take a
-  full ScreenCaptureKit screenshot and run Vision OCR — on the Neural Engine — roughly
-  every second while typing. That's far too heavy to run continuously. It's now opt-in
-  (menu → Context sources → "Screenshot caret", or `screenshot_caret_enabled`), and
-  when on it recomputes far less often. Native and Electron/WebKit apps are unaffected
-  (they use the cheap AX/text-marker caret).
+- The consuming accept tap (`.defaultTap`, Tab/backtick) was re-enabled on every
+  `tapDisabledByTimeout`/`ByUserInput` notification, including while nothing was
+  showing — where our own `tapEnable(false)` echoes back as a disable and we re-enable,
+  spinning. Tap state is now mirrored in `acceptTapEnabled`; `refreshAcceptTap()`
+  early-returns when the desired state already holds, and the disabled-notification
+  branch only re-arms when `completion`/`active != nil`. **Idle CPU 60% → 0%.**
+- The screenshot+OCR caret locator (ScreenCaptureKit capture + `VNRecognizeTextRequest`,
+  ANE-backed) ran on a ~1.2s / 6-char cadence for apps with no AX caret (terminals,
+  custom editors) — far too hot to run continuously. Gated behind new
+  `screenshot_caret_enabled` (default false) + menu toggle; recompute throttle loosened
+  to 4s / 24 chars when enabled. AX/text-marker apps are unaffected.
 
-## Alpha — 2026-05-30 (battery)
+## 9c3e0db — battery: pause-based debounce, battery-saver, chunked helper reads
 
-Typer was *also* firing a full model inference far more often than it needed to. The
-model runs on the GPU; these reduce how often it runs:
+- `debounce_ms` default 25 → 110. 25ms is shorter than inter-keystroke gaps
+  (~80–200ms), so the trailing-debounce timer expired *between* keys and fired a full
+  inference per character. 110ms coalesces a typing burst into one generation per pause.
+- `PowerState`: IOKit `IOPSGetTimeRemainingEstimate()` vs `kIOPSTimeRemainingUnlimited`
+  (cached 5s) OR `isLowPowerModeEnabled`. When `battery_saver` (default on) and on
+  battery/LPM, debounce → `battery_debounce_ms` (300) and speculative prefetch is
+  disabled (it runs a second inference per chunk, ~2× GPU work). Menu toggle shows
+  "(throttling now)". Background-context refresh interval stretched to ≥10s while saving.
+- Helper response reader replaced byte-at-a-time `poll`+`read` (≈2 syscalls/char) with
+  4KB chunked reads + a leftover buffer split on `\n`. macOS energy impact is
+  wakeup-dominated, so this cuts overhead during streaming.
 
-- **Generate on a pause, not on every key.** The debounce was 25ms — *shorter* than
-  the gap between keystrokes (~80–200ms), so the "wait" expired between nearly every
-  character and we ran a full model inference each time. Default debounce is now
-  **110ms**, so generation fires once you actually pause. (Imperceptible to typing
-  feel; the suggestion still streams in.)
-- **Battery saver (on by default).** On battery or in Low Power Mode, Typer stretches
-  the debounce to 300ms and turns off speculative prefetch (which otherwise runs a
-  *second* inference as you type along a suggestion — ~2× the GPU work). Desktops and
-  plugged-in laptops are unaffected. Toggle in the menu; the item shows
-  "(throttling now)" while it's active. New config: `battery_saver`,
-  `battery_debounce_ms`, `prefetch_enabled`.
-- **Fewer CPU wakeups reading the model's output.** The helper's streamed response was
-  read one byte at a time (a `poll`+`read` syscall per character); it now reads in 4KB
-  chunks. macOS energy impact is dominated by wakeups, so this matters.
-- Background context (window text / clipboard) also refreshes less often while saving
-  power.
+## e3ea965 / d101a30 — overlay: Core Animation renderer + ghost-overlap re-anchor
 
-## Alpha — 2026-05-30 (overlay polish)
+- `GhostView` rewritten on Core Animation: `CATextLayer` in SF system font sized to the
+  caret line, a trailing taper (`CAGradientLayer` root mask over the last ~20px), a
+  one-shot shimmer (`CAGradientLayer` masked by a text layer, animated `locations`) and
+  a fade-in (opacity + `transform.translation.y`) on fresh appearance only — not while
+  typing through.
+- Ghost no longer lags/overlaps typed text. The CGEvent tap runs *before* the host app
+  applies the key, so a synchronous AX caret read is one step stale. The overlay now
+  shifts by the measured width of what was typed immediately, then a coalesced
+  `scheduleReanchor()` (0.05s) re-reads the true caret to correct drift/line-wrap.
 
-- **Ghost no longer overlaps the text you're typing.** Our keyboard tap fires before
-  the host app applies the keystroke, so reading the caret right after typing was
-  stale (one step behind). The overlay now moves immediately by the measured width of
-  what was typed, then re-anchors precisely a beat later — so it tracks your cursor as
-  you type through a suggestion and after Tab, instead of lagging ~0.5s.
-- **Nicer-looking ghost text** (Core Animation renderer): SF system font sized to your
-  line, a **soft taper** that fades the trailing edge, and a one-shot **shimmer sweep +
-  fade-in** when a fresh suggestion appears (calm while you type through it).
+## e824e3b / 0d69e29 / 15e8728 — event-tap rearchitecture, per-app disable, fast-Tab fix
 
-## Alpha — 2026-05-30 (stability + control)
+- Two taps (cotabby-inspired): a **listen-only** observer at the head (cannot gate
+  global input delivery) that builds buffer/state, plus a **consuming** accept tap at
+  the tail, enabled only while a suggestion shows. Typer consumes no keys otherwise.
+- Fast-Tab skipped-word fix: injected insertion events are tagged via
+  `eventSourceUserData = syntheticMarker` and ignored by exact marker, replacing a
+  count/timing guard that raced real keystrokes.
+- Per-app disable (`disabled_apps`) + terminal skip (`disable_in_terminals`,
+  `terminalBundleIDs`). Clipboard relevance filter (a long clip needs a shared word with
+  the current context). Menu → Reset All Data… (NSAlert confirm) wipes style + stats,
+  keeps config.
 
-- **Fixed words being skipped on fast Tab.** Injected insertion events are now
-  tagged and ignored by exact marker, so a quick second Tab is never mistaken for
-  our own event (the old count/timing guard raced it).
-- **Reworked the event taps** (idea from cotabby): a **listen-only observer** that
-  can never stall global keystrokes in other apps, plus a **consuming accept tap
-  that's only active while a suggestion is on screen** — the rest of the time Typer
-  consumes no keys at all. This is the main stability fix.
-- **Per-app disable + terminal skip.** Menu → "Disable in <app>" and "Skip terminal
-  apps". Typer stays silent there.
-- **Clipboard is only used when relevant** — a long copied blob is ignored unless it
-  shares a word with what you're writing.
-- **Menu → Reset All Data…** wipes learned style + stats (with a confirmation),
-  keeping your settings.
+## 694dfc0 / 7423560 — clipboard-free insertion + drift/staleness fixes
 
-## Alpha — 2026-05-30 (insertion + drift)
+- Accept inserts via a synthesized Unicode keystroke (`keyboardSetUnicodeString`), no
+  pasteboard, with a self-suppression marker so it isn't re-processed as typing. The
+  pasteboard path remains only for the off-by-default typo fallback.
+- Ghost re-anchors at word boundaries (handles wrap), shifts by measured width within a
+  word. Staleness matches on a trailing anchor (`suffix(80)`) so it survives the
+  4000-char buffer cap and idle reset. `isMidLine(after:)` suppresses when any
+  non-whitespace follows the caret on the line. Helper clears its KV cache on context
+  front-truncation. `captureFocusedWindow` result race fixed (CaptureBox; frontPID
+  snapshotted on main). Dead config knobs removed.
 
-- **Accepting no longer touches your clipboard.** Inserted text is now typed via a
-  synthesized Unicode keystroke (idea from [cotabby](https://github.com/FuJacob/cotabby))
-  instead of a copy/paste, with a self-suppression guard so it isn't re-processed as
-  typing. The pasteboard path remains only for the (off-by-default) typo fallback.
-- **Less ghost drift while typing through a suggestion** — the overlay re-anchors to
-  the real caret at each word boundary (handles line-wrap), and shifts by measured
-  width within a word.
-- Completions keep settling in long fields / after a pause (staleness check is now
-  robust to buffer truncation and idle-reset).
-- Mid-line completions are suppressed whenever any text remains on the line after the
-  caret. Helper clears its KV cache on context front-truncation. Removed dead config
-  knobs. Fixed a screenshot-capture result race.
+## 5885999 — security + robustness hardening (adversarial review)
 
-## Alpha — 2026-05-30 (hardening pass)
+Security & privacy:
+- Never capture during macOS secure input (password fields, login window, `sudo`,
+  password managers): no buffer, learning, logging, AX reads, or generation.
+- Logs gated behind `debug_logging` (default off); log + `style.txt` are `0600`.
+- Clipboard context skips concealed/transient items.
+- `install.sh`: optional `TYPER_MODEL_SHA256`; reject path separators in the model
+  filename. `build.sh`: safe array globbing for dylibs.
 
-Adversarial review of the whole codebase (concurrency, the C++ helper, pipeline
-logic, security). Fixes:
+Robustness / concurrency:
+- Event tap self-heals on `tapDisabledByTimeout`/`ByUserInput`.
+- Off-main data race fixed — screenshot-caret + background closures snapshot
+  buffer/config on the main thread.
+- Helper reads time out (8s) and tear down a hung process so the next request respawns;
+  warm-up is lock-safe; in-flight flags reset on all paths.
+- Pasteboard serialized, restores all item types, guards `changeCount`.
 
-### Security & privacy
-- **Never capture secure input.** While macOS secure input is active (password
-  fields, login window, `sudo`, password managers) Typer now captures nothing —
-  no buffer, no learning, no logging, no AX reads, no generation.
-- **Log is no longer a keystroke transcript.** Typed text and snippets are gated
-  behind `debug_logging` (default off); the log and `style.txt` are now `0600`.
-- **Clipboard context skips concealed/transient items** (password-manager copies).
-- **install.sh**: optional `TYPER_MODEL_SHA256` verification; reject path
-  separators in the model filename. **build.sh**: safe array globbing for dylibs.
+Helper (C++): UTF-8-safe streaming partials, RAII sampler, `max_words` clamped.
+Stats: honest accept-rate (promoted prefetches count as shown; per-keystroke "ignored"
+counter removed).
 
-### Robustness / concurrency
-- **Event tap self-heals**: handles `tapDisabledByTimeout`/`ByUserInput` and
-  re-enables instead of silently dying.
-- **Fixed an off-main data race** on the keystroke buffer (the screenshot-caret and
-  background-context closures now snapshot buffer/config on the main thread).
-- **Helper can't wedge the app**: model reads now time out (8s) and tear down a
-  hung helper so the next request respawns it; warm-up is lock-safe (no
-  double-spawn); in-flight flags reset on all paths.
-- **Pasteboard is safe**: serialized, restores all clipboard item types (not just
-  text), and won't clobber something you copied during the paste window.
+## a7a7cf8 / 334cbdf / 37bfddb — sampling/anti-flicker, HTML strip, badge, fun stats
 
-### Helper (C++)
-- UTF-8-safe streaming partials (no broken multibyte in `{"p":...}`); RAII sampler
-  (no leak on a mid-generation error); `max_words` clamped.
+- `min-p` sampler (~6% of top-token prob) + lower temp/top-p; sampling settles at temp
+  0.12, top-k 20, top-p 0.80, min-p 0.06, penalty 1.05. Far less random-word drift.
+- Typing-through advances by measured char width instead of re-reading the jittery AX
+  caret per key; panel stops re-ordering each update. Per-field caret-height floor
+  prevents oversized ghost. Completions repeating post-caret text are dropped.
+- `strip_html_tags` removes stray `<em>`/`</strong>` (keeps the `<` in `a < b`).
+- Menu-bar badge `t|N` accepted count (live; `⏸` when paused) — later replaced by the
+  icon badge (3d12cb3).
+- Local stats: words/chars completed, daily streak / active days; playful scaling
+  comparisons (Hobbit/LOTR/Harry Potter) and estimated time saved.
 
-### Stats
-- Accept-rate is now honest: promoted prefetches count as shown; removed the noisy
-  per-keystroke "ignored" counter.
+## ac27448 / e1d868d / 89430ab / 2aa3b65 / a51c917 — foundational alpha
 
-## Alpha — 2026-05-30 (later)
+Suggestion quality:
+- Root cause: the helper never prepended Gemma's `<bos>` (tokenized with
+  `add_special=false`), so the base model produced degenerate, repetitive output.
+  `prompt_complete` now prepends `<bos>`. Confirmed the GGUF reports
+  `chat_template=(null)` (a base model) → raw continuation is the correct strategy.
+- Initial sampling tune (temp 0.65→0.20, top-k 40→20, top-p 0.92→0.90, penalty
+  1.12→1.08). Preserve the model's spacing intent (a leading-space token means "new
+  word") to fix `"autocompl ition"` / `"cool !"`. Suppress mid-word continuations the
+  small base model gets wrong.
 
-Stability/quality pass informed by studying the open-source
-[cotabby](https://github.com/FuJacob/cotabby):
+Caret & overlay:
+- AX→AppKit coordinate flip uses the primary (zero-origin) screen height (multi-monitor
+  fix).
+- `isPlausibleCaretRect` validation + fallthrough: selection → zero-length caret → prev
+  glyph → next glyph → paragraph scan.
+- `AXTextMarker` caret (`AXSelectedTextMarkerRange` → `AXBoundsForTextMarkerRange`) for
+  Chromium/WebKit (Discord/VS Code/Chrome/Safari) — exact caret, no screenshot.
+- Screenshot+OCR locator (ScreenCaptureKit + Vision) as last resort; cached +
+  extrapolated. (`CGWindowListCreateImage` is unavailable in the macOS 26 SDK.)
+- Inline render: font sized to the caret line height, vertically centered; applies to
+  completions, typo, grammar.
 
-- **Steadier suggestions.** Added a `min-p` sampler (drop tokens below ~6% of the
-  top token's probability) and lowered temperature/top-p — far less "random word"
-  drift. Sampling is now temp 0.12, top-k 20, top-p 0.80, min-p 0.06, penalty 1.05.
-- **Less flicker while typing.** As you type *through* a suggestion the overlay now
-  advances by the measured character width instead of re-reading the (jittery) caret
-  from Accessibility on every keystroke; the panel also stops re-ordering itself on
-  each update.
-- **No more giant ghost text.** The ghost font is floored to the smallest caret
-  height seen per field, so an occasional bad Accessibility reading can't blow it up.
-- **Drop repeated text.** Completions that just repeat what's already after your
-  cursor are discarded instead of shown as a confusing partial.
-- **No more stray HTML tags.** Markup like `<em>` or `</strong>` that the model
-  occasionally emits is now stripped from suggestions (a `<` in `a < b` is kept).
-- **New menu-bar badge.** The icon is now `t|N`, where N is your running count of
-  accepted completions (updates live; shows `⏸` when paused).
-- **Fun stats in the menu.** Opening the menu now shows how much you've
-  tab-completed — words, a scaling comparison ("≈ 0.3 Hobbits' worth of words",
-  "≈ 12% of a Harry Potter book", etc.), estimated typing time saved, and your
-  daily streak / active days. Tracked locally; builds up as you use it.
+Speed & ergonomics:
+- Follow-along: matching keystrokes consume the ghost prefix without regenerating; only
+  deviation/exhaustion triggers a new request.
+- Single-flight generation (killed an 831-req → 18-shown stale-discard storm); the
+  result is reconciled against typed-since text.
+- Token streaming (JSONL `{"p":...}`, deduped, stop at sentence end); UI paints live.
+- Speculative prefetch near exhaustion; debounce 80 → 25ms (later 110, see 9c3e0db).
+- Huge-`AXValue` guard (terminals expose ~400k chars) → keystroke-buffer fallback.
 
-## Alpha — 2026-05-30
+Context & personalization:
+- AX context captures before + after the cursor; per-app sessions keyed by
+  `bundleID|appName` (buffer/background/caret/prediction reset on switch).
+- Background = window AX scrollback + clipboard; screen-OCR context off by default.
+- Local style memory (`style.txt`, deduped sample primed into the prompt); accept/ignore
+  stats persisted to `stats.json`.
 
-### What you'll notice (plain language)
+Typo (off by default): reworked onto `NSSpellChecker` as a strikethrough diff; exact
+AX-range replacement with keystroke fallback; the big AX read happens only on accept.
 
-- **Suggestions are actually good now.** Earlier they were often repetitive or
-  nonsense; that's fixed, and they read like natural continuations of your sentence.
-- **They show up right where you're typing.** The ghost text sits inline on your
-  cursor's line, sized to match the app's font — not floating above or stuck in a
-  corner.
-- **It feels faster.** Suggestions stream in word-by-word, so the first word appears
-  almost instantly instead of waiting for the whole phrase.
-- **Type *into* a suggestion.** As long as you keep typing what it predicted, the
-  ghost just shrinks — no flicker, no regenerating. <kbd>Tab</kbd> takes one word,
-  <kbd>`</kbd> takes the rest.
-- **Works in more apps.** Discord, Slack, VS Code, Chrome, and Safari now place the
-  suggestion exactly at your cursor (previously only native apps did).
-- **It learns how you write.** Typer keeps a private, on-device record of your own
-  writing and uses it to make suggestions sound more like you. You can clear it any
-  time from the menu.
-- **Real menu bar.** Click the ⌨︎ icon to turn features on/off, see your accept rate
-  and model, clear learned style, or open the config/log — no file editing.
-- **Each app is its own session.** Switching apps starts fresh instead of mixing a
-  chat's context into your code.
-- **Typo correction is off for now**, so we can focus on perfecting autocomplete
-  (re-enable it in the menu).
-- **Screenshot/OCR context is off by default** — it was noisy and occasionally
-  produced garbage suggestions.
+Menu bar: live toggles persisted to `config.toml`; shows model / accept-rate /
+learned-style count; Clear Learned Style, Open Config…, Open Log…, Quit.
 
-### Technical detail
+Packaging: builds against Homebrew llama.cpp (GGUF-only; MLX/Python fallback removed;
+model auto-discovered); stable self-signed signing (`make_signing_cert.sh`, designated
+requirement anchored to the cert, not the cdhash); repo cleaned for public release, MIT.
 
-#### Suggestion quality
-- **Root cause fixed:** the helper never prepended Gemma's `<bos>` token (it
-  tokenized with `add_special=false`), so the base model produced degenerate,
-  repetitive output (`"the the The"`, `"your help with your help with your"`).
-  `prompt_complete` now prepends `<bos>`.
-- Sampling tuned for predictable inline completions: temperature 0.65 → 0.20,
-  top-k 40 → 20, top-p 0.92 → 0.90, repetition penalty 1.12 → 1.08.
-- **Preserve the model's spacing intent** instead of force-adding a leading space —
-  fixes `"autocompl ition"` and `"cool !"`. A leading-space token means "new word";
-  none means "continue this word / punctuation".
-- **Suppress mid-word completions:** when the context ends inside a word and the
-  model continues it without a leading space (`"autocompl"`→`"ition"`), the small
-  base model is unreliable, so we show nothing rather than a wrong guess.
-- Confirmed the shipped GGUF reports `chat_template=(null)` (a base model), so raw
-  continuation is the correct prompting strategy.
+## 6ce4e70 / e64a35a / cb7d85b / 34dc5c5 / a536ee9 / b4fc854 — typr.frgmt.xyz site + docs
 
-#### Caret & overlay placement
-- Fixed the AX→AppKit coordinate flip to use the **primary (zero-origin) screen**
-  height, not the local screen (was wrong on multi-monitor).
-- Validate AX caret rects (`isPlausibleCaretRect`) and fall through strategies:
-  selection → zero-length caret → previous glyph → next glyph → paragraph scan.
-- **`AXTextMarker` caret** (`AXSelectedTextMarkerRange` → `AXBoundsForTextMarkerRange`)
-  for Chromium/WebKit apps that don't implement `AXBoundsForRange` — exact caret in
-  Electron/Safari with no screenshot.
-- **Screenshot + OCR caret locator** (ScreenCaptureKit + Vision) as a last resort
-  for apps with no caret geometry; cached and extrapolated horizontally during
-  typing. (`CGWindowListCreateImage` is unavailable in the macOS 26 SDK.)
-- Overlay renders **inline**: font sized to the caret line height and vertically
-  centered on the caret line; applies to completions, typo, and grammar.
-
-#### Speed & ergonomics
-- **Type-into-suggestion follow-along:** matching keystrokes consume the ghost
-  prefix without regenerating; only deviation or exhaustion triggers a new request.
-- **Single-flight generation** fixed a stale-discard storm (one run logged 831
-  requests → 980 responses → only 18 shown). At most one request is in flight; the
-  result is reconciled against typed-since text so it still appears when you've typed
-  ahead.
-- **Token streaming:** the helper emits partial completions per token (JSONL
-  `{"p":...}` lines, deduped, stopping at sentence end); the UI paints them live.
-- Speculative **prefetch** of the next chunk near exhaustion; debounce 80 → 25 ms.
-- Guard the hot path against huge `AXValue`s (terminals expose ~400k chars) by
-  falling back to the keystroke buffer.
-
-#### Context & personalization
-- AX context captures text **before and after** the cursor; mid-line edits are
-  suppressed.
-- **Per-app sessions:** independent buffers keyed by `bundleID|appName`; background
-  context, caret cache, and prediction reset on app switch.
-- Background context = window AX scrollback + clipboard. **Screen-OCR context is off
-  by default** (noisy); when on, OCR is accurate-mode with confidence/garbage
-  filtering and only used when AX text is sparse.
-- **Local style memory** (`style.txt`): records your committed writing (sent
-  messages, app-switch flush, kept completions), deduped, and primes the prompt with
-  a recent sample. **Accept/ignore stats** persisted to `stats.json`.
-
-#### Typo correction (off by default)
-- Reworked onto **`NSSpellChecker`** (the OS engine) shown as a strikethrough diff;
-  exact AX-range replacement with a keystroke fallback. Detection is buffer-cheap;
-  the big AX read happens only on accept.
-
-#### Menu bar
-- Live toggles for Enabled / Completions / Typo and context sources, persisted to
-  `config.toml` immediately. Shows model, accept rate, learned-style count; actions
-  for Clear Learned Style, Open Config…, Open Log…, Quit.
-
-#### Packaging & build
-- Builds against **Homebrew llama.cpp** (`brew install llama.cpp`) — no third-party
-  binaries bundled. GGUF-only; the legacy Python/MLX fallback was removed and the
-  model is auto-discovered from the Models directory.
-- **Stable self-signed code signing** (`make_signing_cert.sh`) so macOS keeps the
-  Accessibility grant across rebuilds; designated requirement is anchored to the
-  certificate, not the cdhash.
-- Repo cleaned for public release (removed build artifacts and dead code); MIT
-  licensed. Bring your own model.
+Marketing site at typr.frgmt.xyz (bun + vite + WebGL shader, Cloudflare-deployed):
+instanced cubes that rise and diffuse to "generate" the command block (denoise reveal),
+pokeball-style rattle, a typewriter command with a shimmering border, and faded
+instanced-cube background streamers. Docs: README refreshed for streaming / text-marker
+caret / OCR-off / typo-off; added this CHANGELOG.
