@@ -437,6 +437,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var completion: ActiveCompletion? { didSet { refreshAcceptTap() } } // inline completion
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
+    var reanchorWork: DispatchWorkItem? // deferred AX caret re-anchor after a keystroke
     var caretHeightFloor: CGFloat?      // smallest caret height seen this focus session
     // Screenshot-based caret cache for apps without AX caret geometry. We compute it
     // occasionally (it is slow) and extrapolate horizontally as the user types.
@@ -771,16 +772,13 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
-            // Anti-flicker vs. anti-drift balance: within a word, shift the cached
-            // point by the measured width of what was typed (no AX read = no
-            // per-keystroke jitter). At a whitespace boundary, re-read the real AX
-            // caret — this corrects any accumulated width drift and naturally handles
-            // line-wrap (the word jumped to a new line), which the shift can't.
-            let atBoundary = text.unicodeScalars.contains { isWordSeparator($0) }
-            if !atBoundary, let p = lastCaretPoint {
-                lastCaretPoint = NSPoint(x: p.x + ghostWidth(text), y: p.y)
-            }
-            showCompletionRemainder(reanchor: atBoundary)
+            // Move the ghost immediately by the measured width of what was typed (the
+            // app hasn't applied the keystroke yet, so a synchronous AX read would be
+            // stale and overlap). A coalesced deferred re-anchor then corrects drift
+            // and line-wrap once the app has caught up.
+            if let p = lastCaretPoint { lastCaretPoint = NSPoint(x: p.x + ghostWidth(text), y: p.y) }
+            showCompletionRemainder(reanchor: false)
+            scheduleReanchor()
             maybePrefetch()
         }
         return true
@@ -920,6 +918,21 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight)
     }
 
+    // Our tap callback runs BEFORE the host app applies the keystroke, so reading the
+    // AX caret right after typing/inserting gives a stale (one-step-behind) position —
+    // that's the ghost overlapping what you just typed. Move immediately by measured
+    // width, then re-anchor to the real caret a beat later once the app has caught up.
+    // Coalesced, so fast typing never triggers a synchronous AX read.
+    func scheduleReanchor() {
+        reanchorWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.completion != nil else { return }
+            self.showCompletionRemainder(reanchor: true)
+        }
+        reanchorWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
     // Tab: realize the next word of the prediction (we insert it; the user did not
     // type it) and keep the remainder showing.
     func acceptCompletionWord() -> Bool {
@@ -935,7 +948,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
             completion = comp
-            showCompletionRemainder()
+            // Move immediately by the inserted word's width (the app hasn't applied
+            // the insertion yet), then re-anchor precisely once it has.
+            if let p = lastCaretPoint { lastCaretPoint = NSPoint(x: p.x + ghostWidth(piece), y: p.y) }
+            showCompletionRemainder(reanchor: false)
+            scheduleReanchor()
             maybePrefetch()
         }
         return true
@@ -1549,6 +1566,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func clearSuggestion() {
+        reanchorWork?.cancel()
         active = nil
         completion = nil
         prefetched = nil
