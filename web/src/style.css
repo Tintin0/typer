@@ -51,13 +51,39 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* subtle grain-free warmth: a faint vignette anchoring the dark field */
+  /* fallback warmth if WebGL is unavailable */
   background-image: radial-gradient(
     120% 80% at 50% -10%,
     rgba(232, 162, 60, 0.05),
     transparent 60%
   );
   background-attachment: fixed;
+}
+
+/* shader backdrop */
+.gfx {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -2;
+  display: block;
+  pointer-events: none;
+}
+/* readability scrim: lets the shader blaze in the hero, calms it lower down */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(12, 11, 10, 0.12) 0%,
+    rgba(12, 11, 10, 0.28) 42%,
+    rgba(12, 11, 10, 0.85) 78%,
+    var(--bg) 100%
+  );
 }
 
 ::selection {
@@ -218,13 +244,15 @@ h1 {
   letter-spacing: -0.03em;
   font-weight: 600;
   margin: 0 0 1.4rem;
+  text-shadow: 0 2px 30px rgba(12, 11, 10, 0.7);
 }
 .lede {
   font-size: clamp(1.05rem, 2.2vw, 1.3rem);
-  color: var(--ink-dim);
+  color: var(--ink);
   max-width: 54ch;
   margin: 0 0 2.5rem;
   line-height: 1.55;
+  text-shadow: 0 1px 20px rgba(12, 11, 10, 0.8);
 }
 
 /* the stage = the live editor */
@@ -487,51 +515,6 @@ h2 em {
   padding: clamp(3.5rem, 9vw, 7rem) var(--pad);
   border-top: 1px solid var(--line);
 }
-.pipe {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: stretch;
-  gap: 0.5rem;
-}
-.pipe > li:not(.arrow) {
-  flex: 1;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 1.25rem 1.1rem;
-}
-.pipe-n {
-  display: block;
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--accent);
-  margin-bottom: 0.6rem;
-}
-.pipe p {
-  margin: 0;
-  font-size: 0.92rem;
-  color: var(--ink-dim);
-  line-height: 1.5;
-}
-.pipe .arrow {
-  display: flex;
-  align-items: center;
-  color: var(--ink-faint);
-  font-family: var(--mono);
-  padding: 0 0.2rem;
-}
-@media (max-width: 820px) {
-  .pipe {
-    flex-direction: column;
-  }
-  .pipe .arrow {
-    transform: rotate(90deg);
-    justify-content: center;
-    padding: 0.2rem 0;
-  }
-}
 /* privacy claims row (replaces the old technical pipeline) */
 .claims {
   list-style: none;
@@ -661,17 +644,6 @@ code {
 }
 
 /* ---- install ------------------------------------------------------------ */
-.install-cols {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr;
-  gap: clamp(1.5rem, 4vw, 3rem);
-  align-items: start;
-}
-@media (max-width: 820px) {
-  .install-cols {
-    grid-template-columns: 1fr;
-  }
-}
 .code {
   font-family: var(--mono);
   font-size: 0.92rem;
@@ -719,49 +691,6 @@ code {
   border-color: var(--accent);
   color: var(--accent);
 }
-.install-perms h3 {
-  font-size: 1.1rem;
-  margin: 0 0 1rem;
-}
-.install-perms dl {
-  margin: 0 0 1.5rem;
-}
-.install-perms dt {
-  font-weight: 600;
-  margin-top: 0.9rem;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-.install-perms dd {
-  margin: 0.25rem 0 0;
-  color: var(--ink-dim);
-  font-size: 0.92rem;
-}
-.req,
-.opt {
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  border-radius: 5px;
-  padding: 0.08rem 0.4rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.req {
-  color: var(--accent);
-  border: 1px solid var(--accent-line);
-}
-.opt {
-  color: var(--ink-faint);
-  border: 1px solid var(--line-2);
-}
-.byo {
-  color: var(--ink-dim);
-  font-size: 0.92rem;
-  border-top: 1px solid var(--line);
-  padding-top: 1.2rem;
-}
-
 /* ---- footer ------------------------------------------------------------- */
 .foot {
   max-width: var(--maxw);

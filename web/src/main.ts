@@ -1,5 +1,13 @@
 import "./style.css";
 import { TyperEngine } from "./engine";
+import { initShader } from "./webgl";
+
+// shader backdrop — degrades gracefully to the CSS gradient if WebGL is absent
+const gfx = document.getElementById("gfx") as HTMLCanvasElement | null;
+if (gfx) {
+  const ok = initShader(gfx);
+  if (!ok) gfx.remove();
+}
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);

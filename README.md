@@ -19,9 +19,15 @@ and a small GGUF model — no cloud, no account, no Apple Developer Program.
   just shrinks — it doesn't regenerate. It only re-thinks when you diverge.
 - **Typo correction** via the macOS spell checker, shown as a strikethrough diff
   (<kbd>Tab</kbd> to accept).
-- **Context-aware**: pulls in the surrounding text of the focused window, your
-  recently copied text, an on-device screenshot OCR of the window, and a small
-  local record of your own writing to personalize tone — all on-device.
+- **Per-app sessions**: each app keeps its own typing context, so switching apps
+  starts fresh instead of bleeding context between a chat and your code.
+- **Learns your voice**: keeps a small local record of what you actually write
+  (sent messages, text you type, completions you keep) and primes the model with it
+  so suggestions drift toward how *you* write. It also tracks how often you accept
+  vs. type past suggestions (shown in the menu). All on-device; clearable any time.
+- **Context-aware**: pulls in the surrounding text of the focused window and your
+  recently copied text. (An optional screenshot-OCR context source exists but is
+  **off by default** — it tended to be noisy.)
 
 ### Keys
 
@@ -161,12 +167,28 @@ placement, and context gathering are in
 
 ---
 
+## Personalization
+
+Typer learns your writing **locally** and uses it to prime the model:
+
+- It records substantive things you write — sent messages, text you type, and
+  completions you keep — to `~/Library/Application Support/typer/style.txt`, and
+  feeds a recent sample into each prompt so suggestions sound more like you.
+- It tracks **shown / accepted / ignored** suggestion stats (menu bar → the ⌨︎
+  icon). "Ignored" means a suggestion was shown but you typed something else.
+- **Menu → Clear Learned Style** wipes the corpus. Disable entirely with
+  `style_memory_enabled = false`.
+
+It never fine-tunes or uploads anything — personalization is purely the local
+style sample plus your per-app session text.
+
 ## Privacy
 
 Everything is local. The model runs on your machine; nothing is sent anywhere.
-The optional "style memory" is a plain text file at
-`~/Library/Application Support/typer/style.txt` (delete it any time). Screen OCR
-and window-text reads stay on-device and are only used to build the local prompt.
+The style memory (`style.txt`) and stats (`stats.json`) live under
+`~/Library/Application Support/typer/` — delete them any time. Window-text reads
+and the (off-by-default) screen OCR stay on-device and are only used to build the
+local prompt.
 
 ---
 

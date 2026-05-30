@@ -37,7 +37,7 @@ struct TyperConfig {
     var windowContextEnabled = true   // read surrounding text in the focused window via AX
     var styleMemoryEnabled = true     // bias completions toward the user's own recent writing
     var clipboardContextEnabled = true
-    var screenContextEnabled = true   // screenshot + on-device OCR (needs Screen Recording permission)
+    var screenContextEnabled = false  // screenshot OCR as prompt context — off by default (noisy)
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
 
@@ -295,6 +295,10 @@ final class StyleMemory {
         guard t.split(separator: " ").count >= 4 else { return }
         queue.async {
             var existing = (try? String(contentsOf: self.url, encoding: .utf8)) ?? ""
+            // Dedupe: skip if this exact line is among the most recent entries (the
+            // same buffer is flushed on both app-switch and Return).
+            let recent = existing.split(separator: "\n").suffix(8).map(String.init)
+            if recent.contains(t) { return }
             existing += "\n" + t
             if existing.utf8.count > self.maxBytes { existing = String(existing.suffix(self.maxBytes / 2)) }
             try? existing.write(to: self.url, atomically: true, encoding: .utf8)
@@ -313,6 +317,34 @@ final class StyleMemory {
             budget -= line.count + 1
         }
         return out.reversed().joined(separator: "\n")
+    }
+
+    func sentenceCount() -> Int {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        return raw.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+    }
+
+    func clear() { queue.async { try? FileManager.default.removeItem(at: self.url) } }
+}
+
+// Lightweight persisted acceptance stats — how often shown suggestions are taken
+// vs. typed past. Surfaced in the menu; foundation for tuning behavior over time.
+struct TyperStats: Codable {
+    var shown = 0
+    var accepted = 0
+    var ignored = 0
+    var acceptRate: Int { shown > 0 ? Int((Double(accepted) / Double(shown)) * 100) : 0 }
+
+    private static var url: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/typer/stats.json")
+    }
+    static func load() -> TyperStats {
+        guard let d = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(TyperStats.self, from: d) else { return TyperStats() }
+        return s
+    }
+    func save() {
+        if let d = try? JSONEncoder().encode(self) { try? d.write(to: TyperStats.url) }
     }
 }
 
@@ -354,8 +386,8 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     var ctrl = false
     var alt = false
     var cmd = false
-    var suggestions = 0
-    var accepts = 0
+    var stats = TyperStats.load()       // cumulative, persisted across launches
+    var statsSaveScheduled = false
     var generationSerial = 0
     // Typo state: when a misspelled word is detected we remember its exact range
     // in the focused element so acceptance can replace it precisely via AX.
@@ -407,10 +439,14 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: "Typer Swift: running", action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
-        let stats = NSMenuItem(title: "Suggestions: \(suggestions)  Accepted: \(accepts)", action: nil, keyEquivalent: "")
-        stats.isEnabled = false
-        menu.addItem(stats)
+        let statsItem = NSMenuItem(title: "Shown \(stats.shown) · Accepted \(stats.accepted) (\(stats.acceptRate)%) · Ignored \(stats.ignored)", action: nil, keyEquivalent: "")
+        statsItem.isEnabled = false
+        menu.addItem(statsItem)
+        let learned = NSMenuItem(title: "Learned style: \(styleMemory.sentenceCount()) sentences", action: nil, keyEquivalent: "")
+        learned.isEnabled = false
+        menu.addItem(learned)
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Test Completion Preview", action: #selector(testCompletion), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Test Typo Preview", action: #selector(testTypo), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Test Grammar Preview", action: #selector(testGrammar), keyEquivalent: ""))
@@ -506,6 +542,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
             prefetched = nil
             prefetchKey = ""
             overlay.orderOut(nil)
+            stats.ignored += 1; statsTouched()   // shown but the user typed elsewhere
         }
         if cfg.typoEnabled, text.unicodeScalars.allSatisfy({ isWordSeparator($0) }), showTypoIfMisspelled() { return }
         scheduleGenerate()
@@ -521,8 +558,8 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         }
         completion = comp
         if comp.done {
-            // Typed all the way through — show the prefetched next chunk instantly
-            // if we have one, otherwise generate it now.
+            // Typed all the way through — a strong "this matched my intent" signal.
+            stats.accepted += 1; statsTouched()
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
@@ -552,6 +589,9 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     func syncActiveApp() {
         let key = currentAppKey()
         if key == activeAppKey { return }
+        // Leaving an app: keep its session buffer, and learn from what was typed
+        // there (captures editors/docs that never send a Return).
+        if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
         buffersByApp[activeAppKey] = buffer
         lastInputByApp[activeAppKey] = lastInput
         log("app switch \(activeAppKey) -> \(key) savedChars=\(buffer.count)")
@@ -614,7 +654,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         insert(piece)
         appendToBuffer(piece)
         comp.consumed = end
-        accepts += 1
+        stats.accepted += 1; statsTouched()
         if comp.done {
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
@@ -633,7 +673,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         let piece = comp.remainder
         insert(piece)
         appendToBuffer(piece)
-        accepts += 1
+        stats.accepted += 1; statsTouched()
         completion = nil
         overlay.orderOut(nil)
         rebuildMenu()
@@ -750,7 +790,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         } else {
             scheduleGenerate(); return         // buffer reset / deleted — start over
         }
-        suggestions += 1
+        stats.shown += 1; statsTouched()
         rebuildMenu()
         showCompletionRemainder()
         maybePrefetch()
@@ -825,7 +865,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         guard let word = lastWordFromBuffer(), let fix = correction(for: word) else { return false }
         active = MLXSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
         acceptedWords = 0
-        suggestions += 1
+        stats.shown += 1; statsTouched()
         rebuildMenu()
         // Inline at the caret line, same as completions.
         let point = currentCaretPoint()
@@ -1150,7 +1190,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     func show(_ sug: MLXSuggestion?) {
         guard let sug else { log("show nil suggestion"); clearSuggestion(); return }
         log("show kind=\(sug.kind)")
-        suggestions += 1
+        stats.shown += 1; statsTouched()
         rebuildMenu()
         switch sug.kind {
         case "completion":
@@ -1191,7 +1231,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         case "typo":
             if let replacement = active.replacement, let original = active.original {
                 replaceTypo(original: original, with: replacement)
-                accepts += 1
+                stats.accepted += 1; statsTouched()
                 clearSuggestion()
                 rebuildMenu()
                 return true
@@ -1202,7 +1242,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
                 insert(replacement)
                 buffer += replacement
                 saveActiveAppState()
-                accepts += 1
+                stats.accepted += 1; statsTouched()
                 clearSuggestion()
                 rebuildMenu()
                 return true
@@ -1218,7 +1258,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         if active.kind == "typo" {
             guard let text = active.replacement, let original = active.original, !text.isEmpty else { return false }
             replaceTypo(original: original, with: text)
-            accepts += 1
+            stats.accepted += 1; statsTouched()
             clearSuggestion()
             rebuildMenu()
             return true
@@ -1228,7 +1268,7 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         guard !text.isEmpty else { return false }
         insert(text)
         appendToBuffer(text)
-        accepts += 1
+        stats.accepted += 1; statsTouched()
         clearSuggestion()
         rebuildMenu()
         return true
@@ -1492,7 +1532,25 @@ final class TyperApp: NSObject, NSApplicationDelegate {
     @objc func testCompletion() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showCompletion(" predicted words appear inline", at: p, lineHeight: lastCaretHeight) }
     @objc func testTypo() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showTypo(original: "peopel", replacement: "people", at: p, lineHeight: lastCaretHeight) }
     @objc func testGrammar() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: p, lineHeight: lastCaretHeight) }
-    @objc func quit() { NSApp.terminate(nil) }
+    // Persist stats at most ~once/sec (called from the hot path on accept/ignore).
+    func statsTouched() {
+        rebuildMenu()
+        if statsSaveScheduled { return }
+        statsSaveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.statsSaveScheduled = false
+            self.stats.save()
+        }
+    }
+
+    @objc func clearStyle() {
+        styleMemory.clear()
+        log("cleared learned style")
+        rebuildMenu()
+    }
+
+    @objc func quit() { stats.save(); NSApp.terminate(nil) }
 }
 
 extension CGEvent {

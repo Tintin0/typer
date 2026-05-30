@@ -8,6 +8,11 @@ import { predict } from "./corpus";
 
 const DEBOUNCE_MS = 380; // mirrors the product's ~0.4s warm latency
 
+// fires a keystroke pulse the shader backdrop reacts to
+function pulse() {
+  document.dispatchEvent(new CustomEvent("typer:pulse"));
+}
+
 export interface EngineEls {
   root: HTMLElement; // focusable container
   ink: HTMLElement; // committed text
@@ -86,6 +91,7 @@ export class TyperEngine {
   };
 
   private insert(ch: string) {
+    pulse();
     // type-through: if the char matches the head of the ghost, just consume it
     if (this.ghost.length > 0 && this.ghost[0] === ch) {
       this.typed += ch;
@@ -205,6 +211,7 @@ export class TyperEngine {
       for (const ch of s) {
         if (this.interacted) return;
         this.typed += ch;
+        pulse();
         this.render();
         await wait(38 + (ch === " " ? 30 : Math.random() * 45));
         if (this.interacted) return;

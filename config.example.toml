@@ -19,5 +19,8 @@ temperature = 0.0             # (reserved; sampling is tuned in the helper)
 window_context_enabled = true     # read surrounding text via Accessibility
 style_memory_enabled = true       # learn from your own recent writing (local only)
 clipboard_context_enabled = true  # include recently copied text
-screen_context_enabled = true     # screenshot + OCR (needs Screen Recording)
+screen_context_enabled = false    # screenshot OCR as prompt context — off by default (noisy)
 background_refresh_seconds = 4.0   # how often the background context is refreshed
+# Note: caret placement still uses a screenshot fallback (with Screen Recording)
+# only when Accessibility/text-marker caret is unavailable; that is separate from
+# screen_context_enabled above.

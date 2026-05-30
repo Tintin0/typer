@@ -105,16 +105,12 @@ export function predict(typed: string): string {
     for (const entry of INDEX) {
       const at = findSequence(entry.lower, key);
       if (at === -1) continue;
-      // position just after the matched word tokens
-      const afterIdx = at + key.length * 2 - 1; // words interleaved with spaces
-      let startTok = afterIdx;
-      // skip to the token right after the last matched word
-      startTok = afterIdxToContinuation(entry.words, at, key.length);
+      // token index just after the last matched word
+      const startTok = afterIdxToContinuation(entry.words, at, key.length);
       if (startTok >= entry.words.length) continue;
-      const cont = takeWords(entry.words, startTok, MAX_WORDS);
-      if (!cont.trim()) continue;
-      const needsSpace = !/\s$/.test(typed) && !/^\s/.test(cont);
-      return (needsSpace ? " " : "") + cont;
+      const cont = takeWords(entry.words, startTok, MAX_WORDS).replace(/^\s+/, "");
+      if (!cont) continue;
+      return joinGhost(typed, cont);
     }
   }
 
@@ -122,8 +118,14 @@ export function predict(typed: string): string {
   const last = lastWords(typed, 1)[0] ?? "";
   const pool = OPENERS.filter((o) => !o.startsWith(last));
   const pick = pool[(last.length + trimmed.length) % pool.length] ?? OPENERS[0];
-  const needsSpace = !/\s$/.test(typed);
-  return (needsSpace ? " " : "") + pick;
+  return joinGhost(typed, pick);
+}
+
+// Join a continuation to `typed` with exactly one separating space (or none if
+// `typed` already ends in whitespace / is empty).
+function joinGhost(typed: string, cont: string): string {
+  if (typed.length === 0 || /\s$/.test(typed)) return cont;
+  return " " + cont;
 }
 
 // Find the index in `hayWords` (interleaved word/space tokens, lowercased)

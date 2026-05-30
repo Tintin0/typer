@@ -1,0 +1,11 @@
+{
+  "name": "typer-site",
+  "compatibility_date": "2025-05-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    { "pattern": "typr.frgmt.xyz", "custom_domain": true }
+  ]
+}
