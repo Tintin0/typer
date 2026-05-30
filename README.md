@@ -17,8 +17,11 @@ and a small GGUF model — no cloud, no account, no Apple Developer Program.
 - **Inline ghost-text completions** (5–7 words) at your caret, in (almost) any app.
 - **Type-into-the-suggestion**: as long as you type what it predicted, the ghost
   just shrinks — it doesn't regenerate. It only re-thinks when you diverge.
+- **Streaming**: the ghost appears word-by-word as the model generates, so the
+  first word shows in well under ~100ms instead of waiting for the whole phrase.
 - **Typo correction** via the macOS spell checker, shown as a strikethrough diff
-  (<kbd>Tab</kbd> to accept).
+  (<kbd>Tab</kbd> to accept). *Off by default in this build* — enable it in the
+  menu or config.
 - **Per-app sessions**: each app keeps its own typing context, so switching apps
   starts fresh instead of bleeding context between a chat and your code.
 - **Learns your voice**: keeps a small local record of what you actually write
@@ -75,7 +78,9 @@ open ~/Applications/Typer.app
 tail -f ~/Library/Logs/Typer.log   # watch what it's doing
 ```
 
-A ⌨︎ icon appears in your menu bar.
+A ⌨︎ icon appears in your menu bar. Click it to toggle features live (Enabled,
+Completions, Typo, context sources), see the model, accept-rate stats, and learned
+style count, clear learned style, or open the config/log — no file editing needed.
 
 ### Stable signing (recommended)
 

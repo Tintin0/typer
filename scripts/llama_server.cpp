@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <functional>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -316,7 +317,10 @@ public:
         last_prompt_tokens = toks;
     }
 
-    std::string generate(const std::string &prompt, int max_tokens) {
+    // on_token(full_output_so_far) is called after each token; returning false stops
+    // generation early (used for streaming + early mid-word suppression).
+    std::string generate(const std::string &prompt, int max_tokens,
+                         const std::function<bool(const std::string &)> &on_token = nullptr) {
         auto toks = tokenize(prompt, false);
         if ((int)toks.size() + max_tokens + 8 > n_ctx) {
             toks.erase(toks.begin(), toks.begin() + ((int)toks.size() + max_tokens + 8 - n_ctx));
@@ -333,6 +337,7 @@ public:
             std::vector<llama_token> one = { id };
             decode_tokens(one, 0, 1, pos, true);
             pos++;
+            if (on_token && !on_token(out)) break;
         }
         llama_sampler_free(smpl);
         return out;
@@ -403,33 +408,61 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     int max_tokens = std::max(8, std::min(18, max_words + 7));
-                    std::string raw = engine.generate(prompt_complete(context, max_words), max_tokens);
-                    // The model signals a word boundary itself: a leading-space token
-                    // (e.g. " jumps") means "new word", no leading space (e.g. "etion"
-                    // after "autocompl", or "!") means "continue this word / punctuation".
-                    // Preserve that intent instead of force-adding a space, which was
-                    // corrupting mid-word completions ("autocompl ition") and punctuation
-                    // ("cool !"). first_line_clean trims, so capture the signal first.
-                    bool model_wants_space = !raw.empty() && std::isspace((unsigned char)raw.front());
-                    std::string out = first_line_clean(raw);
-                    out = remove_echo(out, context);
-                    size_t nl = out.find('\n');
-                    if (nl != std::string::npos) out.resize(nl);
-                    out = limit_words(out, max_words);
-                    if (looks_bad_completion(out)) out.clear();
-                    // Suppress mid-word completions. When the context ends inside a
-                    // word and the model continues it WITHOUT a leading space (e.g.
-                    // "autocompl" -> "ition", "apprec" -> "ite"), this base model is
-                    // unreliable at subword continuation, so showing nothing beats a
-                    // wrong guess. A leading-space output means a new word — keep it.
+                    bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
                     bool ctx_ends_alnum = !context.empty() && std::isalnum((unsigned char)context.back());
-                    bool out_starts_alnum = !out.empty() && std::isalnum((unsigned char)out.front());
-                    if (ctx_ends_alnum && !model_wants_space && out_starts_alnum) out.clear();
+
+                    // The model signals a word boundary itself: a leading-space token
+                    // ("jumps" -> " jumps") means "new word"; no leading space ("etion"
+                    // after "autocompl", "!") means "continue this word / punctuation".
+                    bool first_seen = false, lead_space = false, suppressed = false;
+                    std::string last_emitted;
+
+                    auto shape = [&](const std::string &full) -> std::string {
+                        std::string s = first_line_clean(full);
+                        s = remove_echo(s, context);
+                        size_t nl = s.find('\n'); if (nl != std::string::npos) s.resize(nl);
+                        s = limit_words(s, max_words);
+                        if (!s.empty() && !ctx_ends_space && lead_space) s = " " + s;
+                        return s;
+                    };
+
+                    // Stream partial completions token-by-token so the UI shows the
+                    // first word almost immediately instead of waiting for all of them.
+                    std::string raw = engine.generate(prompt_complete(context, max_words), max_tokens,
+                        [&](const std::string &full) -> bool {
+                            std::string s = first_line_clean(full);
+                            if (s.empty()) return true;
+                            if (!first_seen) {
+                                first_seen = true;
+                                lead_space = std::isspace((unsigned char)full[0]) != 0;
+                                // Early mid-word suppression: stop before flashing a
+                                // wrong subword continuation.
+                                if (ctx_ends_alnum && !lead_space && std::isalnum((unsigned char)s[0])) {
+                                    suppressed = true; return false;
+                                }
+                            }
+                            std::string shaped = shape(full);
+                            if (!shaped.empty() && shaped != last_emitted) {
+                                last_emitted = shaped;
+                                std::cout << "{\"p\":\"" << json_escape(shaped) << "\"}\n" << std::flush;
+                            }
+                            int wc = 0; bool inw = false;
+                            for (char c : shaped) { if (std::isspace((unsigned char)c)) { if (inw) wc++; inw = false; } else inw = true; }
+                            if (inw) wc++;
+                            // Stop at enough words, or at a natural sentence end.
+                            char last = shaped.empty() ? 0 : shaped.back();
+                            if (wc >= 3 && (last == '.' || last == '!' || last == '?')) return false;
+                            return wc < max_words;
+                        });
+
+                    std::string out;
+                    if (!suppressed) {
+                        out = shape(raw);
+                        if (looks_bad_completion(out)) out.clear();
+                    }
                     if (out.empty()) {
                         std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
                     } else {
-                        bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
-                        if (!ctx_ends_space && model_wants_space) out = " " + out;
                         std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\"" << json_escape(out) << "\"}}\n" << std::flush;
                     }
                 }

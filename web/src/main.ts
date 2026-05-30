@@ -1,35 +1,47 @@
 import "./style.css";
-import { TyperEngine } from "./engine";
-import { initShader } from "./webgl";
+import { initScene } from "./scene3d";
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`missing #${id}`);
-  return node as T;
+const canvas = document.getElementById("scene") as HTMLCanvasElement;
+const hint = document.getElementById("hint")!;
+const reveal = document.getElementById("reveal") as HTMLElement;
+const copyBtn = document.getElementById("copyBtn") as HTMLButtonElement;
+const rebuildBtn = document.getElementById("rebuild") as HTMLButtonElement;
+
+const scene = initScene(
+  canvas,
+  // onReveal: word has shattered to the floor
+  () => {
+    hint.classList.add("gone");
+    reveal.hidden = false;
+    // next frame so the [hidden]->visible transition animates
+    requestAnimationFrame(() => reveal.classList.add("show"));
+  },
+  // onRebuilt: word flew back together
+  () => {
+    reveal.classList.remove("show");
+    reveal.hidden = true;
+    hint.classList.remove("gone");
+  },
+);
+
+if (!scene) {
+  // WebGL unavailable — fall back to just showing the command
+  document.body.classList.add("no-webgl");
+  hint.remove();
+  reveal.hidden = false;
+  reveal.classList.add("show");
 }
 
-// shader backdrop — degrades gracefully to the CSS gradient if WebGL is absent
-const gfx = document.getElementById("gfx") as HTMLCanvasElement | null;
-if (gfx) {
-  const ok = initShader(gfx);
-  if (!ok) gfx.remove();
-}
+// click anywhere on the canvas shatters the word
+canvas.addEventListener("pointerdown", () => scene?.shatter());
 
-// the live editor — the whole point of the page
-const engine = new TyperEngine({
-  root: el("editor"),
-  ink: el("ink"),
-  ghost: el("ghost"),
-  caret: el("caret"),
-  hint: el("hint"),
+rebuildBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  scene?.rebuild();
 });
 
-// kick off the scripted demo shortly after load (cancels on first interaction)
-window.setTimeout(() => engine.playDemo(), 900);
-
-// copy-to-clipboard for the install one-liner
-const copyBtn = document.getElementById("copyBtn") as HTMLButtonElement | null;
-copyBtn?.addEventListener("click", async () => {
+copyBtn?.addEventListener("click", async (e) => {
+  e.stopPropagation();
   const cmd = "git clone https://github.com/frgmt0/typer.git && cd typer && ./install.sh";
   try {
     await navigator.clipboard.writeText(cmd);
@@ -44,23 +56,3 @@ copyBtn?.addEventListener("click", async () => {
     copyBtn.textContent = "⌘C";
   }
 });
-
-// gentle reveal for the (deliberately sparse) content below the fold
-const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const revealables = document.querySelectorAll<HTMLElement>("[data-reveal]");
-if (reduce) {
-  revealables.forEach((n) => n.classList.add("in"));
-} else {
-  const io = new IntersectionObserver(
-    (entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          e.target.classList.add("in");
-          io.unobserve(e.target);
-        }
-      }
-    },
-    { threshold: 0.18, rootMargin: "0px 0px -8% 0px" },
-  );
-  revealables.forEach((n) => io.observe(n));
-}

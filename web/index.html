@@ -3,99 +3,61 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Typer — local autocomplete that lives at your cursor</title>
+    <title>typr — autocomplete that lives at your cursor</title>
     <meta
       name="description"
-      content="A faint suggestion at your caret, in almost any macOS app. Type along it and it shrinks. The model never leaves your Mac — no cloud, no account."
+      content="Local, on-device autocomplete for macOS. A faint suggestion at your caret, in almost any app. Runs on your Mac — no cloud, no account."
     />
-    <meta property="og:title" content="Typer — local autocomplete for macOS" />
-    <meta
-      property="og:description"
-      content="Ghost text at your cursor, in any app. Tab takes a word, ` takes the line. Everything runs on-device."
-    />
+    <meta property="og:title" content="typr" />
+    <meta property="og:description" content="Local autocomplete for macOS. On your Mac. Nowhere else." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://typr.frgmt.xyz" />
-    <meta name="theme-color" content="#0c0b0a" />
+    <meta name="theme-color" content="#08070a" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
-    <canvas id="gfx" class="gfx" aria-hidden="true"></canvas>
-    <a class="skip" href="#install">Skip to install</a>
+    <canvas id="scene" class="scene" aria-hidden="true"></canvas>
 
-    <header class="nav" aria-label="Primary">
+    <header class="nav">
       <a class="brand" href="/">
         <span class="brand-glyph" aria-hidden="true">⌨</span>
-        <span class="brand-word">Typer<b class="brand-caret" aria-hidden="true"></b></span>
+        <span class="brand-word">typr<b class="brand-caret" aria-hidden="true"></b></span>
       </a>
-      <nav class="nav-links">
-        <a class="nav-gh" href="https://github.com/frgmt0/typer">GitHub ↗</a>
-      </nav>
+      <a class="nav-gh" href="https://github.com/frgmt0/typer">GitHub ↗</a>
     </header>
 
-    <main>
-      <!-- HERO: nothing but the shader, a dare, and the live thing -->
-      <section class="hero" id="top">
-        <h1 class="hero-h">Start typing.</h1>
+    <main class="stage">
+      <h1 class="sr-only">typr — local autocomplete for macOS</h1>
 
-        <figure class="stage" aria-label="A live demo: type and a grey suggestion appears at your cursor">
-          <div
-            class="editor"
-            id="editor"
-            tabindex="0"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Type here and a grey suggestion will appear at your cursor"
-          >
-            <div class="doc">
-              <span class="ink" id="ink"></span><b class="caret" id="caret" aria-hidden="true"></b
-              ><span class="ghost" id="ghost"></span>
-            </div>
-            <span class="placeholder" id="hint">type something…</span>
-          </div>
-        </figure>
+      <p class="hint" id="hint" aria-hidden="true">
+        <span class="hint-dot"></span> click the word
+      </p>
 
-        <p class="hero-sub" aria-hidden="true">
-          <span class="key" data-key="tab"><kbd>Tab</kbd> a word</span>
-          <span class="key" data-key="tick"><kbd>`</kbd> the line</span>
-          <span class="key"><kbd>esc</kbd> dismiss</span>
-          <span class="key ghost-key">…or just type through the grey</span>
+      <div class="reveal" id="reveal" hidden>
+        <p class="reveal-lead">
+          local autocomplete for macOS. it finishes your line, right at the cursor,
+          in almost any app — and it runs <em>on your Mac</em>. nowhere else.
         </p>
-
-        <a class="scrollcue" href="#what">
-          <span>what is this</span>
-          <span class="cue-arrow" aria-hidden="true">↓</span>
-        </a>
-      </section>
-
-      <!-- THE ONLY EXPLANATION. Short on purpose. -->
-      <section class="what" id="what">
-        <p class="what-lead" data-reveal>
-          It's <strong>Typer</strong> — autocomplete that lives at your cursor, in
-          almost any macOS app. A small model runs <em>on your Mac</em> and finishes
-          your line in grey. Type along it and it disappears. No cloud. No account.
-          It forgets you when you ask.
-        </p>
-
-        <div class="get" data-reveal>
+        <div class="get">
           <pre class="code"><span class="c-cmt"># macOS 14+ · Apple Silicon</span>
 git clone https://github.com/frgmt0/typer.git && <span class="c-dim">cd</span> typer && ./install.sh</pre>
           <button class="copy-btn" id="copyBtn" type="button">Copy</button>
         </div>
-
-        <p class="get-meta" data-reveal>
-          <a href="https://github.com/frgmt0/typer">GitHub</a>
+        <p class="reveal-meta">
+          <button class="rebuild" id="rebuild" type="button">↻ put it back</button>
           <span class="sep">·</span>
-          <a href="https://github.com/frgmt0/typer/blob/main/LICENSE">MIT</a>
+          <a href="https://github.com/frgmt0/typer">source</a>
           <span class="sep">·</span>
           <span class="dim">runs locally · alpha</span>
         </p>
-      </section>
+      </div>
     </main>
 
-    <footer class="foot">
-      <span class="brand-word small">Typer<b class="brand-caret" aria-hidden="true"></b></span>
-      <span class="foot-dim">a frgmt project</span>
-    </footer>
+    <noscript>
+      <p style="position: fixed; bottom: 1rem; left: 0; right: 0; text-align: center; color: #888; font-family: monospace">
+        typr — local autocomplete for macOS · github.com/frgmt0/typer
+      </p>
+    </noscript>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

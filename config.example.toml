@@ -3,7 +3,7 @@
 
 enabled = true
 completion_enabled = true
-typo_correction_enabled = true
+typo_correction_enabled = false   # off by default — focus is on autocomplete
 grammar_correction_enabled = false
 
 # Leave empty to auto-pick the first .gguf in the Models directory.

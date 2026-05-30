@@ -23,7 +23,7 @@ func log(_ message: String) {
 struct TyperConfig {
     var enabled = true
     var completionEnabled = true
-    var typoEnabled = true
+    var typoEnabled = false
     var grammarEnabled = false
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
@@ -88,8 +88,11 @@ struct MLXSuggestion: Codable {
     let replacement: String?
 }
 
-struct MLXResponse: Codable {
-    let ok: Bool
+// One line of the helper's streaming response: either a partial ({"p":...}) or the
+// final result ({"ok":..., "suggestion":...}).
+struct StreamLine: Codable {
+    let p: String?
+    let ok: Bool?
     let error: String?
     let suggestion: MLXSuggestion?
 }
@@ -156,23 +159,30 @@ final class MLXClient {
         output = outPipe.fileHandleForReading
     }
 
-    func request(task: String, context: String, maxWords: Int) throws -> MLXSuggestion? {
+    // Sends one request and reads the streaming response. `onPartial` is invoked
+    // (on this background thread) for each partial completion; the final suggestion
+    // is returned.
+    func request(task: String, context: String, maxWords: Int, onPartial: ((String) -> Void)? = nil) throws -> MLXSuggestion? {
         lock.lock(); defer { lock.unlock() }
         try start()
         let req = MLXRequest(task: task, context: context, max_words: maxWords)
         log("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try JSONEncoder().encode(req) + Data([0x0A])
         try input?.write(contentsOf: data)
-        guard let line = try output?.readLine(), !line.isEmpty else {
-            process = nil
-            throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "MLX helper exited"])
+        let decoder = JSONDecoder()
+        while true {
+            guard let line = try output?.readLine(), !line.isEmpty else {
+                process = nil
+                throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper exited"])
+            }
+            let res = try decoder.decode(StreamLine.self, from: line)
+            if let p = res.p { onPartial?(p); continue }      // partial token update
+            if res.ok == false {
+                throw NSError(domain: "Typer", code: 2, userInfo: [NSLocalizedDescriptionKey: res.error ?? "Unknown error"])
+            }
+            log("response kind=\(res.suggestion?.kind ?? "nil") text=\((res.suggestion?.text ?? res.suggestion?.replacement ?? "nil").prefix(80))")
+            return res.suggestion                              // final line
         }
-        let res = try JSONDecoder().decode(MLXResponse.self, from: line)
-        log("response ok=\(res.ok) kind=\(res.suggestion?.kind ?? "nil") text=\((res.suggestion?.text ?? res.suggestion?.replacement ?? "nil").prefix(80))")
-        if !res.ok {
-            throw NSError(domain: "Typer", code: 2, userInfo: [NSLocalizedDescriptionKey: res.error ?? "Unknown MLX error"])
-        }
-        return res.suggestion
     }
 }
 
@@ -434,27 +444,92 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    func disabledItem(_ title: String) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: nil, keyEquivalent: ""); i.isEnabled = false; return i
+    }
+
+    func toggleItem(_ title: String, key: String, value: Bool) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: #selector(toggleSetting(_:)), keyEquivalent: "")
+        i.state = value ? .on : .off
+        i.representedObject = key
+        i.target = self
+        return i
+    }
+
     func rebuildMenu() {
         let menu = NSMenu()
-        let status = NSMenuItem(title: "Typer Swift: running", action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        let statsItem = NSMenuItem(title: "Shown \(stats.shown) · Accepted \(stats.accepted) (\(stats.acceptRate)%) · Ignored \(stats.ignored)", action: nil, keyEquivalent: "")
-        statsItem.isEnabled = false
-        menu.addItem(statsItem)
-        let learned = NSMenuItem(title: "Learned style: \(styleMemory.sentenceCount()) sentences", action: nil, keyEquivalent: "")
-        learned.isEnabled = false
-        menu.addItem(learned)
-        menu.addItem(NSMenuItem.separator())
+        let model = (MLXClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
+        menu.addItem(disabledItem("Typer — \(cfg.enabled ? "on" : "paused")"))
+        menu.addItem(disabledItem("Model: \(model)"))
+        menu.addItem(disabledItem("Shown \(stats.shown) · Accepted \(stats.acceptRate)% · Ignored \(stats.ignored)"))
+        menu.addItem(disabledItem("Learned style: \(styleMemory.sentenceCount()) sentences"))
+        menu.addItem(.separator())
+
+        menu.addItem(toggleItem("Enabled", key: "enabled", value: cfg.enabled))
+        menu.addItem(toggleItem("Completions", key: "completion_enabled", value: cfg.completionEnabled))
+        menu.addItem(toggleItem("Typo correction", key: "typo_correction_enabled", value: cfg.typoEnabled))
+        menu.addItem(.separator())
+
+        let ctx = NSMenu()
+        ctx.addItem(toggleItem("Window text", key: "window_context_enabled", value: cfg.windowContextEnabled))
+        ctx.addItem(toggleItem("Clipboard", key: "clipboard_context_enabled", value: cfg.clipboardContextEnabled))
+        ctx.addItem(toggleItem("Screen OCR (noisy)", key: "screen_context_enabled", value: cfg.screenContextEnabled))
+        ctx.addItem(toggleItem("Learn my style", key: "style_memory_enabled", value: cfg.styleMemoryEnabled))
+        let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
+        menu.addItem(ctxItem)
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Test Completion Preview", action: #selector(testCompletion), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Test Typo Preview", action: #selector(testTypo), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Test Grammar Preview", action: #selector(testGrammar), keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
-        for item in menu.items where item.action != nil { item.target = self }
+        menu.addItem(.separator())
+
+        menu.addItem(NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Open Log…", action: #selector(openLog), keyEquivalent: ""))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Typer", action: #selector(quit), keyEquivalent: "q"))
+        for item in menu.items where item.action != nil && item.target == nil { item.target = self }
         statusItem.menu = menu
+        statusItem.button?.title = cfg.enabled ? "⌨︎" : "⌨︎⏸"
     }
+
+    func configURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/typer/config.toml")
+    }
+
+    // Persist a single key=value into config.toml (replacing the line or appending).
+    func writeConfig(_ key: String, _ value: String) {
+        let url = configURL()
+        var lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var found = false
+        for i in lines.indices {
+            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix(key), t.dropFirst(key.count).trimmingCharacters(in: .whitespaces).first == "=" {
+                lines[i] = "\(key) = \(value)"; found = true; break
+            }
+        }
+        if !found { lines.append("\(key) = \(value)") }
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    @objc func toggleSetting(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        let v = sender.state != .on
+        switch key {
+        case "enabled": cfg.enabled = v; if !v { clearSuggestion() }
+        case "completion_enabled": cfg.completionEnabled = v
+        case "typo_correction_enabled": cfg.typoEnabled = v
+        case "window_context_enabled": cfg.windowContextEnabled = v
+        case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
+        case "screen_context_enabled": cfg.screenContextEnabled = v
+        case "style_memory_enabled": cfg.styleMemoryEnabled = v
+        default: break
+        }
+        writeConfig(key, v ? "true" : "false")
+        log("toggle \(key)=\(v)")
+        rebuildMenu()
+    }
+
+    @objc func openConfig() { NSWorkspace.shared.open(configURL()) }
+    @objc func openLog() { NSWorkspace.shared.open(typerLogURL) }
 
     func setupEventTap() {
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
@@ -751,7 +826,17 @@ final class TyperApp: NSObject, NSApplicationDelegate {
         let promptContext = assembledContext(immediate: context)
         log("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
         DispatchQueue.global(qos: .userInitiated).async {
-            let sug = try? self.client.request(task: task, context: promptContext, maxWords: self.cfg.maxCompletionWords)
+            // Live preview: paint partial completions as they stream in, but only
+            // while the user hasn't typed since the request (else it's the final
+            // line's job to reconcile via presentCompletion).
+            let onPartial: (String) -> Void = task == "complete" ? { partial in
+                DispatchQueue.main.async {
+                    guard appKey == self.activeAppKey, self.buffer == reqBuffer, !partial.isEmpty else { return }
+                    self.completion = ActiveCompletion(chars: Array(partial))
+                    self.showCompletionRemainder()
+                }
+            } : { _ in }
+            let sug = try? self.client.request(task: task, context: promptContext, maxWords: self.cfg.maxCompletionWords, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded
