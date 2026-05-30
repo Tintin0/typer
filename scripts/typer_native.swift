@@ -633,10 +633,18 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
-    // The menu-bar badge: a "t" followed by the running count of completions taken.
+    // The menu-bar badge: a keyboard icon (renders reliably; a text-only status item
+    // can collapse to zero width / be impossible to spot) plus the running count of
+    // completions taken.
     func updateStatusTitle() {
-        let badge = "t|\(stats.accepted)"
-        statusItem?.button?.title = cfg.enabled ? badge : badge + " ⏸"
+        guard let button = statusItem?.button else { return }
+        if button.image == nil {
+            let img = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Typer")
+            img?.isTemplate = true
+            button.image = img
+            button.imagePosition = .imageLeading
+        }
+        button.title = cfg.enabled ? " \(stats.accepted)" : " ⏸"
     }
 
     // NSMenuDelegate: rebuild on open so stats/toggles are always current without
