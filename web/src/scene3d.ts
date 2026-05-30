@@ -16,12 +16,17 @@ const GRAVITY = -17;
 const RESTITUTION = 0.4;
 const FRICTION = 0.74;
 
-type Phase = "idle" | "shatter" | "fallen" | "rebuild";
+type Phase = "idle" | "shatter" | "gather" | "fallen" | "rebuild";
 
 export interface Scene3D {
   shatter(): void;
   rebuild(): void;
   dispose(): void;
+}
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
 }
 
 function sampleWord(text: string, step: number) {
@@ -80,6 +85,10 @@ export function initScene(
   const vel = new Float32Array(count * 3);
   const quat = new Float32Array(count * 4);
   const angvel = new Float32Array(count * 3);
+  const sc = new Float32Array(count).fill(1); // per-cube scale
+  const builder = new Uint8Array(count); // cubes that rise to "generate" the panel
+  const gStart = new Float32Array(count * 3); // gather start (floor) pos
+  const gTarget = new Float32Array(count * 3); // gather target (cloud) pos
 
   const tmpQ = new THREE.Quaternion();
   const tmpE = new THREE.Euler();
@@ -153,6 +162,7 @@ export function initScene(
 
   function setRestMatrices() {
     for (let i = 0; i < count; i++) {
+      sc[i] = 1;
       dummy.position.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]);
       dummy.quaternion.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
       dummy.scale.copy(cubeScale);
@@ -184,10 +194,12 @@ export function initScene(
   let shakeT = 0;
   let nextShake = 1.0;
   let fallTimer = 0;
-  let revealed = false;
+  let gatherT = 0;
   let rebuildT = 0;
+  const GATHER_DUR = 2.0;
   const rebuildFrom = new Float32Array(count * 3);
   const rebuildFromQ = new Float32Array(count * 4);
+  const rebuildFromS = new Float32Array(count);
   const clock = new THREE.Clock();
 
   const matrix = new THREE.Matrix4();
@@ -233,20 +245,44 @@ export function initScene(
     bakeAndBurst();
     phase = "shatter";
     fallTimer = 0;
-    revealed = false;
+  }
+
+  // a horizontal cloud region (world units) where the "generator" cubes gather,
+  // sitting behind the centered text block
+  const cloudW = 5.4;
+  const cloudH = 2.6;
+
+  function initGather() {
+    // pick a spread-out subset of fallen cubes to rise and diffuse
+    const want = Math.min(count, 1400);
+    const stride = Math.max(1, Math.floor(count / want));
+    for (let i = 0; i < count; i++) {
+      builder[i] = i % stride === 0 ? 1 : 0;
+      if (builder[i]) {
+        const ix = i * 3;
+        gStart[ix] = pos[ix];
+        gStart[ix + 1] = pos[ix + 1];
+        gStart[ix + 2] = pos[ix + 2];
+        gTarget[ix] = (Math.random() - 0.5) * cloudW;
+        gTarget[ix + 1] = (Math.random() - 0.5) * cloudH;
+        gTarget[ix + 2] = -0.4 + (Math.random() - 0.5) * 0.6;
+      }
+    }
   }
 
   function startRebuild() {
     if (phase !== "fallen") return;
     rebuildFrom.set(pos);
     rebuildFromQ.set(quat);
+    rebuildFromS.set(sc);
     rebuildT = 0;
     phase = "rebuild";
   }
 
   function writeInstance(i: number, px: number, py: number, pz: number, q: THREE.Quaternion) {
     vP.set(px, py, pz);
-    matrix.compose(vP, q, cubeScale);
+    vS.set(sc[i], sc[i], sc[i]);
+    matrix.compose(vP, q, vS);
     mesh.setMatrixAt(i, matrix);
   }
 
@@ -325,11 +361,41 @@ export function initScene(
       mesh.instanceMatrix.needsUpdate = true;
       fallTimer += dt;
       mat.uniforms.uBright.value = Math.max(0.5, 1 - fallTimer * 0.22);
-      if (!revealed && (settled > count * 0.55 || fallTimer > 2.2)) {
-        revealed = true;
-        onReveal();
+      if (settled > count * 0.5 || fallTimer > 1.9) {
+        initGather();
+        onReveal(); // text "generates" while the cubes diffuse in
+        phase = "gather";
+        gatherT = 0;
       }
-      if (fallTimer > 3.0) phase = "fallen";
+    } else if (phase === "gather") {
+      gatherT += dt;
+      const gt = Math.min(1, gatherT / GATHER_DUR);
+      const e = 1 - Math.pow(1 - gt, 3); // easeOutCubic -> converge
+      const noise = (1 - gt) * (1 - gt) * 0.7; // decaying diffusion jitter
+      mat.uniforms.uBright.value = 0.6 + gt * 0.5;
+      for (let i = 0; i < count; i++) {
+        if (!builder[i]) continue;
+        const ix = i * 3;
+        const x = gStart[ix] + (gTarget[ix] - gStart[ix]) * e + (Math.random() - 0.5) * noise;
+        const y = gStart[ix + 1] + (gTarget[ix + 1] - gStart[ix + 1]) * e + (Math.random() - 0.5) * noise;
+        const z = gStart[ix + 2] + (gTarget[ix + 2] - gStart[ix + 2]) * e + (Math.random() - 0.5) * noise;
+        // settle orientation toward rest, then dissolve (shrink) as it locks in
+        qA.set(quat[i * 4], quat[i * 4 + 1], quat[i * 4 + 2], quat[i * 4 + 3]);
+        qB.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
+        qA.slerp(qB, e);
+        sc[i] = 1 - smoothstep(0.62, 1.0, gt);
+        // persist so a later rebuild starts from the real current state
+        pos[ix] = x;
+        pos[ix + 1] = y;
+        pos[ix + 2] = z;
+        quat[i * 4] = qA.x;
+        quat[i * 4 + 1] = qA.y;
+        quat[i * 4 + 2] = qA.z;
+        quat[i * 4 + 3] = qA.w;
+        writeInstance(i, x, y, z, qA);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (gt >= 1) phase = "fallen";
     } else if (phase === "rebuild") {
       rebuildT = Math.min(1, rebuildT + dt * 1.3);
       const e = 1 - Math.pow(1 - rebuildT, 3);
@@ -341,6 +407,7 @@ export function initScene(
         qA.set(rebuildFromQ[i * 4], rebuildFromQ[i * 4 + 1], rebuildFromQ[i * 4 + 2], rebuildFromQ[i * 4 + 3]);
         qB.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
         qA.slerp(qB, e);
+        sc[i] = rebuildFromS[i] + (1 - rebuildFromS[i]) * e;
         writeInstance(i, x, y, z, qA);
       }
       mesh.instanceMatrix.needsUpdate = true;

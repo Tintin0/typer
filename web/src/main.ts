@@ -11,12 +11,15 @@ const copyBtn = document.getElementById("copyBtn") as HTMLButtonElement;
 const rebuildBtn = document.getElementById("rebuild") as HTMLButtonElement;
 
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-let typeToken = 0; // cancels an in-flight typewriter if the user rebuilds
+let genToken = 0; // cancels an in-flight generation if the user rebuilds
 
-function typewriter(text: string): Promise<void> {
-  const token = ++typeToken;
+const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/:.-_&@#";
+
+// "diffusion" text reveal: the line churns through random glyphs and resolves
+// left-to-right into the real command, matching the cubes denoising into place.
+function generate(text: string, dur = 1500): Promise<void> {
+  const token = ++genToken;
   cmd.classList.remove("lit");
-  cmdLine.textContent = "";
   cmdLine.classList.add("typing");
   if (reduce) {
     cmdLine.textContent = text;
@@ -25,15 +28,22 @@ function typewriter(text: string): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    let i = 0;
+    const start = performance.now();
     const tick = () => {
-      if (token !== typeToken) return; // cancelled
-      cmdLine.textContent = text.slice(0, i);
-      i++;
-      if (i <= text.length) {
-        // a touch faster through the long URL, slight human jitter
-        setTimeout(tick, 14 + Math.random() * 26);
+      if (token !== genToken) return; // cancelled
+      const p = Math.min(1, (performance.now() - start) / dur);
+      const locked = Math.floor(p * text.length);
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (i < locked || ch === " ") out += ch;
+        else out += GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      }
+      cmdLine.textContent = out;
+      if (p < 1) {
+        requestAnimationFrame(tick);
       } else {
+        cmdLine.textContent = text;
         cmdLine.classList.remove("typing");
         cmd.classList.add("lit"); // kick off the border shimmer
         resolve();
@@ -50,12 +60,12 @@ const scene = initScene(
     reveal.hidden = false;
     requestAnimationFrame(() => {
       reveal.classList.add("show");
-      typewriter(CMD);
+      generate(CMD);
     });
   },
   // onRebuilt: the word flew back together
   () => {
-    typeToken++; // stop any typing
+    genToken++; // stop any in-flight generation
     reveal.classList.remove("show");
     cmd.classList.remove("lit");
     cmdLine.textContent = "";
