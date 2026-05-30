@@ -8,16 +8,27 @@ import Vision
 let typerLogURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/Typer.log")
 
+// When false (default), content-bearing logs (typed text, buffer/context/suggestion
+// snippets) are suppressed so the log is not a plaintext keystroke transcript.
+var debugLoggingEnabled = false
+
 func log(_ message: String) {
     let line = "\(Date()) \(message)\n"
     if !FileManager.default.fileExists(atPath: typerLogURL.path) {
-        FileManager.default.createFile(atPath: typerLogURL.path, contents: nil)
+        FileManager.default.createFile(atPath: typerLogURL.path, contents: nil,
+                                       attributes: [.posixPermissions: 0o600])
     }
     if let handle = try? FileHandle(forWritingTo: typerLogURL) {
         defer { try? handle.close() }
         _ = try? handle.seekToEnd()
         try? handle.write(contentsOf: Data(line.utf8))
     }
+}
+
+// Content-bearing log: only written when debug logging is explicitly enabled, so the
+// log never becomes a plaintext record of what the user typed.
+func dlog(_ message: @autoclosure () -> String) {
+    if debugLoggingEnabled { log(message()) }
 }
 
 struct TyperConfig {
@@ -40,6 +51,7 @@ struct TyperConfig {
     var screenContextEnabled = false  // screenshot OCR as prompt context — off by default (noisy)
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
+    var debugLogging = false            // when true, logs include typed text/snippets
 
     static func load() -> TyperConfig {
         var cfg = TyperConfig()
@@ -68,6 +80,7 @@ struct TyperConfig {
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds
+            case "debug_logging": cfg.debugLogging = value == "true"
             default: break
             }
         }
@@ -166,30 +179,50 @@ final class MLXClient {
         lock.lock(); defer { lock.unlock() }
         try start()
         let req = MLXRequest(task: task, context: context, max_words: maxWords)
-        log("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
+        dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try JSONEncoder().encode(req) + Data([0x0A])
-        try input?.write(contentsOf: data)
         let decoder = JSONDecoder()
-        while true {
-            guard let line = try output?.readLine(), !line.isEmpty else {
-                process = nil
-                throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper exited"])
+        do {
+            try input?.write(contentsOf: data)
+            while true {
+                guard let line = try output?.readLine(), !line.isEmpty else {
+                    throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper exited"])
+                }
+                let res = try decoder.decode(StreamLine.self, from: line)
+                if let p = res.p { onPartial?(p); continue }      // partial token update
+                if res.ok == false {
+                    throw NSError(domain: "Typer", code: 2, userInfo: [NSLocalizedDescriptionKey: res.error ?? "Unknown error"])
+                }
+                dlog("response kind=\(res.suggestion?.kind ?? "nil") text=\((res.suggestion?.text ?? res.suggestion?.replacement ?? "nil").prefix(80))")
+                return res.suggestion                              // final line
             }
-            let res = try decoder.decode(StreamLine.self, from: line)
-            if let p = res.p { onPartial?(p); continue }      // partial token update
-            if res.ok == false {
-                throw NSError(domain: "Typer", code: 2, userInfo: [NSLocalizedDescriptionKey: res.error ?? "Unknown error"])
-            }
-            log("response kind=\(res.suggestion?.kind ?? "nil") text=\((res.suggestion?.text ?? res.suggestion?.replacement ?? "nil").prefix(80))")
-            return res.suggestion                              // final line
+        } catch {
+            // On exit/timeout/parse error, kill the (possibly hung) helper so the next
+            // request spawns a fresh one instead of blocking on a dead pipe.
+            process?.terminate()
+            process = nil; input = nil; output = nil
+            throw error
         }
     }
+
+    // Lock-safe warm-up so the launch-time start() can't double-spawn against the
+    // first real request().
+    func warmUp() { lock.lock(); defer { lock.unlock() }; try? start() }
 }
 
 extension FileHandle {
-    func readLine() throws -> Data? {
+    // Reads one '\n'-terminated line, but never blocks longer than `timeoutMs` — a
+    // hung helper otherwise holds the request lock forever and wedges the serial
+    // background queue (caret/background features stop working until relaunch).
+    func readLine(timeoutMs: Int32 = 8000) throws -> Data? {
         var data = Data()
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while true {
+            var pfd = pollfd(fd: fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
+            let r = poll(&pfd, 1, remaining)
+            if r == 0 { throw NSError(domain: "Typer", code: 5, userInfo: [NSLocalizedDescriptionKey: "helper read timeout"]) }
+            if r < 0 { if errno == EINTR { continue }; throw NSError(domain: "Typer", code: 6, userInfo: [NSLocalizedDescriptionKey: "poll failed"]) }
             let chunk = try read(upToCount: 1)
             guard let chunk, !chunk.isEmpty else { return data.isEmpty ? nil : data }
             if chunk[0] == 0x0A { return data }
@@ -312,6 +345,7 @@ final class StyleMemory {
             existing += "\n" + t
             if existing.utf8.count > self.maxBytes { existing = String(existing.suffix(self.maxBytes / 2)) }
             try? existing.write(to: self.url, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
         }
     }
 
@@ -419,6 +453,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var requestInFlight = false
     var rerequestNeeded = false
     var lastTrailing = ""               // text right after the caret (for repeat-drop)
+    var pasteboardBusy = false          // serialize clipboard save/paste/restore
     var acceptedWords = 0
     var shift = false
     var ctrl = false
@@ -443,7 +478,13 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let backgroundQueue = DispatchQueue(label: "typer.background", qos: .utility)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        log("Typer launch cfg enabled=\(cfg.enabled) completion=\(cfg.completionEnabled) typo=\(cfg.typoEnabled) debounce=\(cfg.debounceMs)")
+        debugLoggingEnabled = cfg.debugLogging
+        // Enforce private perms even on a pre-existing log file.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: typerLogURL.path)
+        // Style memory may contain personal writing — keep it private too.
+        let styleURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/typer/style.txt")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: styleURL.path)
+        log("Typer launch cfg enabled=\(cfg.enabled) completion=\(cfg.completionEnabled) typo=\(cfg.typoEnabled) debounce=\(cfg.debounceMs) debugLog=\(cfg.debugLogging)")
         activeAppKey = currentAppKey()
         log("initial app=\(activeAppKey)")
         client = MLXClient(cfg: cfg)
@@ -456,7 +497,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setupMenu()
         setupEventTap()
-        DispatchQueue.global(qos: .utility).async { try? self.client.start() }
+        DispatchQueue.global(qos: .utility).async { self.client.warmUp() }
     }
 
     func promptAccessibility() {
@@ -575,6 +616,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func setupEventTap() {
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.tapDisabledByTimeout.rawValue) | (1 << CGEventType.tapDisabledByUserInput.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             let app = Unmanaged<TyperApp>.fromOpaque(refcon!).takeUnretainedValue()
             return app.handle(type: type, event: event)
@@ -596,6 +638,20 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Self-heal: macOS disables the tap if a callback ever runs too long (e.g. a
+        // slow synchronous AX read into a hung app). Re-enable instead of dying.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
+            log("event tap re-enabled after \(type == .tapDisabledByTimeout ? "timeout" : "user-input")")
+            return nil
+        }
+        // PRIVACY: while macOS secure input is active (login window, password fields,
+        // sudo prompts, 1Password, etc.) capture NOTHING — don't buffer, log, learn,
+        // read AX, or generate. This is the standard keylogger guard.
+        if IsSecureEventInputEnabled() {
+            if completion != nil || active != nil { clearSuggestion() }
+            return Unmanaged.passUnretained(event)
+        }
         syncActiveApp()
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         if type == .keyUp {
@@ -639,7 +695,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if hasCommandLikeModifier || cmd || ctrl || alt { return Unmanaged.passUnretained(event) }
         if let chars = event.keyboardString, !chars.isEmpty {
-            log("[\(activeAppKey)] key chars=\(chars.replacingOccurrences(of: "\n", with: "\\n")) code=\(code)")
+            dlog("[\(activeAppKey)] key code=\(code)")   // never log the typed characters
             handleTyping(chars)
         } else {
             log("key nochars code=\(code)")
@@ -659,7 +715,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             prefetched = nil
             prefetchKey = ""
             overlay.orderOut(nil)
-            stats.ignored += 1; statsTouched()   // shown but the user typed elsewhere
+            // (No per-keystroke "ignored" counter — it over-counted natural typing.
+            //  Accept rate is accepted/shown, which is the meaningful signal.)
         }
         if cfg.typoEnabled, text.unicodeScalars.allSatisfy({ isWordSeparator($0) }), showTypoIfMisspelled() { return }
         scheduleGenerate()
@@ -824,8 +881,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         prefetchInFlight = true
         let promptContext = assembledContext(immediate: predicted)
         let appKey = activeAppKey
+        let maxWords = cfg.maxCompletionWords
         backgroundQueue.async {
-            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: self.cfg.maxCompletionWords)) ?? nil
+            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords)) ?? nil
             DispatchQueue.main.async {
                 self.prefetchInFlight = false
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
@@ -842,6 +900,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         completion = pf
         prefetched = nil
         prefetchKey = ""
+        stats.shown += 1; statsTouched()   // a promoted prefetch is a shown suggestion
         showCompletionRemainder()
         log("promoted prefetch")
         return true
@@ -884,7 +943,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let reqBuffer = buffer            // buffer snapshot for the staleness check
         let task = chooseTask(context: context)
         let promptContext = assembledContext(immediate: context)
-        log("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
+        let maxWords = cfg.maxCompletionWords
+        dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
         DispatchQueue.global(qos: .userInitiated).async {
             // Live preview: paint partial completions as they stream in, but only
             // while the user hasn't typed since the request (else it's the final
@@ -896,7 +956,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.showCompletionRemainder()
                 }
             } : { _ in }
-            let sug = try? self.client.request(task: task, context: promptContext, maxWords: self.cfg.maxCompletionWords, onPartial: onPartial)
+            let sug = try? self.client.request(task: task, context: promptContext, maxWords: maxWords, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded
@@ -1022,7 +1082,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Inline at the caret line, same as completions.
         let point = currentCaretPoint()
         overlay.showTypo(original: word, replacement: fix, at: point, lineHeight: lastCaretHeight)
-        log("[\(activeAppKey)] typo '\(word)' -> '\(fix)' at=\(point)")
+        dlog("[\(activeAppKey)] typo '\(word)' -> '\(fix)' at=\(point)")
         return true
     }
 
@@ -1109,7 +1169,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func clipboardText(limit: Int) -> String {
-        guard let s = NSPasteboard.general.string(forType: .string) else { return "" }
+        let pb = NSPasteboard.general
+        // Skip clipboard content password managers mark concealed/transient — never
+        // feed a copied password/secret into the prompt or logs.
+        let types = pb.types?.map { $0.rawValue } ?? []
+        if types.contains("org.nspasteboard.ConcealedType") || types.contains("org.nspasteboard.TransientType") {
+            return ""
+        }
+        guard let s = pb.string(forType: .string) else { return "" }
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard t.count >= 8 else { return "" }
         return String(t.prefix(limit))
@@ -1194,11 +1261,10 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // (Electron, terminals, custom editors). Captures the focused window, OCRs it,
     // finds where the user's most-recently-typed text ends on screen, and returns
     // the caret rect there. Slow (~150ms), so callers must throttle/cache it.
-    func screenshotCaretRect() -> (rect: CGRect, charWidth: CGFloat)? {
+    func screenshotCaretRect(needle: String) -> (rect: CGRect, charWidth: CGFloat)? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
-        // The phrase we look for on screen: the tail of what was just typed.
-        let typed = String(buffer.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
-        let needle = String(typed.suffix(18)).lowercased()
+        // `needle` (the tail of typed text to find on screen) is snapshotted on the
+        // main thread by the caller — never read self.buffer here (off-main).
         guard needle.count >= 3 else { return nil }
         guard let cap = captureFocusedWindow(), cap.image.width > 8 else { return nil }
         let req = VNRecognizeTextRequest()
@@ -1264,8 +1330,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shotCaretComputing = true
         let appKey = activeAppKey
         let bufLen = buffer.count
+        // Snapshot everything off `self` ON THE MAIN THREAD; the background closure
+        // must not touch self.buffer (concurrent String mutation = crash).
+        let needle = String(String(buffer.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines).suffix(18)).lowercased()
         backgroundQueue.async {
-            let res = self.screenshotCaretRect()
+            let res = self.screenshotCaretRect(needle: needle)
             DispatchQueue.main.async {
                 self.shotCaretComputing = false
                 guard appKey == self.activeAppKey, let res else { return }
@@ -1287,21 +1356,25 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fresh = Date().timeIntervalSince(backgroundRefreshedAt) < cfg.backgroundRefreshSeconds && key == backgroundKey
         if fresh || backgroundRefreshing { return }
         backgroundRefreshing = true
+        // Snapshot cfg flags on main (toggleSetting mutates cfg on main → race).
+        let wantWindow = cfg.windowContextEnabled
+        let wantScreen = cfg.screenContextEnabled
+        let wantClipboard = cfg.clipboardContextEnabled
         backgroundQueue.async {
             var parts: [String] = []
             // Prefer clean AX text. Only fall back to (noisier) OCR when AX gives us
             // little — typically Electron apps. This keeps OCR misreads out of the
             // prompt whenever a reliable source exists.
             var windowChars = 0
-            if self.cfg.windowContextEnabled {
+            if wantWindow {
                 let w = self.windowText(limit: 1000)
                 if w.count > 40 { parts.append(w); windowChars = w.count }
             }
-            if self.cfg.screenContextEnabled, windowChars < 120 {
+            if wantScreen, windowChars < 120 {
                 let o = self.screenOCR(limit: 600)
                 if o.count > 40 { parts.append(o) }
             }
-            if self.cfg.clipboardContextEnabled {
+            if wantClipboard {
                 let c = self.clipboardText(limit: 200)
                 if !c.isEmpty { parts.append("Clipboard: " + c) }
             }
@@ -1441,14 +1514,33 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // Accept text by briefly putting it on the clipboard and pasting. Safer version:
+    //  - serialized (no overlapping inserts that leave the suggestion stuck on the clipboard)
+    //  - snapshots/restores ALL item types (not just .string), so images/files survive
+    //  - uses changeCount to NOT clobber anything the user copied during the paste window
     func withPasteboard(_ text: String, action: () -> Void) {
         let pb = NSPasteboard.general
-        let old = pb.string(forType: .string)
+        if pasteboardBusy { return }      // don't overlap; a dropped accept is fine
+        pasteboardBusy = true
+
+        // Deep-copy the existing items so we can restore non-text content too.
+        let saved: [NSPasteboardItem] = pb.pasteboardItems?.compactMap { item in
+            let copy = NSPasteboardItem()
+            for type in item.types { if let d = item.data(forType: type) { copy.setData(d, forType: type) } }
+            return copy.types.isEmpty ? nil : copy
+        } ?? []
+
         pb.clearContents()
         pb.setString(text, forType: .string)
+        let afterWrite = pb.changeCount
         action()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            if let old { pb.clearContents(); pb.setString(old, forType: .string) }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            defer { self.pasteboardBusy = false }
+            // If the user copied something during the window, leave THEIR clipboard alone.
+            guard pb.changeCount == afterWrite else { return }
+            pb.clearContents()
+            if saved.isEmpty { pb.setString("", forType: .string) } else { pb.writeObjects(saved) }
         }
     }
 

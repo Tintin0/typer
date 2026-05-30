@@ -3,6 +3,40 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (hardening pass)
+
+Adversarial review of the whole codebase (concurrency, the C++ helper, pipeline
+logic, security). Fixes:
+
+### Security & privacy
+- **Never capture secure input.** While macOS secure input is active (password
+  fields, login window, `sudo`, password managers) Typer now captures nothing —
+  no buffer, no learning, no logging, no AX reads, no generation.
+- **Log is no longer a keystroke transcript.** Typed text and snippets are gated
+  behind `debug_logging` (default off); the log and `style.txt` are now `0600`.
+- **Clipboard context skips concealed/transient items** (password-manager copies).
+- **install.sh**: optional `TYPER_MODEL_SHA256` verification; reject path
+  separators in the model filename. **build.sh**: safe array globbing for dylibs.
+
+### Robustness / concurrency
+- **Event tap self-heals**: handles `tapDisabledByTimeout`/`ByUserInput` and
+  re-enables instead of silently dying.
+- **Fixed an off-main data race** on the keystroke buffer (the screenshot-caret and
+  background-context closures now snapshot buffer/config on the main thread).
+- **Helper can't wedge the app**: model reads now time out (8s) and tear down a
+  hung helper so the next request respawns it; warm-up is lock-safe (no
+  double-spawn); in-flight flags reset on all paths.
+- **Pasteboard is safe**: serialized, restores all clipboard item types (not just
+  text), and won't clobber something you copied during the paste window.
+
+### Helper (C++)
+- UTF-8-safe streaming partials (no broken multibyte in `{"p":...}`); RAII sampler
+  (no leak on a mid-generation error); `max_words` clamped.
+
+### Stats
+- Accept-rate is now honest: promoted prefetches count as shown; removed the noisy
+  per-keystroke "ignored" counter.
+
 ## Alpha — 2026-05-30 (later)
 
 Stability/quality pass informed by studying the open-source

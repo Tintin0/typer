@@ -33,12 +33,15 @@ fi
 echo "==> Using llama.cpp from: $LIBDIR"
 
 # Link every llama/ggml dylib present (handles both versioned and unversioned names).
-LIBFILES=$(ls "$LIBDIR"/libllama*.dylib "$LIBDIR"/libggml*.dylib 2>/dev/null || true)
-[ -n "$LIBFILES" ] || { echo "!! No libllama/libggml dylibs in $LIBDIR" >&2; exit 1; }
+# Use an array + globbing (not `ls`) so paths with spaces/metacharacters are safe.
+shopt -s nullglob
+LIBFILES=( "$LIBDIR"/libllama*.dylib "$LIBDIR"/libggml*.dylib )
+shopt -u nullglob
+[ "${#LIBFILES[@]}" -gt 0 ] || { echo "!! No libllama/libggml dylibs in $LIBDIR" >&2; exit 1; }
 
 echo "==> Building typer-llama-server"
 clang++ -std=c++17 -O3 "$ROOT_DIR/scripts/llama_server.cpp" \
-  -I"$INC" $LIBFILES -Wl,-rpath,"$LIBDIR" \
+  -I"$INC" "${LIBFILES[@]}" -Wl,-rpath,"$LIBDIR" \
   -o "$DATA_DIR/typer-llama-server"
 
 echo "==> Building Swift menu-bar app"

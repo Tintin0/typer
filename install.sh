@@ -52,6 +52,17 @@ else
     echo "!! Downloaded file is not a valid GGUF (wrong URL?). See README > Model." >&2
     rm -f "$tmp"; exit 1
   fi
+  # Optional integrity check: set TYPER_MODEL_SHA256 to verify the download.
+  if [ -n "${TYPER_MODEL_SHA256:-}" ]; then
+    got="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+    if [ "$got" != "$TYPER_MODEL_SHA256" ]; then
+      echo "!! SHA-256 mismatch: expected $TYPER_MODEL_SHA256, got $got" >&2
+      rm -f "$tmp"; exit 1
+    fi
+    echo "==> SHA-256 verified"
+  fi
+  # Never let MODEL_FILE escape the Models dir.
+  case "$MODEL_FILE" in */*|"") echo "!! TYPER_MODEL_FILE must be a plain filename" >&2; rm -f "$tmp"; exit 1;; esac
   mv "$tmp" "$MODEL_DIR/$MODEL_FILE"
 fi
 

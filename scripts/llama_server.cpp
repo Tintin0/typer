@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -156,6 +157,25 @@ static std::string strip_html_tags(const std::string &s) {
         out += s[i++];
     }
     return out;
+}
+
+// Drop a trailing incomplete UTF-8 sequence. Token streaming can split a multibyte
+// character across two tokens; emitting the half would produce invalid UTF-8 in a
+// {"p":...} JSON line and the Swift side would reject the whole partial.
+static std::string utf8_safe(const std::string &s) {
+    size_t len = s.size();
+    if (len == 0) return s;
+    size_t i = len, cont = 0;
+    while (i > 0 && ((unsigned char)s[i - 1] & 0xC0) == 0x80 && cont < 3) { i--; cont++; }
+    if (i == 0) return s;
+    unsigned char lead = (unsigned char)s[i - 1];
+    size_t expected = (lead & 0x80) == 0x00 ? 1 :
+                      (lead & 0xE0) == 0xC0 ? 2 :
+                      (lead & 0xF0) == 0xE0 ? 3 :
+                      (lead & 0xF8) == 0xF0 ? 4 : 0;
+    if (expected == 0) return s;                 // invalid lead byte; leave as-is
+    if (len - (i - 1) < expected) return s.substr(0, i - 1);  // incomplete tail → drop
+    return s;
 }
 
 static std::string first_line_clean(std::string s) {
@@ -347,11 +367,12 @@ public:
         }
         prepare_prompt(toks);
 
-        llama_sampler *smpl = make_sampler(toks);
+        // RAII so a throw from decode_tokens (or on_token) can't leak the sampler.
+        std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> smpl(make_sampler(toks), &llama_sampler_free);
         std::string out;
         for (int i = 0; i < max_tokens; ++i) {
-            llama_token id = llama_sampler_sample(smpl, ctx, -1);
-            llama_sampler_accept(smpl, id);
+            llama_token id = llama_sampler_sample(smpl.get(), ctx, -1);
+            llama_sampler_accept(smpl.get(), id);
             if (llama_vocab_is_eog(vocab, id)) break;
             out += detok(id);
             std::vector<llama_token> one = { id };
@@ -359,7 +380,6 @@ public:
             pos++;
             if (on_token && !on_token(out)) break;
         }
-        llama_sampler_free(smpl);
         return out;
     }
 };
@@ -415,7 +435,7 @@ int main(int argc, char **argv) {
             try {
                 std::string task = json_get_string(line, "task");
                 std::string context = json_get_string(line, "context");
-                int max_words = json_get_int(line, "max_words", 7);
+                int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
                 if (context.size() > 1600) context = context.substr(context.size() - 1600);
 
                 if (task == "typo") {
@@ -461,7 +481,7 @@ int main(int argc, char **argv) {
                                     suppressed = true; return false;
                                 }
                             }
-                            std::string shaped = shape(full);
+                            std::string shaped = utf8_safe(shape(full));
                             if (!shaped.empty() && shaped != last_emitted) {
                                 last_emitted = shaped;
                                 std::cout << "{\"p\":\"" << json_escape(shaped) << "\"}\n" << std::flush;

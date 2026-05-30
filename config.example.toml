@@ -21,6 +21,11 @@ style_memory_enabled = true       # learn from your own recent writing (local on
 clipboard_context_enabled = true  # include recently copied text
 screen_context_enabled = false    # screenshot OCR as prompt context — off by default (noisy)
 background_refresh_seconds = 4.0   # how often the background context is refreshed
+
+# Diagnostics. When false (default) the log never records typed text / snippets.
+# Typer always skips capture entirely while macOS secure input is active
+# (password fields, login window, sudo prompts), regardless of this setting.
+debug_logging = false
 # Note: caret placement still uses a screenshot fallback (with Screen Recording)
 # only when Accessibility/text-marker caret is unavailable; that is separate from
 # screen_context_enabled above.

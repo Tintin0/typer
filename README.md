@@ -193,10 +193,20 @@ style sample plus your per-app session text.
 ## Privacy
 
 Everything is local. The model runs on your machine; nothing is sent anywhere.
-The style memory (`style.txt`) and stats (`stats.json`) live under
-`~/Library/Application Support/typer/` — delete them any time. Window-text reads
-and the (off-by-default) screen OCR stay on-device and are only used to build the
-local prompt.
+
+- **Secure input is never captured.** While macOS secure input is active — password
+  fields, the login window, `sudo` prompts, password managers — Typer captures
+  nothing: no buffering, no learning, no logging, no AX reads, no generation.
+- **The log is not a keylogger.** By default the log records no typed text or
+  text snippets (only counts/events), and is created `0600`. Set
+  `debug_logging = true` to include snippets for troubleshooting.
+- **Local files are private.** `style.txt` (learned writing) and `stats.json` live
+  under `~/Library/Application Support/typer/` (mode `0600`) — delete them any time
+  (Menu → Clear Learned Style wipes the style corpus).
+- **Clipboard context skips secrets.** Content password managers mark concealed /
+  transient is never read into the prompt.
+- Window-text reads and the (off-by-default) screen OCR stay on-device and are only
+  used to build the local prompt.
 
 ---
 
