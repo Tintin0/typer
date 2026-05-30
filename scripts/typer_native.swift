@@ -59,7 +59,6 @@ struct TyperConfig {
     var enabled = true
     var completionEnabled = true
     var typoEnabled = false
-    var grammarEnabled = false
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
     var minContextChars = 6
@@ -104,7 +103,6 @@ struct TyperConfig {
             case "enabled": cfg.enabled = value == "true"
             case "completion_enabled": cfg.completionEnabled = value == "true"
             case "typo_correction_enabled": cfg.typoEnabled = value == "true"
-            case "grammar_correction_enabled": cfg.grammarEnabled = value == "true"
             case "model_path": cfg.modelPath = (value as NSString).expandingTildeInPath
             case "max_completion_words": cfg.maxCompletionWords = Int(value) ?? cfg.maxCompletionWords
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
@@ -129,13 +127,13 @@ struct TyperConfig {
     }
 }
 
-struct MLXRequest: Codable {
+struct HelperRequest: Codable {
     let task: String
     let context: String
     let max_words: Int
 }
 
-struct MLXSuggestion: Codable {
+struct HelperSuggestion: Codable {
     let kind: String
     let text: String?
     let original: String?
@@ -148,7 +146,7 @@ struct StreamLine: Codable {
     let p: String?
     let ok: Bool?
     let error: String?
-    let suggestion: MLXSuggestion?
+    let suggestion: HelperSuggestion?
 }
 
 // An inline completion the user can "type into". As the user types characters that
@@ -168,7 +166,7 @@ struct ActiveCompletion {
     }
 }
 
-final class MLXClient {
+final class LlamaClient {
     private let cfg: TyperConfig
     private var process: Process?
     private var input: FileHandle?
@@ -195,7 +193,7 @@ final class MLXClient {
         guard FileManager.default.isExecutableFile(atPath: llamaHelper) else {
             throw NSError(domain: "Typer", code: 3, userInfo: [NSLocalizedDescriptionKey: "helper not found at \(llamaHelper); run install.sh"])
         }
-        guard let model = MLXClient.findModel(cfg) else {
+        guard let model = LlamaClient.findModel(cfg) else {
             throw NSError(domain: "Typer", code: 4, userInfo: [NSLocalizedDescriptionKey: "no .gguf model found in Models directory; run install.sh"])
         }
         let p = Process()
@@ -244,10 +242,10 @@ final class MLXClient {
     // Sends one request and reads the streaming response. `onPartial` is invoked
     // (on this background thread) for each partial completion; the final suggestion
     // is returned.
-    func request(task: String, context: String, maxWords: Int, onPartial: ((String) -> Void)? = nil) throws -> MLXSuggestion? {
+    func request(task: String, context: String, maxWords: Int, onPartial: ((String) -> Void)? = nil) throws -> HelperSuggestion? {
         lock.lock(); defer { lock.unlock() }
         try start()
-        let req = MLXRequest(task: task, context: context, max_words: maxWords)
+        let req = HelperRequest(task: task, context: context, max_words: maxWords)
         dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try JSONEncoder().encode(req) + Data([0x0A])
         let decoder = JSONDecoder()
@@ -395,14 +393,6 @@ final class SuggestionOverlay: NSPanel {
         place(s, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
     }
 
-    func showGrammar(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
-        let fs = fontSize(for: lineHeight)
-        let attr = NSAttributedString(string: replacement, attributes: [
-            .font: NSFont.systemFont(ofSize: fs, weight: .medium),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9)])
-        place(attr, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
-    }
-
     // `point` is the caret's right edge (x) and bottom (y). The panel is the caret
     // line height, so the text is vertically centered on the caret line (inline).
     private func place(_ attr: NSAttributedString, fontSize fs: CGFloat, at point: NSPoint, lineHeight: CGFloat, shimmer: Bool) {
@@ -531,7 +521,7 @@ struct TyperStats: Codable {
 
 final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cfg = TyperConfig.load()
-    var client: MLXClient!
+    var client: LlamaClient!
     var statusItem: NSStatusItem!
     let statusMenu = NSMenu()
     let overlay = SuggestionOverlay()
@@ -546,7 +536,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var debounce: Timer?
     // The accept tap is enabled exactly while a suggestion is on screen, so Typer is
     // out of the keystroke-consuming path the rest of the time.
-    var active: MLXSuggestion? { didSet { refreshAcceptTap() } }      // typo / grammar diff
+    var active: HelperSuggestion? { didSet { refreshAcceptTap() } }      // typo diff
     var completion: ActiveCompletion? { didSet { refreshAcceptTap() } } // inline completion
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
@@ -572,18 +562,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastTrailing = ""               // text right after the caret (for repeat-drop)
     var pasteboardBusy = false          // serialize clipboard save/paste/restore (typo fallback)
     let syntheticMarker: Int64 = 0x747970_725f696e   // tag on our injected events ("typr_in")
-    var acceptedWords = 0
-    var shift = false
-    var ctrl = false
-    var alt = false
-    var cmd = false
     var stats = TyperStats.load()       // cumulative, persisted across launches
     var statsSaveScheduled = false
-    var generationSerial = 0
-    // Typo state: when a misspelled word is detected we remember its exact range
-    // in the focused element so acceptance can replace it precisely via AX.
-    var pendingTypoElement: AXUIElement?
-    var pendingTypoRange: CFRange?
     let spellTag = NSSpellChecker.uniqueSpellDocumentTag()
     // Broader context: an expensive-to-compute "background" (window scrollback +
     // screen OCR + clipboard) is cached and refreshed off the hot path, never per
@@ -605,7 +585,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log("Typer launch cfg enabled=\(cfg.enabled) completion=\(cfg.completionEnabled) typo=\(cfg.typoEnabled) debounce=\(cfg.debounceMs) debugLog=\(cfg.debugLogging)")
         activeAppKey = currentAppKey()
         log("initial app=\(activeAppKey)")
-        client = MLXClient(cfg: cfg)
+        client = LlamaClient(cfg: cfg)
         promptAccessibility()
         if cfg.screenContextEnabled, !CGPreflightScreenCaptureAccess() {
             // Triggers the one-time Screen Recording permission prompt. OCR context
@@ -666,7 +646,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func rebuildMenu() {
         let menu = statusMenu
         menu.removeAllItems()
-        let model = (MLXClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
+        let model = (LlamaClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
         menu.addItem(disabledItem("Typer — \(cfg.enabled ? "on" : "paused")"))
         menu.addItem(disabledItem("Model: \(model)"))
         menu.addItem(.separator())
@@ -762,7 +742,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Observer: listen-only at the head. Listen-only taps do NOT gate event
         // delivery on the callback returning, so a slow main thread can never stall
         // global keystrokes in other apps. This watches typing and builds state.
-        let observerMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | disableMask
+        let observerMask = (1 << CGEventType.keyDown.rawValue) | disableMask
         let observerCB: CGEventTapCallBack = { _, type, event, refcon in
             Unmanaged<TyperApp>.fromOpaque(refcon!).takeUnretainedValue().observe(type: type, event: event)
             return Unmanaged.passUnretained(event)
@@ -820,11 +800,12 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return }  // our own insertion
+        guard type == .keyDown else { return }
         syncActiveApp()
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        if type == .keyUp { setModifier(code, down: false); return }
-        guard type == .keyDown else { return }
-        setModifier(code, down: true)
+        // event.flags already carries the live modifier state for this keyDown, so we
+        // don't track Shift/Command/Control/Option ourselves (and the observer tap no
+        // longer needs keyUp events at all).
         let flags = event.flags
         let hasCommandLikeModifier = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
 
@@ -846,7 +827,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return
         }
-        if hasCommandLikeModifier || cmd || ctrl || alt { return }
+        if hasCommandLikeModifier { return }
         if let chars = event.keyboardString, !chars.isEmpty {
             dlog("[\(activeAppKey)] key code=\(code)")
             handleTyping(chars)
@@ -933,16 +914,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: fs)]).width
     }
 
-    func setModifier(_ code: CGKeyCode, down: Bool) {
-        switch Int(code) {
-        case kVK_Shift, kVK_RightShift: shift = down
-        case kVK_Command, kVK_RightCommand: cmd = down
-        case kVK_Control, kVK_RightControl: ctrl = down
-        case kVK_Option, kVK_RightOption: alt = down
-        default: break
-        }
-    }
-
     func currentAppKey() -> String {
         guard let app = NSWorkspace.shared.frontmostApplication else { return "unknown" }
         let bundle = app.bundleIdentifier ?? "no.bundle"
@@ -1010,7 +981,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activeAppKey = key
         buffer = buffersByApp[key] ?? ""
         lastInput = lastInputByApp[key] ?? Date.distantPast
-        generationSerial += 1
         clearSuggestion()
         // Switching apps starts fresh: drop the previous app's background context and
         // caret cache so the new app re-derives its own. Per-app buffers persist; the
@@ -1166,6 +1136,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func generate() {
         syncActiveApp()
         if isAppDisabled() { clearSuggestion(); return }    // per-app / terminal disable
+        // Inline completion is the only LLM-backed feature (typo correction is local,
+        // via NSSpellChecker). If it's off, never touch the model helper.
+        guard cfg.enabled, cfg.completionEnabled else { clearSuggestion(); return }
         // Single-flight: only one request may be in the helper at a time. Firing one
         // per keystroke (with ~400ms latency) backlogs the helper and every result
         // comes back stale — the cause of "nothing ever shows". If a request is in
@@ -1184,7 +1157,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Remember the text right after the caret so we can drop completions that
         // just repeat it (e.g. at end of a line that already has following text).
         lastTrailing = (axContext != nil ? (axCtx?.after ?? "") : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cfg.enabled, context.count >= cfg.minContextChars else { log("[\(activeAppKey)] generate skipped context=\(context.count) source=\(contextSource)"); return }
+        guard context.count >= cfg.minContextChars else { log("[\(activeAppKey)] generate skipped context=\(context.count) source=\(contextSource)"); return }
         let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("?") { log("[\(activeAppKey)] generate skipped question"); clearSuggestion(); return }
         refreshBackgroundIfNeeded()
@@ -1192,7 +1165,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         requestInFlight = true
         let appKey = activeAppKey
         let reqBuffer = buffer            // buffer snapshot for the staleness check
-        let task = chooseTask(context: context)
         let promptContext = assembledContext(immediate: context)
         let maxWords = cfg.maxCompletionWords
         dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
@@ -1200,24 +1172,20 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Live preview: paint partial completions as they stream in, but only
             // while the user hasn't typed since the request (else it's the final
             // line's job to reconcile via presentCompletion).
-            let onPartial: (String) -> Void = task == "complete" ? { partial in
+            let onPartial: (String) -> Void = { partial in
                 DispatchQueue.main.async {
                     guard appKey == self.activeAppKey, self.buffer == reqBuffer, !partial.isEmpty else { return }
                     self.completion = ActiveCompletion(chars: Array(partial))
                     self.showCompletionRemainder(animate: true)
                 }
-            } : { _ in }
-            let sug = try? self.client.request(task: task, context: promptContext, maxWords: maxWords, onPartial: onPartial)
+            }
+            let sug = try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded
                 self.rerequestNeeded = false
                 if appKey == self.activeAppKey {
-                    if task == "complete" {
-                        self.presentCompletion((sug ?? nil)?.text, requestedBuffer: reqBuffer)
-                    } else {
-                        self.show(sug ?? nil)
-                    }
+                    self.presentCompletion((sug ?? nil)?.text, requestedBuffer: reqBuffer)
                 }
                 // Always converge on the latest context.
                 if again { self.scheduleGenerate() }
@@ -1337,8 +1305,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func showTypoIfMisspelled() -> Bool {
         guard let word = lastWordFromBuffer(), let fix = correction(for: word) else { return false }
-        active = MLXSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
-        acceptedWords = 0
+        active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
         stats.shown += 1; statsTouched()
         rebuildMenu()
         // Inline at the caret line, same as completions.
@@ -1360,8 +1327,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replaceLastWordInBuffer(original: original, with: text)
             log("typo replaced via keystrokes")
         }
-        pendingTypoElement = nil
-        pendingTypoRange = nil
     }
 
     func setAXText(element: AXUIElement, range: CFRange, text: String) -> Bool {
@@ -1450,25 +1415,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard shares else { return "" }
         }
         return String(t.prefix(limit))
-    }
-
-    // Quartz (top-left, global) bounds of the focused window — the coordinate space
-    // CGWindowListCreateImage expects, so no flipping is needed for capture.
-    func focusedWindowBounds() -> CGRect? {
-        guard let element = focusedElement() else { return nil }
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &winRef) == .success,
-              let win = winRef else { return nil }
-        let w = win as! AXUIElement
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sizeRef) == .success else { return nil }
-        var p = CGPoint.zero
-        var s = CGSize.zero
-        guard AXValueGetValue(posRef as! AXValue, .cgPoint, &p),
-              AXValueGetValue(sizeRef as! AXValue, .cgSize, &s) else { return nil }
-        return CGRect(origin: p, size: s)
     }
 
     // Capture the frontmost app's largest on-screen window via ScreenCaptureKit
@@ -1687,98 +1633,30 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return blocks.count == 1 ? immediate : blocks.joined(separator: "\n\n")
     }
 
-    func chooseTask(context: String) -> String {
-        let trimmed = context.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cfg.grammarEnabled, [".", "!", "?"].contains(trimmed.last.map(String.init) ?? "") { return "grammar" }
-        return cfg.completionEnabled ? "complete" : "typo"
-    }
-
-    func show(_ sug: MLXSuggestion?) {
-        guard let sug else { log("show nil suggestion"); clearSuggestion(); return }
-        log("show kind=\(sug.kind)")
-        stats.shown += 1; statsTouched()
-        rebuildMenu()
-        switch sug.kind {
-        case "completion":
-            guard let text = sug.text, !text.isEmpty else { completion = nil; overlay.orderOut(nil); return }
-            active = nil
-            completion = ActiveCompletion(chars: Array(text))
-            showCompletionRemainder(animate: true)
-            maybePrefetch()
-        case "typo":
-            active = sug
-            guard let original = sug.original, let replacement = sug.replacement else { overlay.orderOut(nil); return }
-            overlay.showTypo(original: original, replacement: replacement, at: currentCaretPoint(), lineHeight: lastCaretHeight)
-        case "grammar":
-            active = sug
-            guard let original = sug.original, let replacement = sug.replacement else { overlay.orderOut(nil); return }
-            overlay.showGrammar(original: original, replacement: replacement, at: currentCaretPoint(), lineHeight: lastCaretHeight)
-        default:
-            overlay.orderOut(nil)
-        }
-    }
-
     func clearSuggestion() {
         reanchorWork?.cancel()
         active = nil
         completion = nil
         prefetched = nil
         prefetchKey = ""
-        acceptedWords = 0
-        pendingTypoElement = nil
-        pendingTypoRange = nil
         overlay.orderOut(nil)
     }
 
-    // Tab/backtick for typo & grammar diffs (completions are handled separately by
+    // Tab/backtick for the typo diff (completions are handled separately by
     // acceptCompletionWord / acceptCompletionAll).
     func acceptOneWord() -> Bool {
-        guard let active else { return false }
-        switch active.kind {
-        case "typo":
-            if let replacement = active.replacement, let original = active.original {
-                replaceTypo(original: original, with: replacement)
-                stats.accepted += 1; statsTouched()
-                clearSuggestion()
-                rebuildMenu()
-                return true
-            }
-            return false
-        case "grammar":
-            if let replacement = active.replacement {
-                insert(replacement)
-                buffer += replacement
-                saveActiveAppState()
-                stats.accepted += 1; statsTouched()
-                clearSuggestion()
-                rebuildMenu()
-                return true
-            }
-            return false
-        default:
-            return false
-        }
-    }
-
-    func acceptAll() -> Bool {
-        guard let active else { return false }
-        if active.kind == "typo" {
-            guard let text = active.replacement, let original = active.original, !text.isEmpty else { return false }
-            replaceTypo(original: original, with: text)
-            stats.accepted += 1; statsTouched()
-            clearSuggestion()
-            rebuildMenu()
-            return true
-        }
-        // grammar
-        let text = active.replacement ?? ""
-        guard !text.isEmpty else { return false }
-        insert(text)
-        appendToBuffer(text)
+        guard let active, active.kind == "typo",
+              let replacement = active.replacement, let original = active.original else { return false }
+        replaceTypo(original: original, with: replacement)
         stats.accepted += 1; statsTouched()
         clearSuggestion()
         rebuildMenu()
         return true
+    }
+
+    func acceptAll() -> Bool {
+        // The only diff-style suggestion is typo; accepting all == accepting the word.
+        return acceptOneWord()
     }
 
     // Insert accepted text by synthesizing a single Unicode keystroke event — no
@@ -1801,17 +1679,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
-    }
-
-    func replacePreviousWord(with text: String) {
-        withPasteboard(text) {
-            // App-wide, AX-free replacement for the just-typed word.
-            // Shift-Option-Left selects the previous word in native text fields,
-            // then Cmd-V replaces that selected range.
-            self.postKey(CGKeyCode(kVK_LeftArrow), flags: [.maskShift, .maskAlternate])
-            usleep(25_000)
-            self.postPaste()
-        }
     }
 
     // Accept text by briefly putting it on the clipboard and pasting. Safer version:
@@ -1906,10 +1773,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let after = String(String(value[caretIdx...]).prefix(limit))
         log("[\(activeAppKey)] AX text context valueChars=\(value.count) cursorUtf16=\(range.location) before=\(before.count) after=\(after.count)")
         return AXContext(before: before, after: after)
-    }
-
-    func textBeforeCursor(limit: Int) -> String? {
-        textAroundCursor(limit: limit)?.before
     }
 
     // True when the caret sits in the middle of a word/line of existing text, e.g.
@@ -2015,11 +1878,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return onScreen
     }
 
-    func selectedOrWordRect() -> CGRect? {
-        guard let element = focusedElement() else { return nil }
-        return boundsForSelectedRange(element: element) ?? caretPoint().map { CGRect(x: $0.x, y: $0.y, width: 24, height: 18) }
-    }
-
     func boundsForSelectedRange(element: AXUIElement) -> CGRect? {
         var rangeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
@@ -2084,9 +1942,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
 
-    @objc func testCompletion() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showCompletion(" predicted words appear inline", at: p, lineHeight: lastCaretHeight, animate: true) }
-    @objc func testTypo() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showTypo(original: "peopel", replacement: "people", at: p, lineHeight: lastCaretHeight) }
-    @objc func testGrammar() { let p = caretPoint() ?? NSPoint(x: 400, y: 400); overlay.showGrammar(original: "this are wrong", replacement: "this is wrong", at: p, lineHeight: lastCaretHeight) }
     // Count text we inserted on the user's behalf (Tab/backtick) — the "saved typing".
     func recordCompleted(_ text: String) {
         stats.wordsCompleted += text.split(whereSeparator: { $0.isWhitespace }).count
