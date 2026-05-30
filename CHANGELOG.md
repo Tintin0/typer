@@ -3,11 +3,32 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (battery — the real fix)
+
+The big one: **the app was burning a full CPU core continuously, even when idle and
+not generating anything.** This — not the model — was the battery drain (one user got
+~3h of runtime). Found by sampling the process: ~60% CPU was being spent in
+`accept() → SLEventTapEnable → mach_msg`.
+
+- **Fixed an event-tap enable/disable spin.** The consuming "accept" tap (which grabs
+  Tab/backtick) is toggled on only while a suggestion shows. Each toggle is a
+  *blocking* round-trip to the WindowServer, and on every `tapDisabled` notification we
+  re-issued it — including when nothing was showing, where our own disable echoed back
+  and we re-enabled in a tight loop. The tap state is now mirrored locally (no
+  redundant round-trips) and we never re-arm while idle. **Idle CPU went from ~60% to
+  0%.**
+- **Screenshot-OCR caret locator is now off by default.** For apps with no
+  Accessibility caret (terminals like Ghostty, custom editors) Typer used to take a
+  full ScreenCaptureKit screenshot and run Vision OCR — on the Neural Engine — roughly
+  every second while typing. That's far too heavy to run continuously. It's now opt-in
+  (menu → Context sources → "Screenshot caret", or `screenshot_caret_enabled`), and
+  when on it recomputes far less often. Native and Electron/WebKit apps are unaffected
+  (they use the cheap AX/text-marker caret).
+
 ## Alpha — 2026-05-30 (battery)
 
-Typer was draining the battery hard (one user went full → 37% in ~2h). The model
-runs on the GPU, and the app was firing a full inference far more often than it
-needed to. Fixes:
+Typer was *also* firing a full model inference far more often than it needed to. The
+model runs on the GPU; these reduce how often it runs:
 
 - **Generate on a pause, not on every key.** The debounce was 25ms — *shorter* than
   the gap between keystrokes (~80–200ms), so the "wait" expired between nearly every

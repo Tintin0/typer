@@ -27,6 +27,10 @@ window_context_enabled = true     # read surrounding text via Accessibility
 style_memory_enabled = true       # learn from your own recent writing (local only)
 clipboard_context_enabled = true  # include recently copied text
 screen_context_enabled = false    # screenshot OCR as prompt context — off by default (noisy)
+# Caret placement in apps with NO Accessibility caret (terminals, custom editors) via
+# screenshot + Vision OCR. OFF by default: it runs on the Neural Engine and is very
+# battery-heavy if it fires repeatedly. Native + Electron/WebKit apps don't need it.
+screenshot_caret_enabled = false
 background_refresh_seconds = 4.0   # how often the background context is refreshed
 
 # Diagnostics. When false (default) the log never records typed text / snippets.

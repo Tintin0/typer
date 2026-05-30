@@ -79,6 +79,11 @@ struct TyperConfig {
     var styleMemoryEnabled = true     // bias completions toward the user's own recent writing
     var clipboardContextEnabled = true
     var screenContextEnabled = false  // screenshot OCR as prompt context — off by default (noisy)
+    // Screenshot+OCR caret locator for apps with no AX/text-marker caret (terminals,
+    // custom editors). OFF by default: a full ScreenCaptureKit capture + Vision OCR
+    // per caret update is very battery-heavy (it ran on the Neural Engine every ~1.2s
+    // while typing in a terminal). Native and Electron/WebKit apps don't need it.
+    var screenshotCaretEnabled = false
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
     var debugLogging = false            // when true, logs include typed text/snippets
@@ -112,6 +117,7 @@ struct TyperConfig {
             case "style_memory_enabled": cfg.styleMemoryEnabled = value == "true"
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
+            case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = value == "true"
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds
             case "debug_logging": cfg.debugLogging = value == "true"
             case "disable_in_terminals": cfg.disableInTerminals = value == "true"
@@ -531,6 +537,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let overlay = SuggestionOverlay()
     var observerTap: CFMachPort?        // listen-only: never gates input delivery
     var acceptTap: CFMachPort?          // consuming: enabled only while a suggestion shows
+    var acceptTapEnabled = false        // mirror of the tap's enable state (avoid redundant mach calls)
     var buffer = ""
     var lastInput = Date()
     var activeAppKey = "unknown"
@@ -682,6 +689,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ctx.addItem(toggleItem("Window text", key: "window_context_enabled", value: cfg.windowContextEnabled))
         ctx.addItem(toggleItem("Clipboard", key: "clipboard_context_enabled", value: cfg.clipboardContextEnabled))
         ctx.addItem(toggleItem("Screen OCR (noisy)", key: "screen_context_enabled", value: cfg.screenContextEnabled))
+        ctx.addItem(toggleItem("Screenshot caret (terminals; battery-heavy)", key: "screenshot_caret_enabled", value: cfg.screenshotCaretEnabled))
         ctx.addItem(toggleItem("Learn my style", key: "style_memory_enabled", value: cfg.styleMemoryEnabled))
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
@@ -728,6 +736,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "window_context_enabled": cfg.windowContextEnabled = v
         case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
         case "screen_context_enabled": cfg.screenContextEnabled = v
+        case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = v
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
         case "battery_saver": cfg.batterySaver = v
         default: break
@@ -778,9 +787,15 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Enable the consuming accept tap exactly while a suggestion is on screen.
+    // Idempotent: each CGEvent.tapEnable is a BLOCKING mach round-trip to the
+    // WindowServer, so calling it redundantly (e.g. on every tapDisabled echo) burns a
+    // whole CPU core. Only touch the tap when the desired state actually changes.
     func refreshAcceptTap() {
         guard let acceptTap else { return }
-        CGEvent.tapEnable(tap: acceptTap, enable: completion != nil || active != nil)
+        let want = completion != nil || active != nil
+        if want == acceptTapEnabled { return }
+        acceptTapEnabled = want
+        CGEvent.tapEnable(tap: acceptTap, enable: want)
     }
 
     private func reEnable(_ tap: CFMachPort?, _ label: String) {
@@ -832,9 +847,18 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Consuming tap, enabled only while a suggestion is visible: grabs Tab/backtick.
     func accept(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Restore the CORRECT state (enabled only if a suggestion is visible), not an
-        // unconditional enable — otherwise it could consume Tab with nothing showing.
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { refreshAcceptTap(); return nil }
+        // Re-arm ONLY if a suggestion is actually showing. A tapDisabled notification
+        // while nothing is up is our own tapEnable(false) echoing back — re-enabling
+        // here (a blocking mach call) would spin a whole CPU core indefinitely.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if completion != nil || active != nil {
+                acceptTapEnabled = true
+                if let acceptTap { CGEvent.tapEnable(tap: acceptTap, enable: true) }
+            } else {
+                acceptTapEnabled = false
+            }
+            return nil
+        }
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return Unmanaged.passUnretained(event) }
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
@@ -1548,7 +1572,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastCaretPoint = ax
             return ax
         }
-        refreshShotCaretIfNeeded()
+        if cfg.screenshotCaretEnabled { refreshShotCaretIfNeeded() }
         if let p = shotCaretPoint, shotCaretApp == activeAppKey,
            Date().timeIntervalSince(shotCaretAt) < 6 {
             let typedSince = max(0, buffer.count - shotCaretBufferLen)
@@ -1564,9 +1588,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Uses Screen Recording (same permission as OCR context) but is independent
         // of the OCR-context toggle — caret placement should work even with it off.
         if shotCaretComputing { return }
-        // Recompute when stale or after meaningful typing since the last fix.
-        let stale = Date().timeIntervalSince(shotCaretAt) > 1.2 || shotCaretApp != activeAppKey
-        let drift = abs(buffer.count - shotCaretBufferLen) > 6
+        // Recompute when stale or after meaningful typing since the last fix. Each
+        // recompute is a screenshot + OCR, so throttle hard: extrapolate horizontally
+        // between captures and only re-capture after a real pause or large drift.
+        let stale = Date().timeIntervalSince(shotCaretAt) > 4.0 || shotCaretApp != activeAppKey
+        let drift = abs(buffer.count - shotCaretBufferLen) > 24
         guard stale || drift else { return }
         shotCaretComputing = true
         let appKey = activeAppKey
