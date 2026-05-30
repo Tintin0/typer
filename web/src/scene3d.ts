@@ -1,20 +1,22 @@
 import * as THREE from "three";
 
-// A holographic, hue-shifting "typr" built from a cloud of glowing points sampled
-// from the glyph shapes. It spins idly; click and it shatters — every point gets
-// a velocity, gravity drags it to the floor where it bounces and settles — then
-// the install command is revealed. Click rebuild and it flies back together.
+// A holographic, hue-shifting "typr" built from a grid of small 3D cubes sampled
+// from the glyph shapes. It mostly sits still and then RATTLES in bursts — like a
+// Pokéball with something trying to escape. Click and it bursts: every cube gets
+// linear + angular velocity, gravity drags it down, it tumbles, bounces, and
+// settles on the floor. Then the install command is revealed (typed out by the
+// caller). Rebuild flies the cubes back into the word.
 
 const FONT = '800 340px -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif';
 const WORD = "typr";
-const STEP = 3; // glyph sampling stride (px) — smaller = denser word
+const STEP = 4; // glyph sampling stride (px)
 const CAM_Z = 6;
 const FOV = 50;
-const GRAVITY = -16;
-const RESTITUTION = 0.42;
-const FRICTION = 0.78;
+const GRAVITY = -17;
+const RESTITUTION = 0.4;
+const FRICTION = 0.74;
 
-type Phase = "spin" | "shatter" | "fallen" | "rebuild";
+type Phase = "idle" | "shatter" | "fallen" | "rebuild";
 
 export interface Scene3D {
   shatter(): void;
@@ -64,60 +66,55 @@ export function initScene(
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
   camera.position.z = CAM_Z;
 
-  // --- build the point cloud from the glyphs --------------------------------
+  // --- sample the glyphs ----------------------------------------------------
   const { pts, w, h } = sampleWord(WORD, STEP);
   const count = pts.length / 2;
-  const scale = 6.4 / w; // world width of the word
+  const scale = 6.4 / w;
   const spacingWorld = STEP * scale;
+  const cubeSize = spacingWorld * 1.25; // slight overlap -> letters read solid
 
-  const position = new Float32Array(count * 3);
-  const base = new Float32Array(count * 3); // resting (word) positions
+  // resting state (object-local), live state (world during fall)
+  const base = new Float32Array(count * 3);
+  const restQuat = new Float32Array(count * 4); // small random tilt for facet variety
+  const pos = new Float32Array(count * 3);
   const vel = new Float32Array(count * 3);
-  const aRand = new Float32Array(count);
+  const quat = new Float32Array(count * 4);
+  const angvel = new Float32Array(count * 3);
 
+  const tmpQ = new THREE.Quaternion();
+  const tmpE = new THREE.Euler();
   for (let i = 0; i < count; i++) {
     const px = pts[i * 2];
     const py = pts[i * 2 + 1];
-    const x = (px - w / 2) * scale;
-    const y = (h / 2 - py) * scale;
-    const z = (Math.random() - 0.5) * 0.4; // slab depth -> reads as 3D when spun
-    base[i * 3] = x;
-    base[i * 3 + 1] = y;
-    base[i * 3 + 2] = z;
-    position[i * 3] = x;
-    position[i * 3 + 1] = y;
-    position[i * 3 + 2] = z;
-    aRand[i] = Math.random();
+    base[i * 3] = (px - w / 2) * scale;
+    base[i * 3 + 1] = (h / 2 - py) * scale;
+    base[i * 3 + 2] = (Math.random() - 0.5) * 0.45; // slab depth
+    tmpE.set(
+      (Math.random() - 0.5) * 0.5,
+      (Math.random() - 0.5) * 0.5,
+      (Math.random() - 0.5) * 0.5,
+    );
+    tmpQ.setFromEuler(tmpE);
+    restQuat[i * 4] = tmpQ.x;
+    restQuat[i * 4 + 1] = tmpQ.y;
+    restQuat[i * 4 + 2] = tmpQ.z;
+    restQuat[i * 4 + 3] = tmpQ.w;
   }
 
-  const geo = new THREE.BufferGeometry();
-  const posAttr = new THREE.BufferAttribute(position, 3);
-  posAttr.setUsage(THREE.DynamicDrawUsage);
-  geo.setAttribute("position", posAttr);
-  geo.setAttribute("aRand", new THREE.BufferAttribute(aRand, 1));
-
+  // --- instanced cubes ------------------------------------------------------
+  const geo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
   const mat = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    uniforms: {
-      uTime: { value: 0 },
-      uSize: { value: 8 },
-      uCamZ: { value: CAM_Z },
-      uBright: { value: 1 },
-    },
+    uniforms: { uTime: { value: 0 }, uBright: { value: 1 } },
     vertexShader: `
-      attribute float aRand;
       uniform float uTime;
-      uniform float uSize;
-      uniform float uCamZ;
-      varying float vRand;
-      varying vec3 vPos;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      varying vec3 vInst;
       void main() {
-        vRand = aRand;
-        vPos = position;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = uSize * (uCamZ / -mv.z);
+        vInst = vec3(instanceMatrix[3]); // cube centre
+        vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        vView = -mv.xyz;
+        vNormal = normalize(normalMatrix * mat3(instanceMatrix) * normal);
         gl_Position = projectionMatrix * mv;
       }
     `,
@@ -125,147 +122,236 @@ export function initScene(
       precision highp float;
       uniform float uTime;
       uniform float uBright;
-      varying float vRand;
-      varying vec3 vPos;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      varying vec3 vInst;
       vec3 hsv2rgb(vec3 c){
         vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
         return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
       }
       void main(){
-        vec2 uv = gl_PointCoord - 0.5;
-        float d = length(uv);
-        if (d > 0.5) discard;
-        float glow = smoothstep(0.5, 0.0, d);
-        // hue sweeps across the word and shifts over time = hypershift
-        float hue = fract(vPos.x * 0.07 + vPos.y * 0.05 + uTime * 0.06 + vRand * 0.12);
-        vec3 col = hsv2rgb(vec3(hue, 0.85, 1.0));
-        col += pow(glow, 3.0) * 0.5;        // hot core
-        gl_FragColor = vec4(col * uBright, glow);
+        vec3 N = normalize(vNormal);
+        vec3 V = normalize(vView);
+        vec3 L = normalize(vec3(0.4, 0.7, 0.65));
+        float diff = 0.5 + 0.5 * max(dot(N, L), 0.0);
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 2.5);
+        // hue sweeps across the word + over time = hypershift; facets add variety
+        float hue = fract(vInst.x * 0.07 + vInst.y * 0.05 + uTime * 0.06 + dot(N, vec3(0.0,0.0,1.0)) * 0.08);
+        vec3 col = hsv2rgb(vec3(hue, 0.82, 1.0)) * diff;
+        col += fres * 0.7;            // holographic rim sheen
+        gl_FragColor = vec4(col * uBright, 1.0);
       }
     `,
   });
 
-  const word = new THREE.Points(geo, mat);
-  scene.add(word);
+  const mesh = new THREE.InstancedMesh(geo, mat, count);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(mesh);
 
-  // --- sizing ----------------------------------------------------------------
+  const dummy = new THREE.Object3D();
+  const cubeScale = new THREE.Vector3(1, 1, 1);
+
+  function setRestMatrices() {
+    for (let i = 0; i < count; i++) {
+      dummy.position.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]);
+      dummy.quaternion.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
+      dummy.scale.copy(cubeScale);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  setRestMatrices();
+
+  // --- sizing ---------------------------------------------------------------
   function resize() {
     const cw = window.innerWidth;
     const ch = window.innerHeight;
     renderer.setSize(cw, ch, false);
     camera.aspect = cw / ch;
     camera.updateProjectionMatrix();
-    // self-tune point size so the glyphs read as solid regardless of viewport
-    const worldViewH = 2 * Math.tan((FOV * 0.5 * Math.PI) / 180) * CAM_Z;
-    const pxPerWorld = renderer.domElement.height / worldViewH;
-    mat.uniforms.uSize.value = spacingWorld * pxPerWorld * 1.8;
   }
   resize();
   window.addEventListener("resize", resize);
 
-  // floor sits just below the visible area's bottom
   const worldViewH = 2 * Math.tan((FOV * 0.5 * Math.PI) / 180) * CAM_Z;
-  const floorY = -worldViewH / 2 + 0.15;
+  const floorY = -worldViewH / 2 + cubeSize;
 
-  // --- state -----------------------------------------------------------------
-  let phase: Phase = "spin";
-  let spin = 0;
-  let fallenTimer = 0;
+  // --- state ----------------------------------------------------------------
+  let phase: Phase = "idle";
+  let idleT = 0;
+  let shaking = false;
+  let shakeT = 0;
+  let nextShake = 1.0;
+  let fallTimer = 0;
   let revealed = false;
   let rebuildT = 0;
   const rebuildFrom = new Float32Array(count * 3);
+  const rebuildFromQ = new Float32Array(count * 4);
   const clock = new THREE.Clock();
 
-  function bakeRotationIntoPositions() {
-    // freeze the current spun orientation into the buffer, then zero rotation
-    word.updateMatrixWorld(true);
-    const m = word.matrix;
-    const v = new THREE.Vector3();
+  const matrix = new THREE.Matrix4();
+  const vP = new THREE.Vector3();
+  const vS = new THREE.Vector3();
+  const qA = new THREE.Quaternion();
+  const qB = new THREE.Quaternion();
+  const vAxis = new THREE.Vector3();
+
+  function bakeAndBurst() {
+    mesh.updateMatrix(); // mesh.matrix from current rattle transform
+    const instLocal = new THREE.Matrix4();
+    const world = new THREE.Matrix4();
     for (let i = 0; i < count; i++) {
-      v.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]).applyMatrix4(m);
-      position[i * 3] = v.x;
-      position[i * 3 + 1] = v.y;
-      position[i * 3 + 2] = v.z;
+      vP.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]);
+      qA.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
+      instLocal.compose(vP, qA, cubeScale);
+      world.multiplyMatrices(mesh.matrix, instLocal);
+      world.decompose(vP, qB, vS);
+      pos[i * 3] = vP.x;
+      pos[i * 3 + 1] = vP.y;
+      pos[i * 3 + 2] = vP.z;
+      quat[i * 4] = qB.x;
+      quat[i * 4 + 1] = qB.y;
+      quat[i * 4 + 2] = qB.z;
+      quat[i * 4 + 3] = qB.w;
+      // burst velocity: outward + upward pop + randomness
+      vel[i * 3] = vP.x * 1.4 + (Math.random() - 0.5) * 3.8;
+      vel[i * 3 + 1] = 1.8 + Math.random() * 3.2;
+      vel[i * 3 + 2] = vP.z * 2.2 + (Math.random() - 0.5) * 3.8;
+      // tumbling
+      angvel[i * 3] = (Math.random() - 0.5) * 14;
+      angvel[i * 3 + 1] = (Math.random() - 0.5) * 14;
+      angvel[i * 3 + 2] = (Math.random() - 0.5) * 14;
     }
-    word.rotation.set(0, 0, 0);
+    mesh.position.set(0, 0, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.updateMatrix();
   }
 
   function startShatter() {
-    if (phase !== "spin") return;
-    bakeRotationIntoPositions();
-    for (let i = 0; i < count; i++) {
-      const x = position[i * 3];
-      // outward burst + upward pop + randomness, then gravity takes over
-      vel[i * 3] = x * 1.3 + (Math.random() - 0.5) * 3.5;
-      vel[i * 3 + 1] = 1.5 + Math.random() * 3.0;
-      vel[i * 3 + 2] = position[i * 3 + 2] * 2.0 + (Math.random() - 0.5) * 3.5;
-    }
-    posAttr.needsUpdate = true;
+    if (phase !== "idle") return;
+    bakeAndBurst();
     phase = "shatter";
-    fallenTimer = 0;
+    fallTimer = 0;
     revealed = false;
   }
 
   function startRebuild() {
     if (phase !== "fallen") return;
-    rebuildFrom.set(position);
+    rebuildFrom.set(pos);
+    rebuildFromQ.set(quat);
     rebuildT = 0;
     phase = "rebuild";
   }
 
-  // --- loop ------------------------------------------------------------------
+  function writeInstance(i: number, px: number, py: number, pz: number, q: THREE.Quaternion) {
+    vP.set(px, py, pz);
+    matrix.compose(vP, q, cubeScale);
+    mesh.setMatrixAt(i, matrix);
+  }
+
+  // --- loop -----------------------------------------------------------------
   let raf = 0;
   function frame() {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
     mat.uniforms.uTime.value += dt;
 
-    if (phase === "spin") {
-      spin += dt * 0.5;
-      word.rotation.y = Math.sin(spin) * 0.7; // gentle readable rocking
-      word.rotation.x = Math.sin(spin * 0.6) * 0.12;
+    if (phase === "idle") {
+      idleT += dt;
+      // a little constant life so it reads as 3D
+      let ry = Math.sin(idleT * 0.5) * 0.22;
+      let rx = Math.sin(idleT * 0.7) * 0.06;
+      let rz = 0;
+      let jx = 0;
+      let jy = 0;
+      // periodic rattle bursts
+      if (!shaking && idleT >= nextShake) {
+        shaking = true;
+        shakeT = 0;
+      }
+      if (shaking) {
+        shakeT += dt;
+        const dur = 0.55;
+        const env = Math.max(0, 1 - shakeT / dur);
+        const f = 40;
+        rz += Math.sin(shakeT * f) * 0.28 * env;
+        rx += Math.sin(shakeT * f * 0.8 + 1.0) * 0.14 * env;
+        jx = Math.sin(shakeT * f * 1.3) * 0.06 * env;
+        jy = Math.sin(shakeT * f * 1.7) * 0.04 * env;
+        if (shakeT >= dur) {
+          shaking = false;
+          nextShake = idleT + 1.4 + Math.random() * 2.4;
+        }
+      }
+      mesh.rotation.set(rx, ry, rz);
+      mesh.position.set(jx, jy, 0);
     } else if (phase === "shatter") {
       let settled = 0;
       for (let i = 0; i < count; i++) {
         const ix = i * 3;
         vel[ix + 1] += GRAVITY * dt;
-        position[ix] += vel[ix] * dt;
-        position[ix + 1] += vel[ix + 1] * dt;
-        position[ix + 2] += vel[ix + 2] * dt;
-        if (position[ix + 1] < floorY) {
-          position[ix + 1] = floorY;
+        pos[ix] += vel[ix] * dt;
+        pos[ix + 1] += vel[ix + 1] * dt;
+        pos[ix + 2] += vel[ix + 2] * dt;
+        if (pos[ix + 1] < floorY) {
+          pos[ix + 1] = floorY;
           vel[ix + 1] = -vel[ix + 1] * RESTITUTION;
           vel[ix] *= FRICTION;
           vel[ix + 2] *= FRICTION;
+          angvel[ix] *= FRICTION;
+          angvel[ix + 1] *= FRICTION;
+          angvel[ix + 2] *= FRICTION;
           if (Math.abs(vel[ix + 1]) < 0.4) {
             vel[ix + 1] = 0;
             settled++;
           }
         }
+        // integrate rotation
+        vAxis.set(angvel[ix], angvel[ix + 1], angvel[ix + 2]);
+        const sp = vAxis.length();
+        qA.set(quat[i * 4], quat[i * 4 + 1], quat[i * 4 + 2], quat[i * 4 + 3]);
+        if (sp > 1e-4) {
+          vAxis.multiplyScalar(1 / sp);
+          qB.setFromAxisAngle(vAxis, sp * dt);
+          qA.premultiply(qB).normalize();
+          quat[i * 4] = qA.x;
+          quat[i * 4 + 1] = qA.y;
+          quat[i * 4 + 2] = qA.z;
+          quat[i * 4 + 3] = qA.w;
+        }
+        writeInstance(i, pos[ix], pos[ix + 1], pos[ix + 2], qA);
       }
-      posAttr.needsUpdate = true;
-      fallenTimer += dt;
-      // dim the rubble as it settles
-      mat.uniforms.uBright.value = Math.max(0.45, 1 - fallenTimer * 0.25);
-      if (!revealed && (settled > count * 0.6 || fallenTimer > 2.4)) {
+      mesh.instanceMatrix.needsUpdate = true;
+      fallTimer += dt;
+      mat.uniforms.uBright.value = Math.max(0.5, 1 - fallTimer * 0.22);
+      if (!revealed && (settled > count * 0.55 || fallTimer > 2.2)) {
         revealed = true;
         onReveal();
       }
-      if (fallenTimer > 3.0) phase = "fallen";
+      if (fallTimer > 3.0) phase = "fallen";
     } else if (phase === "rebuild") {
-      rebuildT = Math.min(1, rebuildT + dt * 1.4);
-      const e = 1 - Math.pow(1 - rebuildT, 3); // easeOutCubic
+      rebuildT = Math.min(1, rebuildT + dt * 1.3);
+      const e = 1 - Math.pow(1 - rebuildT, 3);
       for (let i = 0; i < count; i++) {
         const ix = i * 3;
-        position[ix] = rebuildFrom[ix] + (base[ix] - rebuildFrom[ix]) * e;
-        position[ix + 1] = rebuildFrom[ix + 1] + (base[ix + 1] - rebuildFrom[ix + 1]) * e;
-        position[ix + 2] = rebuildFrom[ix + 2] + (base[ix + 2] - rebuildFrom[ix + 2]) * e;
+        const x = rebuildFrom[ix] + (base[ix] - rebuildFrom[ix]) * e;
+        const y = rebuildFrom[ix + 1] + (base[ix + 1] - rebuildFrom[ix + 1]) * e;
+        const z = rebuildFrom[ix + 2] + (base[ix + 2] - rebuildFrom[ix + 2]) * e;
+        qA.set(rebuildFromQ[i * 4], rebuildFromQ[i * 4 + 1], rebuildFromQ[i * 4 + 2], rebuildFromQ[i * 4 + 3]);
+        qB.set(restQuat[i * 4], restQuat[i * 4 + 1], restQuat[i * 4 + 2], restQuat[i * 4 + 3]);
+        qA.slerp(qB, e);
+        writeInstance(i, x, y, z, qA);
       }
-      posAttr.needsUpdate = true;
-      mat.uniforms.uBright.value = 0.45 + e * 0.55;
+      mesh.instanceMatrix.needsUpdate = true;
+      mat.uniforms.uBright.value = 0.5 + e * 0.5;
       if (rebuildT >= 1) {
-        phase = "spin";
-        spin = 0;
+        setRestMatrices();
+        mat.uniforms.uBright.value = 1;
+        phase = "idle";
+        idleT = 0;
+        nextShake = 1.0;
+        shaking = false;
         onRebuilt();
       }
     }
@@ -274,7 +360,6 @@ export function initScene(
   }
 
   if (reduce) {
-    // static: render the word once, reveal immediately, no spin/shatter
     renderer.render(scene, camera);
     onReveal();
   } else {

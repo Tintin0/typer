@@ -156,39 +156,6 @@ a {
   text-align: center;
 }
 
-.hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--ink-faint);
-  letter-spacing: 0.02em;
-  transition: opacity 0.5s;
-  animation: floaty 3s ease-in-out infinite;
-}
-.hint-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
-}
-.hint.gone {
-  opacity: 0;
-}
-@keyframes floaty {
-  0%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.55;
-  }
-  50% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
 /* ---- reveal (command) --------------------------------------------------- */
 .reveal {
   width: min(620px, 100%);
@@ -218,44 +185,104 @@ a {
   color: var(--accent);
 }
 
-.get {
-  display: flex;
-  gap: 0.6rem;
+/* the command box — typed out, then its border shimmers */
+.cmd {
+  position: relative;
   width: 100%;
   pointer-events: auto;
-}
-.code {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-family: var(--mono);
-  font-size: clamp(0.72rem, 1.8vw, 0.86rem);
-  line-height: 1.7;
-  text-align: left;
   background: rgba(8, 7, 10, 0.72);
   backdrop-filter: blur(8px);
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: 12px;
   padding: 0.85rem 1rem;
-  overflow-x: auto;
-  color: var(--ink);
+  text-align: left;
+  transition: border-color 0.3s;
 }
-.c-cmt {
+/* shimmer border (mask trick) — only after the line finishes typing */
+.cmd::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  background-position: 150% 0;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s;
+}
+.cmd.lit {
+  border-color: transparent;
+}
+.cmd.lit::before {
+  opacity: 1;
+  animation: shimmer 2.4s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+.cmd-label {
+  display: block;
+  font-size: clamp(0.66rem, 1.6vw, 0.74rem);
   color: var(--ink-faint);
+  margin-bottom: 0.45rem;
 }
-.c-dim {
-  color: var(--accent);
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+.cmd-line {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: clamp(0.72rem, 1.8vw, 0.86rem);
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cmd-line::-webkit-scrollbar {
+  display: none;
+}
+/* blinking caret while typing */
+.cmd-line.typing::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 1s steps(1) infinite;
+  box-shadow: 0 0 8px rgba(232, 162, 60, 0.7);
 }
 .copy-btn {
   flex-shrink: 0;
   font-family: var(--mono);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--ink);
-  background: rgba(8, 7, 10, 0.72);
-  backdrop-filter: blur(8px);
+  background: transparent;
   border: 1px solid var(--line);
-  border-radius: 11px;
-  padding: 0 1.1rem;
+  border-radius: 8px;
+  padding: 0.4rem 0.9rem;
   cursor: pointer;
   transition:
     border-color 0.15s,
@@ -302,17 +329,19 @@ a {
 }
 
 @media (max-width: 540px) {
-  .get {
+  .cmd-row {
     flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
   }
   .copy-btn {
-    padding: 0.6rem;
+    padding: 0.55rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hint,
-  .brand-caret {
+  .brand-caret,
+  .cmd.lit::before {
     animation: none;
   }
   .stage {

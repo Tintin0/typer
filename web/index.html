@@ -29,19 +29,17 @@
     <main class="stage">
       <h1 class="sr-only">typr — local autocomplete for macOS</h1>
 
-      <p class="hint" id="hint" aria-hidden="true">
-        <span class="hint-dot"></span> click the word
-      </p>
-
       <div class="reveal" id="reveal" hidden>
         <p class="reveal-lead">
           local autocomplete for macOS. it finishes your line, right at the cursor,
           in almost any app — and it runs <em>on your Mac</em>. nowhere else.
         </p>
-        <div class="get">
-          <pre class="code"><span class="c-cmt"># macOS 14+ · Apple Silicon</span>
-git clone https://github.com/frgmt0/typer.git && <span class="c-dim">cd</span> typer && ./install.sh</pre>
-          <button class="copy-btn" id="copyBtn" type="button">Copy</button>
+        <div class="cmd" id="cmd">
+          <span class="cmd-label"># macOS 14+ · Apple Silicon · free &amp; open source</span>
+          <div class="cmd-row">
+            <code class="cmd-line" id="cmdLine"></code>
+            <button class="copy-btn" id="copyBtn" type="button">Copy</button>
+          </div>
         </div>
         <p class="reveal-meta">
           <button class="rebuild" id="rebuild" type="button">↻ put it back</button>
