@@ -3,6 +3,17 @@
 Typer is in **alpha** and not yet versioned — entries are grouped by date. Website:
 [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Alpha — 2026-05-30 (overlay polish)
+
+- **Ghost no longer overlaps the text you're typing.** Our keyboard tap fires before
+  the host app applies the keystroke, so reading the caret right after typing was
+  stale (one step behind). The overlay now moves immediately by the measured width of
+  what was typed, then re-anchors precisely a beat later — so it tracks your cursor as
+  you type through a suggestion and after Tab, instead of lagging ~0.5s.
+- **Nicer-looking ghost text** (Core Animation renderer): SF system font sized to your
+  line, a **soft taper** that fades the trailing edge, and a one-shot **shimmer sweep +
+  fade-in** when a fresh suggestion appears (calm while you type through it).
+
 ## Alpha — 2026-05-30 (stability + control)
 
 - **Fixed words being skipped on fast Tab.** Injected insertion events are now
