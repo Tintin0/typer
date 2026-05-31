@@ -3,6 +3,28 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## typo correction — fixed accept in Electron/Chromium apps
+
+Accepting a spell-fix (<kbd>Tab</kbd>) now actually replaces the misspelled word in
+Electron/Chromium editors (Discord, Slack, VS Code) instead of inserting the correction
+in the wrong place, and the suggestion shows reliably on <kbd>Space</kbd>.
+
+- **AX write is verified, not trusted.** Chromium apps return `.success` for setting
+  `kAXSelectedTextRange` but silently ignore it, so the correction was being inserted at
+  the live caret (e.g. `peopel` → `peoplepeopel`). The range is now read back and the AX
+  path is only used when the selection actually moved; otherwise we fall back to keys.
+- **Keystroke fallback deletes, doesn't select.** Synthetic `shift`+arrow selection is
+  also dropped by editors like Discord's ProseMirror, which pasted the fix at the word's
+  start. The fallback now Backspaces the word by its exact length, pastes the fix, and
+  restores the caret after the separator you typed.
+- **Injected keys are tagged.** Synthetic arrows/Backspace/paste now carry the
+  `syntheticMarker`, so the event taps don't re-process them — an untagged Backspace was
+  hitting the buffer's delete handler.
+- **Misspelling beats follow-along.** Typing the separator that ends a misspelled word
+  now surfaces the fix even while an inline completion is showing (previously a matching
+  <kbd>Space</kbd> was swallowed as "typing along the ghost", so only punctuation like
+  `/` triggered it). Correctly-spelled type-along is unchanged.
+
 ## topic memory — resurface what you were just reading
 
 A new opt-in context source. Every few minutes Typer OCRs the focused window (Apple
