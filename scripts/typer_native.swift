@@ -1464,9 +1464,11 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Locate `word` immediately before the caret in the focused element and return
-    // its exact UTF-16 range. Called only on accept, so the one big AXValue read is
+    // its exact UTF-16 range plus the count of separator units between the word and
+    // the caret (the space/punctuation the user just typed) so the caret can be
+    // restored after them. Called only on accept, so the one big AXValue read is
     // acceptable. Returns nil for apps without a usable AXValue (keystroke fallback).
-    func typoRangeViaAX(word: String) -> (AXUIElement, CFRange)? {
+    func typoRangeViaAX(word: String) -> (element: AXUIElement, range: CFRange, trailing: Int)? {
         guard let element = focusedElement() else { return nil }
         var valueRef: CFTypeRef?
         var rangeRef: CFTypeRef?
@@ -1485,7 +1487,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard end > start else { return nil }
         let units = Array(utf16[start..<end])
         guard String(utf16CodeUnits: units, count: units.count) == word else { return nil }
-        return (element, CFRange(location: start, length: end - start))
+        return (element, CFRange(location: start, length: end - start), caret - end)
     }
 
     // Returns the spell-corrected form of a word, or nil if it is correct / not a
@@ -1526,32 +1528,61 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // trailing separator); falls back to keystroke selection for apps without AX
     // write support. The big AXValue read happens here, only on accept.
     func replaceTypo(original: String, with text: String) {
-        if let (element, range) = typoRangeViaAX(word: original), setAXText(element: element, range: range, text: text) {
+        if let r = typoRangeViaAX(word: original),
+           setAXText(element: r.element, range: r.range, text: text, trailing: r.trailing) {
             replaceLastWordInBuffer(original: original, with: text)
             log("typo replaced via AX")
         } else {
-            replaceWordBeforeSeparatorViaKeys(with: text)
+            replaceWordBeforeSeparatorViaKeys(original: original, with: text)
             replaceLastWordInBuffer(original: original, with: text)
             log("typo replaced via keystrokes")
         }
     }
 
-    func setAXText(element: AXUIElement, range: CFRange, text: String) -> Bool {
+    // Replace `range` with `text` and leave the caret after the trailing separator.
+    // Returns false (→ keystroke fallback) if the selection write didn't take: many
+    // Electron/Chromium apps (Discord, Slack, VS Code) return .success for setting
+    // kAXSelectedTextRange but silently ignore it, which would otherwise insert the
+    // correction at the live caret instead of over the misspelled word. We read the
+    // range back and only trust the AX path when the selection actually moved.
+    func setAXText(element: AXUIElement, range: CFRange, text: String, trailing: Int) -> Bool {
         var r = range
-        guard let rangeAx = AXValueCreate(.cfRange, &r) else { return false }
-        guard AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeAx) == .success else { return false }
-        return AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+        guard let rangeAx = AXValueCreate(.cfRange, &r),
+              AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeAx) == .success
+        else { return false }
+        var checkRef: CFTypeRef?
+        var got = CFRange(location: 0, length: 0)
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &checkRef) == .success,
+              let checkVal = checkRef,
+              AXValueGetValue(checkVal as! AXValue, .cfRange, &got),
+              got.location == range.location, got.length == range.length
+        else { return false }   // selection didn't actually move — fall back to keystrokes
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+        else { return false }
+        // Caret after the replacement and the separator(s) the user typed.
+        var caret = CFRange(location: range.location + (text as NSString).length + trailing, length: 0)
+        if let caretAx = AXValueCreate(.cfRange, &caret) {
+            AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, caretAx)
+        }
+        return true
     }
 
-    func replaceWordBeforeSeparatorViaKeys(with text: String) {
+    // Keystroke fallback for apps without usable AX text writes. Selects the
+    // misspelled word by its exact length (deterministic, unlike option+arrow word
+    // selection which varies by editor) and pastes the fix, leaving the caret after
+    // the trailing separator. `trailing` defaults to 1: a single separator keystroke
+    // is what triggered the suggestion.
+    func replaceWordBeforeSeparatorViaKeys(original: String, with text: String, trailing: Int = 1) {
+        let sep = max(trailing, 1)
+        let wordLen = max(original.count, 1)
         withPasteboard(text) {
-            self.postKey(CGKeyCode(kVK_LeftArrow))                                    // step over the typed separator
-            usleep(15_000)
-            self.postKey(CGKeyCode(kVK_LeftArrow), flags: [.maskShift, .maskAlternate]) // select the misspelled word
-            usleep(15_000)
+            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_LeftArrow)) }              // step over the separator(s)
+            usleep(12_000)
+            for _ in 0..<wordLen { self.postKey(CGKeyCode(kVK_LeftArrow), flags: .maskShift) } // select exactly the word
+            usleep(12_000)
             self.postPaste()
             usleep(20_000)
-            self.postKey(CGKeyCode(kVK_RightArrow))                                   // restore caret after the separator
+            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_RightArrow)) }             // caret back after the separator(s)
         }
     }
 
