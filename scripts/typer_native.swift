@@ -1067,6 +1067,16 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // (keep it, just shrink the ghost) or deviates (regenerate).
     func handleTyping(_ text: String) {
         appendToBuffer(text)
+        // A just-finished misspelled word takes priority over following a live
+        // completion: typing the separator that ends "peopel" should surface the fix,
+        // not get swallowed as "you typed along with the ghost". Only fires when the
+        // word is actually misspelled, so correctly-spelled type-along is untouched.
+        if cfg.typoEnabled, text.unicodeScalars.allSatisfy({ isWordSeparator($0) }),
+           let word = lastWordFromBuffer(), let fix = correction(for: word) {
+            if completion != nil { completion = nil; prefetched = nil; prefetchKey = ""; overlay.orderOut(nil) }
+            presentTypo(word: word, fix: fix)
+            return
+        }
         if completion != nil {
             if followAlong(text) { return }   // typed exactly what we predicted — keep it
             // deviated from the prediction: drop it and any speculative prefetch
@@ -1077,7 +1087,6 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // (No per-keystroke "ignored" counter — it over-counted natural typing.
             //  Accept rate is accepted/shown, which is the meaningful signal.)
         }
-        if cfg.typoEnabled, text.unicodeScalars.allSatisfy({ isWordSeparator($0) }), showTypoIfMisspelled() { return }
         scheduleGenerate()
     }
 
@@ -1515,13 +1524,18 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func showTypoIfMisspelled() -> Bool {
         guard let word = lastWordFromBuffer(), let fix = correction(for: word) else { return false }
+        presentTypo(word: word, fix: fix)
+        return true
+    }
+
+    // Show the red-strikethrough/green-replacement diff for a known misspelling.
+    func presentTypo(word: String, fix: String) {
         active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
         stats.shown += 1; statsTouched()
         // Inline at the caret line, same as completions.
         let point = currentCaretPoint()
         overlay.showTypo(original: word, replacement: fix, at: point, lineHeight: lastCaretHeight)
         dlog("[\(activeAppKey)] typo '\(word)' -> '\(fix)' at=\(point)")
-        return true
     }
 
     // Replace `original` with `text`. Prefers AX (exact range, preserves the
@@ -1567,22 +1581,23 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    // Keystroke fallback for apps without usable AX text writes. Selects the
-    // misspelled word by its exact length (deterministic, unlike option+arrow word
-    // selection which varies by editor) and pastes the fix, leaving the caret after
-    // the trailing separator. `trailing` defaults to 1: a single separator keystroke
-    // is what triggered the suggestion.
+    // Keystroke fallback for apps without usable AX text writes (Electron/Chromium:
+    // Discord, Slack, VS Code). Deletes the misspelled word with Backspace rather
+    // than selecting it — synthetic shift+arrow selection is silently dropped by
+    // editors like Discord's ProseMirror, which would paste the fix at the word's
+    // start instead of replacing it. Deletion and paste are both honored. `trailing`
+    // defaults to 1: a single separator keystroke is what triggered the suggestion.
     func replaceWordBeforeSeparatorViaKeys(original: String, with text: String, trailing: Int = 1) {
         let sep = max(trailing, 1)
         let wordLen = max(original.count, 1)
         withPasteboard(text) {
-            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_LeftArrow)) }              // step over the separator(s)
+            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_LeftArrow)) }   // move left of the separator(s)
             usleep(12_000)
-            for _ in 0..<wordLen { self.postKey(CGKeyCode(kVK_LeftArrow), flags: .maskShift) } // select exactly the word
+            for _ in 0..<wordLen { self.postKey(CGKeyCode(kVK_Delete)) }  // backspace away the misspelled word
             usleep(12_000)
-            self.postPaste()
+            self.postPaste()                                             // insert the correction
             usleep(20_000)
-            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_RightArrow)) }             // caret back after the separator(s)
+            for _ in 0..<sep { self.postKey(CGKeyCode(kVK_RightArrow)) }  // caret back after the separator(s)
         }
     }
 
@@ -2005,16 +2020,23 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
+        down?.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
 
+    // Always tagged so neither tap re-processes our own injected navigation/deletion
+    // keys — an untagged synthetic Backspace would hit the kVK_Delete handler in the
+    // observer and corrupt the keystroke buffer.
     func postKey(_ key: CGKeyCode, flags: CGEventFlags = []) {
         let src = CGEventSource(stateID: .hidSystemState)
         let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
         let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
         down?.flags = flags
         up?.flags = flags
+        down?.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
