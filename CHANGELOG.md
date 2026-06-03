@@ -3,6 +3,18 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## refactor — split the menu-bar app into per-topic files
+
+- **No more single hell file.** The 2,487-line `scripts/typer_native.swift` is split
+  into [`scripts/typer/`](scripts/typer): one file per supporting type (`LlamaClient`,
+  `SuggestionOverlay`, `GhostView`, `StyleMemory`, `TopicMemory`, `TyperConfig`,
+  `TyperStats`, logging, power state, helper protocol) and the `TyperApp` class broken
+  across `extension TyperApp` files by concern — `EventTap`, `Completion`, `Typo`,
+  `Caret`, `Context`, `Menu`, `Input`, `Stats`. `main.swift` is the entry point.
+- **Pure rearrangement.** No behavior changed: the substantive code lines are an
+  identical multiset to the original, and the app builds via `swiftc` the same way
+  (`build.sh` now compiles `scripts/typer/*.swift` as one module).
+
 ## typo correction — fixed accept in Electron/Chromium apps
 
 Accepting a spell-fix (<kbd>Tab</kbd>) now actually replaces the misspelled word in
