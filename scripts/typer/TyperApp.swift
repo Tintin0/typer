@@ -1,0 +1,204 @@
+import AppKit
+import ApplicationServices
+import Carbon.HIToolbox
+import Foundation
+import IOKit.ps
+import NaturalLanguage
+import ScreenCaptureKit
+import Vision
+
+final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var cfg = TyperConfig.load()
+    var client: LlamaClient!
+    var statusItem: NSStatusItem!
+    let statusMenu = NSMenu()
+    let overlay = SuggestionOverlay()
+    var observerTap: CFMachPort?        // listen-only: never gates input delivery
+    var acceptTap: CFMachPort?          // consuming: enabled only while a suggestion shows
+    var acceptTapEnabled = false        // mirror of the tap's enable state (avoid redundant mach calls)
+    var buffer = ""
+    var lastInput = Date()
+    var activeAppKey = "unknown"
+    var buffersByApp: [String: String] = [:]
+    var lastInputByApp: [String: Date] = [:]
+    var debounce: Timer?
+    // The accept tap is enabled exactly while a suggestion is on screen, so Typer is
+    // out of the keystroke-consuming path the rest of the time.
+    var active: HelperSuggestion? { didSet { refreshAcceptTap() } }      // typo diff
+    var completion: ActiveCompletion? { didSet { refreshAcceptTap() } } // inline completion
+    var lastCaretPoint: NSPoint?
+    var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
+    var reanchorWork: DispatchWorkItem? // deferred AX caret re-anchor after a keystroke
+    var caretHeightFloor: CGFloat?      // smallest caret height seen this focus session
+    // Screenshot-based caret cache for apps without AX caret geometry. We compute it
+    // occasionally (it is slow) and extrapolate horizontally as the user types.
+    var shotCaretPoint: NSPoint?
+    var shotCaretAt = Date.distantPast
+    var shotCaretBufferLen = 0
+    var shotCaretCharWidth: CGFloat = 9
+    var shotCaretHeight: CGFloat = 18
+    var shotCaretApp = ""
+    var shotCaretComputing = false
+    // Speculative prefetch: the next chunk, generated while the user finishes the
+    // current one, so it can appear instantly on exhaustion.
+    var prefetched: ActiveCompletion?
+    var prefetchKey = ""
+    var prefetchInFlight = false
+    // Single-flight generation: at most one request in the helper at a time.
+    var requestInFlight = false
+    var rerequestNeeded = false
+    // Monotonic invalidation token. User typing advances it; mouse/cursor placement
+    // advances it too, which cancels stale in-flight completions without scheduling a
+    // new one. This prevents "I only clicked in a text box and Typer suggested".
+    var generationSerial: UInt64 = 0
+    var lastUserTypedAt = Date.distantPast
+    var lastTrailing = ""               // text right after the caret (for repeat-drop)
+    var pasteboardBusy = false          // serialize clipboard save/paste/restore (typo fallback)
+    let syntheticMarker: Int64 = 0x747970_725f696e   // tag on our injected events ("typr_in")
+    var stats = TyperStats.load()       // cumulative, persisted across launches
+    var statsSaveScheduled = false
+    let spellTag = NSSpellChecker.uniqueSpellDocumentTag()
+    // Broader context: an expensive-to-compute "background" (window scrollback +
+    // screen OCR + clipboard) is cached and refreshed off the hot path, never per
+    // keystroke. Style memory personalizes regardless of app.
+    let styleMemory = StyleMemory()
+    let topicMemory = TopicMemory()
+    var topicTimer: Timer?
+    var topicCapturing = false
+    var cachedBackground = ""
+    var backgroundRefreshedAt = Date.distantPast
+    var backgroundKey = ""
+    var backgroundRefreshing = false
+    let backgroundQueue = DispatchQueue(label: "typer.background", qos: .utility)
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        debugLoggingEnabled = cfg.debugLogging
+        // Enforce private perms even on a pre-existing log file.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: typerLogURL.path)
+        // Style memory may contain personal writing — keep it private too.
+        let styleURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/typer/style.txt")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: styleURL.path)
+        log("Typer launch cfg enabled=\(cfg.enabled) completion=\(cfg.completionEnabled) typo=\(cfg.typoEnabled) debounce=\(cfg.debounceMs) debugLog=\(cfg.debugLogging)")
+        activeAppKey = currentAppKey()
+        log("initial app=\(activeAppKey)")
+        client = LlamaClient(cfg: cfg)
+        promptAccessibility()
+        if (cfg.screenContextEnabled || cfg.topicMemoryEnabled), !CGPreflightScreenCaptureAccess() {
+            // Triggers the one-time Screen Recording permission prompt. OCR/topic capture
+            // simply stays empty until granted; everything else keeps working.
+            CGRequestScreenCaptureAccess()
+            log("requested Screen Recording access (for screen capture)")
+        }
+        setupMenu()
+        setupEventTap()
+        startTopicTimer()
+        // Only spin up the model if inline completion is actually on (typo correction
+        // is local-only). If it's off, the helper stays unspawned until it's enabled.
+        if cfg.enabled, cfg.completionEnabled {
+            DispatchQueue.global(qos: .utility).async { self.client.warmUp() }
+        }
+    }
+
+    func promptAccessibility() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        log("AX trusted=\(trusted)")
+    }
+
+    func currentAppKey() -> String {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return "unknown" }
+        let bundle = app.bundleIdentifier ?? "no.bundle"
+        let name = app.localizedName ?? "Unknown"
+        return "\(bundle)|\(name)"
+    }
+
+    // Parse the "bundle|name" activeAppKey back into its parts.
+    func currentAppBundleAndName() -> (bundle: String, name: String) {
+        let parts = activeAppKey.split(separator: "|", maxSplits: 1).map(String.init)
+        return (parts.first ?? "", parts.count > 1 ? parts[1] : (parts.first ?? ""))
+    }
+
+    static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty",
+        "dev.warp.Warp-Stable", "net.kovidgoyal.kitty", "io.alacritty",
+        "com.github.wez.wezterm", "co.zeit.hyper", "org.tabby"
+    ]
+
+    // True when Typer should stay silent in the current app (per-app disable or a
+    // terminal when terminal-skip is on).
+    func isAppDisabled() -> Bool {
+        let (bundle, _) = currentAppBundleAndName()
+        if cfg.disabledApps.contains(bundle) { return true }
+        if cfg.disableInTerminals && TyperApp.terminalBundleIDs.contains(bundle) { return true }
+        return false
+    }
+
+    func syncActiveApp() {
+        let key = currentAppKey()
+        if key == activeAppKey { return }
+        // Leaving an app: keep its session buffer, and learn from what was typed
+        // there (captures editors/docs that never send a Return).
+        if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
+        buffersByApp[activeAppKey] = buffer
+        lastInputByApp[activeAppKey] = lastInput
+        log("app switch \(activeAppKey) -> \(key) savedChars=\(buffer.count)")
+        activeAppKey = key
+        buffer = buffersByApp[key] ?? ""
+        lastInput = lastInputByApp[key] ?? Date.distantPast
+        clearSuggestion()
+        // Switching apps starts fresh: drop the previous app's background context and
+        // caret cache so the new app re-derives its own. Per-app buffers persist; the
+        // (global) style memory intentionally carries across apps for personalization.
+        cachedBackground = ""
+        backgroundRefreshedAt = .distantPast
+        backgroundKey = ""
+        shotCaretPoint = nil
+        shotCaretApp = ""
+        lastCaretPoint = nil
+        caretHeightFloor = nil      // fresh font-size measurement per focus session
+        log("[\(activeAppKey)] restored buffer chars=\(buffer.count)")
+    }
+
+    func saveActiveAppState() {
+        buffersByApp[activeAppKey] = buffer
+        lastInputByApp[activeAppKey] = lastInput
+    }
+
+    // Append typed/inserted text to the per-app buffer (no UI side effects).
+    func appendToBuffer(_ text: String) {
+        if Date().timeIntervalSince(lastInput) > Double(cfg.idleResetSeconds) { buffer = "" }
+        buffer += text
+        if buffer.count > 4000 { buffer = String(buffer.suffix(4000)) }
+        lastInput = Date()
+        saveActiveAppState()
+    }
+
+    // Used for non-typed buffer changes (e.g. Shift-Return newline): reset the
+    // prediction and regenerate.
+    func push(_ text: String, countsAsUserTyping: Bool = true) {
+        if countsAsUserTyping {
+            generationSerial &+= 1
+            lastUserTypedAt = Date()
+        }
+        appendToBuffer(text)
+        clearSuggestion()
+        scheduleGenerate()
+    }
+
+    func isWordSeparator(_ s: Unicode.Scalar) -> Bool {
+        CharacterSet.whitespacesAndNewlines.contains(s) || CharacterSet.punctuationCharacters.contains(s)
+    }
+
+    // True when we should trim energy use: battery-saver enabled AND on battery or in
+    // Low Power Mode. Drives a longer debounce and disables speculative prefetch.
+    var powerSaving: Bool { cfg.batterySaver && PowerState.shared.saving }
+
+    func clearSuggestion() {
+        reanchorWork?.cancel()
+        active = nil
+        completion = nil
+        prefetched = nil
+        prefetchKey = ""
+        overlay.orderOut(nil)
+    }
+}

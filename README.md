@@ -152,9 +152,17 @@ there. After editing, rebuild with `./scripts/build.sh`.
 
 ### Frontend
 
-The menu-bar app, event tap, overlay, follow-along logic, AX/screenshot caret
-placement, and context gathering are in
-[`scripts/typer_native.swift`](scripts/typer_native.swift).
+The menu-bar app is split by topic across [`scripts/typer/`](scripts/typer):
+the core class and its stored state live in `TyperApp.swift`, with one
+`extension TyperApp` per concern — `TyperApp+EventTap.swift` (event taps and
+the type-along loop), `TyperApp+Completion.swift` (generation, prefetch,
+ghost placement), `TyperApp+Typo.swift` (spell-check correction),
+`TyperApp+Caret.swift` (AX/screenshot caret placement),
+`TyperApp+Context.swift` (window text, OCR, clipboard, topic memory),
+`TyperApp+Menu.swift`, `TyperApp+Input.swift`, and `TyperApp+Stats.swift`.
+Supporting types each get their own file (`LlamaClient.swift`,
+`SuggestionOverlay.swift`, `GhostView.swift`, `StyleMemory.swift`,
+`TopicMemory.swift`, `TyperConfig.swift`, …). `main.swift` is the entry point.
 
 ---
 

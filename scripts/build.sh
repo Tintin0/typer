@@ -45,7 +45,9 @@ clang++ -std=c++17 -O3 "$ROOT_DIR/scripts/llama_server.cpp" \
   -o "$DATA_DIR/typer-llama-server"
 
 echo "==> Building Swift menu-bar app"
-swiftc -O "$ROOT_DIR/scripts/typer_native.swift" -o "$DATA_DIR/typer-menu-bar"
+# The app is split across scripts/typer/*.swift (one TyperApp extension per topic +
+# one file per supporting type). swiftc compiles them as a single module.
+swiftc -O "$ROOT_DIR"/scripts/typer/*.swift -o "$DATA_DIR/typer-menu-bar"
 cp "$DATA_DIR/typer-menu-bar" "$APP/Contents/MacOS/Typer"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
