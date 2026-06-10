@@ -29,6 +29,19 @@ Voice
   - lowercase, like the rest of the site. Keep titles under ~60 chars.
 -->
 
+## 2026-06-09 — typer started learning you, and stopped guessing
+
+the two biggest complaints about typer were really one complaint: suggestions felt random. this update is about earning their place on your screen — typer now learns how you actually write, notices what you accept, and when the model is only guessing it says nothing at all.
+
+- **a confidence bar.** the model now reports how sure it is, and suggestions below the bar never appear. in our tests, good completions measured 0.27 and up while the junk ("use a .") measured 0.20 — the bar sits at 0.22, so the junk dies and the good stuff lives.
+- **your words, preferred.** typer keeps a local table of the words you really type and gently nudges the model toward them. your vocabulary, not generic prose.
+- **it notices what you take.** every suggestion now resolves as used or ignored. take one or two words at a time and suggestions get shorter; ignore most of them and the bar tightens on its own.
+- **chat-you and docs-you are different people.** style memory now remembers which kind of app a line came from — messages, email, docs — and prefers the voice that matches where you're typing.
+- **paste no longer breaks the ghost.** `cmd+v` used to leave the suggestion frozen on top of your pasted text. typer now ducks out instantly and rebuilds from what's actually in the field.
+- **the ghost keeps up with fast typing.** typer learns each app's real text width, and the app itself now tells typer the moment a keystroke lands — so the ghost moves with you instead of getting typed over.
+
+all of it lives on your Mac and clears with one click, as always. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering.
+
 ## 2026-06-09 — typer got faster in a way you can feel
 
 this one's our favorite kind of update: nothing new to learn, everything just feels quicker. the model used to re-read your whole context on nearly every pause — in an 800-keystroke test it now re-reads 12 times instead of 800, so suggestions spend their time on the new words, not the old ones.
