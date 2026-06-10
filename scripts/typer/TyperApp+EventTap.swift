@@ -83,13 +83,22 @@ extension TyperApp {
     // invalidate in-flight generations, and warm the context cache after the target
     // app has processed the click — but never schedule a completion from the click.
     func handlePointerInteraction() {
+        invalidateAndResync()
+        refreshObservedElement()    // a click usually moves keyboard focus too
+    }
+
+    // Shared "the text changed underneath us" path: a click moved the cursor, or a
+    // ⌘V/⌘X/⌘Z mutated the field outside our keystroke view. Duck out instantly
+    // (the ghost must never sit over text we did not predict), then re-sync the
+    // buffer from AX once the host app has applied the change.
+    func invalidateAndResync() {
         syncActiveApp()
         generationSerial &+= 1
         debounce?.invalidate(); debounce = nil
         clearSuggestion()
         lastTrailing = ""
         caretHeightFloor = nil
-        if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
+        recordLearning()
         let serial = generationSerial
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             guard let self, self.generationSerial == serial else { return } // typing happened; leave it alone
@@ -99,6 +108,10 @@ extension TyperApp {
             } else {
                 self.buffer = ""
             }
+            // Resynced text wasn't necessarily typed by the user (it may be pasted or
+            // pre-existing) — the lexicon only learns from real typing, so mark the
+            // whole buffer as already seen.
+            self.lexiconWatermark[self.activeAppKey] = self.buffer.count
             self.saveActiveAppState()
             self.lastCaretPoint = self.caretPoint()
             self.refreshBackgroundIfNeeded()
@@ -133,7 +146,11 @@ extension TyperApp {
             // it); otherwise it's a literal character the user is typing.
             if completion != nil || active != nil { return }
         }
-        if code == CGKeyCode(kVK_Escape) { clearSuggestion(); return }
+        if code == CGKeyCode(kVK_Escape) {
+            // Esc with a suggestion showing is an explicit rejection — feed it back.
+            if let comp = completion { resolveCompletionOutcome(comp) }
+            clearSuggestion(); return
+        }
         if code == CGKeyCode(kVK_Delete) {
             generationSerial &+= 1
             lastUserTypedAt = Date()
@@ -144,12 +161,24 @@ extension TyperApp {
             generationSerial &+= 1
             lastUserTypedAt = Date()
             if flags.contains(.maskShift) { push("\n", countsAsUserTyping: false) } else {
-                if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
-                buffer = ""; saveActiveAppState(); clearSuggestion()
+                recordLearning()
+                buffer = ""; lexiconWatermark[activeAppKey] = 0
+                saveActiveAppState(); clearSuggestion()
             }
             return
         }
-        if hasCommandLikeModifier { return }
+        if hasCommandLikeModifier {
+            // ⌘V/⌘X/⌘Z mutate the field's text outside our keystroke view. Duck out
+            // immediately — the ghost would otherwise sit stale on top of the pasted
+            // text — and re-sync the buffer from AX so the next generation builds on
+            // what is actually in the field (pasted content included).
+            if flags.contains(.maskCommand),
+               code == CGKeyCode(kVK_ANSI_V) || code == CGKeyCode(kVK_ANSI_X) || code == CGKeyCode(kVK_ANSI_Z) {
+                dlog("[\(activeAppKey)] external edit shortcut code=\(code) — resync")
+                invalidateAndResync()
+            }
+            return
+        }
         if let chars = event.keyboardString, !chars.isEmpty {
             dlog("[\(activeAppKey)] key code=\(code)")
             handleTyping(chars)
@@ -209,15 +238,16 @@ extension TyperApp {
             presentTypo(word: word, fix: fix)
             return
         }
-        if completion != nil {
+        if let comp = completion {
             if followAlong(text) { return }   // typed exactly what we predicted — keep it
-            // deviated from the prediction: drop it and any speculative prefetch
+            // Deviated from the prediction: an implicit rejection (or partial use, if
+            // some words were consumed first). Feed it back, then drop the prediction
+            // and any speculative prefetch.
+            resolveCompletionOutcome(comp)
             completion = nil
             prefetched = nil
             prefetchKey = ""
             overlay.orderOut(nil)
-            // (No per-keystroke "ignored" counter — it over-counted natural typing.
-            //  Accept rate is accepted/shown, which is the meaningful signal.)
         }
         scheduleGenerate()
     }
@@ -234,6 +264,7 @@ extension TyperApp {
         if comp.done {
             // Typed all the way through — a strong "this matched my intent" signal.
             stats.accepted += 1; statsTouched()
+            resolveCompletionOutcome(comp)
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {
@@ -241,7 +272,7 @@ extension TyperApp {
             // app hasn't applied the keystroke yet, so a synchronous AX read would be
             // stale and overlap). A coalesced deferred re-anchor then corrects drift
             // and line-wrap once the app has caught up.
-            if let p = lastCaretPoint { lastCaretPoint = NSPoint(x: p.x + ghostWidth(text), y: p.y) }
+            advanceGhost(by: text)
             showCompletionRemainder(reanchor: false)
             scheduleReanchor()
             maybePrefetch()

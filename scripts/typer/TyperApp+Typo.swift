@@ -83,7 +83,7 @@ extension TyperApp {
 
     // Show the red-strikethrough/green-replacement diff for a known misspelling.
     func presentTypo(word: String, fix: String) {
-        active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix)
+        active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix, conf: nil)
         stats.shown += 1; statsTouched()
         // Inline at the caret line, same as completions.
         let point = currentCaretPoint()

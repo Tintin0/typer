@@ -29,6 +29,13 @@ struct TyperConfig {
     var windowContextEnabled = true   // read surrounding text in the focused window via AX
     var styleMemoryEnabled = true     // bias completions toward the user's own recent writing
     var clipboardContextEnabled = true
+    // Personalization & quality gate.
+    var lexiconEnabled = true         // learn the user's vocabulary; bias sampling toward it
+    var adaptiveSuggestions = true    // adapt suggestion length + gate strictness to accept history
+    // Suggestions whose mean token probability falls below this are not shown at
+    // all — "show less, but right" is most of what makes inline completion feel
+    // intentional rather than random. 0 disables the gate.
+    var minConfidence = 0.34
     var screenContextEnabled = false  // screenshot OCR as prompt context — off by default (noisy)
     // Screenshot+OCR caret locator for apps with no AX/text-marker caret (terminals,
     // custom editors). OFF by default: a full ScreenCaptureKit capture + Vision OCR
@@ -71,6 +78,9 @@ struct TyperConfig {
             case "window_context_enabled": cfg.windowContextEnabled = value == "true"
             case "style_memory_enabled": cfg.styleMemoryEnabled = value == "true"
             case "clipboard_context_enabled": cfg.clipboardContextEnabled = value == "true"
+            case "lexicon_enabled": cfg.lexiconEnabled = value == "true"
+            case "adaptive_suggestions": cfg.adaptiveSuggestions = value == "true"
+            case "min_confidence": cfg.minConfidence = Double(value) ?? cfg.minConfidence
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
             case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = value == "true"
             case "topic_memory_enabled": cfg.topicMemoryEnabled = value == "true"

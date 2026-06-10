@@ -287,7 +287,7 @@ extension TyperApp {
             // the stable context windows exist to preserve.
             let maxChars = immediate.count < cfg.maxImmediateForBackground ? 360 : 160
             if Date().timeIntervalSince(styleSampleAt) > 5 || styleSampleChars != maxChars {
-                cachedStyleSample = styleMemory.sample(maxChars: maxChars, relevantTo: immediate)
+                cachedStyleSample = styleMemory.sample(maxChars: maxChars, relevantTo: immediate, category: appCategory())
                 styleSampleAt = Date()
                 styleSampleChars = maxChars
             }

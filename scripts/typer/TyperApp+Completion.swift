@@ -20,6 +20,56 @@ extension TyperApp {
         return measured + max(1, CGFloat(s.count) * 0.8)
     }
 
+    // Calibrated px-per-char correction for the current app (1.0 until learned).
+    // ghostWidth measures in OUR font; the host app's font is systematically wider
+    // or narrower, and this learned ratio is what closes that gap so the ghost
+    // tracks fast typing instead of being overwritten by it.
+    func widthScale() -> CGFloat { widthScaleByBundle[currentAppBundleAndName().bundle] ?? 1.0 }
+
+    // Optimistically advance the cached caret by the calibrated width of `s`,
+    // accumulating the raw (uncalibrated) advance for settle-time calibration.
+    func advanceGhost(by s: String) {
+        guard let p = lastCaretPoint else { return }
+        let raw = ghostWidth(s)
+        lastCaretPoint = NSPoint(x: p.x + raw * widthScale(), y: p.y)
+        calibPredicted += raw
+    }
+
+    // Compare how far the caret ACTUALLY moved since the last authoritative fix
+    // with how far our font model predicted, and fold the ratio into the per-app
+    // scale (EMA). Same-line moves only; a wrap or cursor jump just resets the anchor.
+    func calibrateGhostWidth(authoritative ax: NSPoint) {
+        defer { calibAnchor = ax; calibPredicted = 0 }
+        guard let anchor = calibAnchor, calibPredicted >= 8 else { return }
+        guard abs(ax.y - anchor.y) <= max(6, lastCaretHeight * 0.65) else { return }
+        let actual = ax.x - anchor.x
+        guard actual > 2 else { return }
+        let ratio = min(1.6, max(0.7, actual / calibPredicted))
+        let bundle = currentAppBundleAndName().bundle
+        let updated = (widthScaleByBundle[bundle] ?? 1.0) * 0.65 + ratio * 0.35
+        widthScaleByBundle[bundle] = updated
+        dlog("[\(activeAppKey)] ghost width scale ratio=\(ratio) ema=\(updated)")
+    }
+
+    // A completion's lifecycle ended: count how many of its words the user actually
+    // used (Tab/backtick accepts and typing straight through both count) and feed
+    // the outcome to the adaptive layer (suggestion length + confidence gate).
+    func resolveCompletionOutcome(_ comp: ActiveCompletion) {
+        guard cfg.adaptiveSuggestions else { return }
+        let used = String(comp.chars[0..<comp.consumed])
+            .split(whereSeparator: { $0.isWhitespace }).count
+        feedback.recordResolution(usedWords: used)
+    }
+
+    // The confidence bar a suggestion must clear to be shown: the configured base,
+    // tightened when the user rejects most suggestions and relaxed when they accept
+    // nearly everything.
+    var effectiveMinConfidence: Double {
+        guard cfg.minConfidence > 0 else { return 0 }
+        let adj = cfg.adaptiveSuggestions ? feedback.confidenceAdjustment() : 0
+        return min(0.9, max(0.05, cfg.minConfidence + adj))
+    }
+
     // reanchor=true re-reads the caret from AX (fresh suggestion / new line);
     // reanchor=false reuses the cached point (already shifted by typed width) to
     // avoid per-keystroke AX jitter. trustAX=true drops the no-backward-snap guard
@@ -49,11 +99,19 @@ extension TyperApp {
         // AX caret may still be a frame behind), but ghostWidth deliberately overshoots,
         // so repeated Tab accepts accumulate rightward drift the guard then refuses to
         // correct. Once the app has definitely caught up, snap to the authoritative AX
-        // caret — backwards included. Cancelled and re-armed on every keystroke, so it
-        // only fires after a real pause.
+        // caret — backwards included — and use the trustworthy read to calibrate the
+        // per-app width scale. Cancelled and re-armed on every keystroke, so it only
+        // fires after a real pause.
         let settle = DispatchWorkItem { [weak self] in
             guard let self, self.completion != nil else { return }
-            self.showCompletionRemainder(reanchor: true, trustAX: true)
+            if let ax = self.caretPoint() {
+                self.calibrateGhostWidth(authoritative: ax)
+                self.shotCaretPoint = nil
+                self.lastCaretPoint = ax
+                self.showCompletionRemainder(reanchor: false)
+            } else {
+                self.showCompletionRemainder(reanchor: true, trustAX: true)
+            }
         }
         settleWork = settle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: settle)
@@ -75,13 +133,14 @@ extension TyperApp {
             // didSet) never bounces the tap off and back on. A rapid next Tab is then
             // swallowed instead of tabbing focus away while the next chunk arrives.
             armAcceptGrace()
+            resolveCompletionOutcome(comp)
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate(quick: true) }
         } else {
             completion = comp
             // Move immediately by the inserted word's width (the app hasn't applied
             // the insertion yet), then re-anchor precisely once it has.
-            if let p = lastCaretPoint { lastCaretPoint = NSPoint(x: p.x + ghostWidth(piece), y: p.y) }
+            advanceGhost(by: piece)
             showCompletionRemainder(reanchor: false)
             scheduleReanchor()
             maybePrefetch()
@@ -98,6 +157,8 @@ extension TyperApp {
         appendToBuffer(piece)
         stats.accepted += 1; recordCompleted(piece); statsTouched()
         armAcceptGrace()
+        var resolved = comp; resolved.consumed = resolved.chars.count
+        resolveCompletionOutcome(resolved)
         completion = nil
         overlay.orderOut(nil)
         scheduleGenerate(quick: true)
@@ -117,12 +178,16 @@ extension TyperApp {
         prefetchInFlight = true
         let promptContext = assembledContext(immediate: predicted)
         let appKey = activeAppKey
-        let maxWords = cfg.maxCompletionWords
+        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
+        let lex = cfg.lexiconEnabled ? lexicon.topWords() : ""
         backgroundQueue.async {
-            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lowPriority: true)) ?? nil
+            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lowPriority: true)) ?? nil
             DispatchQueue.main.async {
                 self.prefetchInFlight = false
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
+                // A prefetch below the confidence bar would be promoted (shown)
+                // without ever passing through presentCompletion — gate it here.
+                if let c = sug?.conf, c < self.effectiveMinConfidence { return }
                 self.prefetched = ActiveCompletion(chars: Array(t))
                 self.prefetchKey = predicted
                 log("prefetched chars=\(t.count)")
@@ -138,6 +203,7 @@ extension TyperApp {
         prefetchKey = ""
         stats.shown += 1; statsTouched()   // a promoted prefetch is a shown suggestion
         showCompletionRemainder(animate: true)
+        calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         log("promoted prefetch")
         return true
     }
@@ -196,7 +262,10 @@ extension TyperApp {
         let appKey = activeAppKey
         let reqBuffer = buffer            // buffer snapshot for the staleness check
         let promptContext = assembledContext(immediate: context)
-        let maxWords = cfg.maxCompletionWords
+        // Ask for roughly as much as the user historically takes, and ship their
+        // vocabulary along so sampling leans toward how they actually write.
+        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
+        let lex = cfg.lexiconEnabled ? lexicon.topWords() : ""
         dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
         // Anchor (an AX caret read) only on the FIRST painted partial; the user hasn't
         // typed since the request (guard below), so the caret can't have moved while
@@ -207,22 +276,26 @@ extension TyperApp {
             // Live preview: paint partial completions as they stream in, but only
             // while the user hasn't typed since the request (else it's the final
             // line's job to reconcile via presentCompletion).
-            let onPartial: (String) -> Void = { partial in
+            let onPartial: (String, Double?) -> Void = { partial, conf in
                 DispatchQueue.main.async {
                     guard appKey == self.activeAppKey, self.generationSerial == serial,
                           self.buffer == reqBuffer, !partial.isEmpty else { return }
+                    // Don't paint a stream the final gate would tear down — flashing
+                    // and yanking a bad suggestion is worse than a moment of silence.
+                    if let conf, conf < self.effectiveMinConfidence { return }
                     self.completion = ActiveCompletion(chars: Array(partial))
                     self.showCompletionRemainder(reanchor: firstPartial, animate: firstPartial)
+                    if firstPartial { self.calibAnchor = self.lastCaretPoint; self.calibPredicted = 0 }
                     firstPartial = false
                 }
             }
-            let sug = try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, onPartial: onPartial)
+            let sug = try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded
                 self.rerequestNeeded = false
                 if appKey == self.activeAppKey, self.generationSerial == serial {
-                    self.presentCompletion((sug ?? nil)?.text, requestedBuffer: reqBuffer)
+                    self.presentCompletion((sug ?? nil)?.text, conf: (sug ?? nil)?.conf, requestedBuffer: reqBuffer)
                 }
                 // Always converge on the latest context.
                 if again { self.scheduleGenerate() }
@@ -233,9 +306,18 @@ extension TyperApp {
     // Show a freshly generated completion, tolerating that the user may have typed
     // MORE since the request was issued: if they typed along the prediction we show
     // the remaining tail; if they diverged we regenerate.
-    func presentCompletion(_ text: String?, requestedBuffer: String) {
+    func presentCompletion(_ text: String?, conf: Double? = nil, requestedBuffer: String) {
         guard let text, !text.isEmpty else {
             if completion == nil { overlay.orderOut(nil) }
+            return
+        }
+        // The confidence gate: when the model was mostly guessing, show nothing.
+        // (A streamed partial of this generation may already be painted — take it
+        // down rather than leave a known-low-quality suggestion up.)
+        if let conf, conf < effectiveMinConfidence {
+            dlog("[\(activeAppKey)] suppressed low-confidence completion conf=\(String(format: "%.2f", conf)) bar=\(String(format: "%.2f", effectiveMinConfidence))")
+            completion = nil
+            overlay.orderOut(nil)
             return
         }
         // Drop completions that just repeat the text after the caret (showing only a
@@ -272,6 +354,7 @@ extension TyperApp {
         }
         stats.shown += 1; statsTouched()
         showCompletionRemainder(animate: true)
+        calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         maybePrefetch()
     }
 }

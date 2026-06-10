@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -225,6 +226,13 @@ public:
     int pos = 0;
     std::vector<llama_token> last_prompt_tokens;
     std::vector<llama_logit_bias> special_biases;
+    // Personal-lexicon bias: a mild positive nudge on the first token of words the
+    // user actually types often, so completions lean toward their vocabulary.
+    std::vector<llama_logit_bias> lexicon_biases;
+    std::string lexicon_key;
+    // Mean model probability of the sampled tokens for the LAST generate() call —
+    // the confidence signal the UI uses to suppress low-quality suggestions.
+    double last_avg_prob = 0.0;
 
     explicit LlamaEngine(const std::string &path) {
         llama_backend_init();
@@ -287,12 +295,39 @@ public:
         for (auto id : ids) special_biases.push_back({id, -INFINITY});
     }
 
+    // `words` is a space-separated list of the user's distinctive vocabulary,
+    // most-frequent first. Each word's first token (with a leading space, i.e. as a
+    // word start) gets a small logit boost. +0.5 is deliberately gentle: enough to
+    // break ties toward the user's own words, far too small to force one in where
+    // it doesn't fit (min-p and the nucleus still apply afterwards).
+    void set_lexicon(const std::string &words) {
+        if (words == lexicon_key) return;
+        lexicon_key = words;
+        lexicon_biases.clear();
+        if (words.empty()) return;
+        std::set<llama_token> banned;
+        for (const auto &b : special_biases) banned.insert(b.token);
+        std::set<llama_token> seen;
+        std::istringstream iss(words);
+        std::string w;
+        while (iss >> w && lexicon_biases.size() < 64) {
+            auto toks = tokenize(" " + w, false);
+            if (toks.empty()) continue;
+            llama_token t = toks[0];
+            if (banned.count(t) || !seen.insert(t).second) continue;
+            lexicon_biases.push_back({t, 0.5f});
+        }
+    }
+
     llama_sampler * make_sampler(const std::vector<llama_token> &prompt_tokens) {
         auto params = llama_sampler_chain_default_params();
         params.no_perf = true;
         llama_sampler * chain = llama_sampler_chain_init(params);
         if (!special_biases.empty()) {
             llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)special_biases.size(), special_biases.data()));
+        }
+        if (!lexicon_biases.empty()) {
+            llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)lexicon_biases.size(), lexicon_biases.data()));
         }
         // Inline autocomplete wants the high-probability continuation, not a
         // creative tangent. Mild repetition penalty, then a moderately tight nucleus:
@@ -383,10 +418,25 @@ public:
         last_prompt_tokens = toks;
     }
 
-    // on_token(full_output_so_far) is called after each token; returning false stops
-    // generation early (used for streaming + early mid-word suppression).
+    // Probability the model assigned to `id` in the CURRENT (raw, pre-sampler)
+    // logits. Two passes over the vocab (~0.3ms) per generated token; the price of
+    // an honest confidence signal instead of a proxy.
+    double token_prob(llama_token id) {
+        const float *lg = llama_get_logits_ith(ctx, -1);
+        if (!lg) return 0.0;
+        const int nv = llama_vocab_n_tokens(vocab);
+        float mx = lg[0];
+        for (int j = 1; j < nv; ++j) if (lg[j] > mx) mx = lg[j];
+        double denom = 0.0;
+        for (int j = 0; j < nv; ++j) denom += std::exp((double)(lg[j] - mx));
+        return std::exp((double)(lg[id] - mx)) / denom;
+    }
+
+    // on_token(full_output_so_far, mean_prob_so_far) is called after each token;
+    // returning false stops generation early (used for streaming + early mid-word
+    // suppression). The final mean probability lands in last_avg_prob.
     std::string generate(const std::string &prompt, int max_tokens,
-                         const std::function<bool(const std::string &)> &on_token = nullptr) {
+                         const std::function<bool(const std::string &, double)> &on_token = nullptr) {
         auto toks = tokenize(prompt, false);
         int over = (int)toks.size() + max_tokens + 8 - n_ctx;
         if (over > 0) {
@@ -403,13 +453,22 @@ public:
         // RAII so a throw from decode_tokens (or on_token) can't leak the sampler.
         std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> smpl(make_sampler(toks), &llama_sampler_free);
         std::string out;
+        double prob_sum = 0.0;
+        int prob_n = 0;
+        last_avg_prob = 0.0;
         for (int i = 0; i < max_tokens; ++i) {
             llama_token id = llama_sampler_sample(smpl.get(), ctx, -1);
+            // The raw logits for this step are still in the context (the sampler
+            // works on a copy), so the model's true probability of the chosen
+            // token is available before we decode it.
+            prob_sum += token_prob(id);
+            prob_n++;
+            last_avg_prob = prob_sum / prob_n;
             llama_sampler_accept(smpl.get(), id);
             if (llama_vocab_is_eog(vocab, id)) break;
             out += detok(id);
             decode_one(id);
-            if (on_token && !on_token(out)) break;
+            if (on_token && !on_token(out, last_avg_prob)) break;
         }
         return out;
     }
@@ -475,6 +534,7 @@ int main(int argc, char **argv) {
                 std::string context = json_get_string(line, "context");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
                 if (context.size() > 2200) context = stable_tail(context, 2200);
+                engine.set_lexicon(json_get_string(line, "lexicon"));
 
                 int max_tokens = std::max(8, std::min(18, max_words + 7));
                 bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
@@ -500,7 +560,7 @@ int main(int argc, char **argv) {
                 // Stream partial completions token-by-token so the UI shows the
                 // first word almost immediately instead of waiting for all of them.
                 std::string raw = engine.generate(prompt_complete(context), max_tokens,
-                    [&](const std::string &full) -> bool {
+                    [&](const std::string &full, double conf) -> bool {
                         std::string s = first_line_clean(full);
                         if (s.empty()) return true;
                         if (!first_seen) {
@@ -515,7 +575,9 @@ int main(int argc, char **argv) {
                         std::string shaped = utf8_safe(shape(s, false));
                         if (!shaped.empty() && shaped != last_emitted) {
                             last_emitted = shaped;
-                            std::cout << "{\"p\":\"" << json_escape(shaped) << "\"}\n" << std::flush;
+                            char cbuf[16];
+                            snprintf(cbuf, sizeof(cbuf), "%.3f", conf);
+                            std::cout << "{\"p\":\"" << json_escape(shaped) << "\",\"conf\":" << cbuf << "}\n" << std::flush;
                         }
                         int wc = 0; bool inw = false;
                         for (char c : shaped) { if (std::isspace((unsigned char)c)) { if (inw) wc++; inw = false; } else inw = true; }
@@ -534,7 +596,10 @@ int main(int argc, char **argv) {
                 if (out.empty()) {
                     std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
                 } else {
-                    std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\"" << json_escape(out) << "\"}}\n" << std::flush;
+                    char cbuf[16];
+                    snprintf(cbuf, sizeof(cbuf), "%.3f", engine.last_avg_prob);
+                    std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\"" << json_escape(out)
+                              << "\",\"conf\":" << cbuf << "}}\n" << std::flush;
                 }
             } catch (const std::exception &e) {
                 std::cout << "{\"ok\":false,\"error\":\"" << json_escape(e.what()) << "\",\"suggestion\":null}\n" << std::flush;

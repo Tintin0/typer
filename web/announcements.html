@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>typr — announcements</title>
+<meta name="description" content="What's new in typr — local, on-device autocomplete for macOS. Written for humans; the changelog has the engineering." />
+<meta property="og:title" content="typr — announcements" />
+<meta property="og:description" content="What's new in typr, written for humans." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://typr.frgmt.xyz/announcements" />
+<meta name="theme-color" content="#0b0b0e" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --bg: #0b0b0e;
+    --fg: #ececef;
+    --dim: #87878f;
+    --ghost: #4a4a53;
+    --rule: #1f1f25;
+    --caret: #5b8def;
+    --green: #34c759;
+    --surface: #141418;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-size: 17px; line-height: 1.7; -webkit-font-smoothing: antialiased;
+    padding: 0 1.5rem 4rem;
+  }
+  .col { max-width: 680px; margin: 0 auto; }
+  a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--ghost); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--caret); }
+  a:focus-visible { outline: 2px solid var(--caret); outline-offset: 2px; border-radius: 2px; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding: 1.75rem 0; }
+  .brand { font-family: var(--mono); font-size: 16px; text-decoration: none; color: var(--fg); }
+  .brand .g { color: var(--ghost); }
+  .top nav { display: flex; gap: 1.25rem; }
+  .top nav a { color: var(--dim); font-size: 14px; text-decoration: none; }
+  .top nav a:hover { color: var(--fg); }
+  .hero { padding: 3.5rem 0 2rem; }
+  h1 { font-size: clamp(1.9rem, 5.5vw, 2.7rem); font-weight: 650; letter-spacing: -0.025em; line-height: 1.15; margin: 0 0 1rem; }
+  .g { color: var(--ghost); }
+  .hero p { color: var(--dim); margin: 0; font-size: 17px; }
+  .hero p a { color: var(--dim); }
+  code {
+    font-family: var(--mono); font-size: 0.82em; color: var(--fg);
+    border: 1px solid var(--rule); border-bottom-width: 2px; background: var(--surface);
+    border-radius: 5px; padding: 0.08em 0.5ch;
+  }
+  /* featured entry */
+  .featured {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 14px;
+    padding: 1.9rem 2rem 1.6rem; margin: 1.5rem 0 2.5rem;
+  }
+  .featured .meta { display: flex; align-items: center; gap: 0.9rem; margin: 0 0 0.8rem; }
+  .tag {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--green); border: 1px solid rgba(52,199,89,0.35); border-radius: 999px;
+    padding: 0.1rem 0.65rem;
+  }
+  time { font-family: var(--mono); font-size: 12.5px; color: var(--ghost); }
+  .featured h2 { font-size: clamp(1.35rem, 4vw, 1.7rem); font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; margin: 0 0 0.9rem; }
+  .body p { color: var(--dim); margin: 0 0 1rem; }
+  .body p:last-child { margin-bottom: 0; }
+  .body strong { color: var(--fg); font-weight: 600; }
+  .body a { color: var(--fg); }
+  .body ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+  .body li { color: var(--dim); margin-bottom: 0.55rem; }
+  .body li::marker { color: var(--ghost); }
+  /* collapsed entries */
+  .entry { border-top: 1px solid var(--rule); }
+  .entry:last-of-type { border-bottom: 1px solid var(--rule); }
+  .entry summary {
+    display: flex; align-items: baseline; gap: 1.1rem; cursor: pointer;
+    padding: 1.15rem 0.25rem; list-style: none;
+  }
+  .entry summary::-webkit-details-marker { display: none; }
+  .entry summary:hover .entry-title { color: var(--fg); }
+  .entry summary:focus-visible { outline: 2px solid var(--caret); outline-offset: 2px; border-radius: 6px; }
+  .entry time { flex-shrink: 0; width: 12ch; white-space: nowrap; }
+  .entry-title { color: var(--dim); font-weight: 550; font-size: 16.5px; letter-spacing: -0.01em; }
+  .chev { margin-left: auto; color: var(--ghost); font-size: 13px; transition: transform 0.15s; flex-shrink: 0; }
+  @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+  .entry[open] .chev { transform: rotate(90deg); }
+  .entry[open] summary .entry-title { color: var(--fg); }
+  .entry .body { padding: 0.25rem 0.25rem 1.5rem; }
+  @media (min-width: 560px) { .entry .body { padding-left: calc(12ch + 1.1rem); } }
+  .empty { color: var(--dim); }
+  footer { margin-top: 5rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 13px; color: var(--ghost); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; }
+  footer a { color: var(--dim); text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="col">
+  <header class="top">
+    <a class="brand" href="/">typr<span class="g">_</span></a>
+    <nav>
+      <a href="/">home</a>
+      <a href="https://github.com/frgmt0/typer">github ↗</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>announcements<span class="g"> — the readable kind.</span></h1>
+    <p>what's new in typr, written for humans. the engineering lives in the <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a>; this is what it feels like.</p>
+  </section>
+
+  <main id="feed" aria-label="announcements">
+    <noscript><p class="empty">this feed needs JavaScript — or just read <a href="https://github.com/frgmt0/typer/blob/main/ANNOUNCEMENTS.md">ANNOUNCEMENTS.md</a> on GitHub.</p></noscript>
+  </main>
+
+  <footer>
+    <span>typr — local autocomplete for macOS</span>
+    <span><a href="https://github.com/frgmt0/typer">source</a> · <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a> · MIT</span>
+  </footer>
+</div>
+
+<script type="module" src="/src/announcements.ts"></script>
+</body>
+</html>

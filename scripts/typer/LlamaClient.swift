@@ -90,8 +90,9 @@ final class LlamaClient {
     // `lowPriority` (speculative prefetch) yields the helper instead of waiting: if a
     // foreground request already holds the lock, the prefetch is skipped rather than
     // queued, so it can never delay real input.
-    func request(task: String, context: String, maxWords: Int, lowPriority: Bool = false,
-                 onPartial: ((String) -> Void)? = nil) throws -> HelperSuggestion? {
+    func request(task: String, context: String, maxWords: Int, lexicon: String = "",
+                 lowPriority: Bool = false,
+                 onPartial: ((String, Double?) -> Void)? = nil) throws -> HelperSuggestion? {
         if lowPriority {
             guard lock.try() else { return nil }
         } else {
@@ -99,7 +100,7 @@ final class LlamaClient {
         }
         defer { lock.unlock() }
         try start()
-        let req = HelperRequest(task: task, context: context, max_words: maxWords)
+        let req = HelperRequest(task: task, context: context, max_words: maxWords, lexicon: lexicon)
         dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try encoder.encode(req) + Data([0x0A])
         do {
@@ -109,7 +110,7 @@ final class LlamaClient {
                     throw NSError(domain: "Typer", code: 1, userInfo: [NSLocalizedDescriptionKey: "helper exited"])
                 }
                 let res = try decoder.decode(StreamLine.self, from: line)
-                if let p = res.p { onPartial?(p); continue }      // partial token update
+                if let p = res.p { onPartial?(p, res.conf); continue }      // partial token update
                 if res.ok == false {
                     throw NSError(domain: "Typer", code: 2, userInfo: [NSLocalizedDescriptionKey: res.error ?? "Unknown error"])
                 }

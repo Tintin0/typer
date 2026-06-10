@@ -79,6 +79,26 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // keystroke. Style memory personalizes regardless of app.
     let styleMemory = StyleMemory()
     let topicMemory = TopicMemory()
+    // Personalization: the user's own vocabulary (biases sampling toward their words)
+    // and their accept/reject history (adapts suggestion length + confidence gate).
+    let lexicon = PersonalLexicon()
+    let feedback = FeedbackMemory()
+    // How far into each app's buffer the lexicon has already learned, so repeated
+    // flushes (app switches, clicks) never double-count the same typed words.
+    var lexiconWatermark: [String: Int] = [:]
+    // Ghost width calibration: ratio of the host app's real text advance to our
+    // SF-font estimate, learned per bundle from settled AX caret reads. 1.0 until
+    // measured; this is what keeps the ghost from sitting on the word being typed
+    // in apps whose font is wider than our guess.
+    var widthScaleByBundle: [String: CGFloat] = [:]
+    var calibAnchor: NSPoint?           // last authoritative caret fix
+    var calibPredicted: CGFloat = 0     // UNSCALED predicted advance since the anchor
+    // AXObserver: event-driven re-anchoring. The host app tells us the instant it
+    // applied an edit, instead of us guessing with fixed timers.
+    var axObserver: AXObserver?
+    var axObserverPID: pid_t = 0
+    var axObservedElement: AXUIElement?
+    var axNotifyPending = false
     var topicTimer: Timer?
     var topicCapturing = false
     var cachedBackground = ""
@@ -107,6 +127,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setupMenu()
         setupEventTap()
+        updateAXObserver()
         startTopicTimer()
         // Only spin up the model if inline completion is actually on (typo correction
         // is local-only). If it's off, the helper stays unspawned until it's enabled.
@@ -140,6 +161,42 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "com.github.wez.wezterm", "co.zeit.hyper", "org.tabby"
     ]
 
+    // Coarse register of the frontmost app, for per-app voice in style memory: the
+    // same user writes "lol yeah" in Messages and full prose in Pages, and sampling
+    // should prefer the voice that matches where they are typing now.
+    func appCategory() -> String {
+        let (bundle, _) = currentAppBundleAndName()
+        if TyperApp.terminalBundleIDs.contains(bundle) { return "code" }
+        let b = bundle.lowercased()
+        let table: [(String, [String])] = [
+            ("chat", ["mobilesms", "slack", "discord", "telegram", "whatsapp", "signal", "teams", "messenger"]),
+            ("email", ["mail", "outlook", "spark", "missive", "superhuman", "mimestream", "postbox"]),
+            ("docs", ["pages", "word", "notes", "obsidian", "notion", "craft", "bear", "iawriter", "textedit", "ulysses", "scrivener"]),
+            ("code", ["xcode", "vscode", "sublime", "jetbrains", "intellij", "cursor", "zed", "nova"]),
+            ("browser", ["safari", "chrome", "arc", "firefox", "edge", "brave", "orion", "vivaldi"]),
+        ]
+        for (cat, keys) in table where keys.contains(where: { b.contains($0) }) { return cat }
+        return "other"
+    }
+
+    // Flush what the user wrote into the long-term personalization stores (style
+    // voice + vocabulary lexicon). Called wherever a writing session "ends": Return,
+    // app switch, click elsewhere.
+    func recordLearning() {
+        if cfg.styleMemoryEnabled { styleMemory.record(buffer, category: appCategory()) }
+        if cfg.lexiconEnabled { learnLexiconDelta() }
+    }
+
+    // Learn only the buffer text typed since the last flush — the watermark makes
+    // repeated flushes of a persisting buffer (e.g. app switches back and forth)
+    // count each word once.
+    func learnLexiconDelta() {
+        let learned = min(lexiconWatermark[activeAppKey] ?? 0, buffer.count)
+        guard buffer.count > learned else { return }
+        lexicon.learn(from: String(buffer.dropFirst(learned)))
+        lexiconWatermark[activeAppKey] = buffer.count
+    }
+
     // True when Typer should stay silent in the current app (per-app disable or a
     // terminal when terminal-skip is on).
     func isAppDisabled() -> Bool {
@@ -154,7 +211,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if key == activeAppKey { return }
         // Leaving an app: keep its session buffer, and learn from what was typed
         // there (captures editors/docs that never send a Return).
-        if cfg.styleMemoryEnabled { styleMemory.record(buffer) }
+        recordLearning()
         buffersByApp[activeAppKey] = buffer
         lastInputByApp[activeAppKey] = lastInput
         log("app switch \(activeAppKey) -> \(key) savedChars=\(buffer.count)")
@@ -173,6 +230,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shotCaretApp = ""
         lastCaretPoint = nil
         caretHeightFloor = nil      // fresh font-size measurement per focus session
+        updateAXObserver()          // follow the new app's focused element
         log("[\(activeAppKey)] restored buffer chars=\(buffer.count)")
     }
 
@@ -183,9 +241,18 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Append typed/inserted text to the per-app buffer (no UI side effects).
     func appendToBuffer(_ text: String) {
-        if Date().timeIntervalSince(lastInput) > Double(cfg.idleResetSeconds) { buffer = "" }
+        if Date().timeIntervalSince(lastInput) > Double(cfg.idleResetSeconds) {
+            buffer = ""
+            lexiconWatermark[activeAppKey] = 0
+        }
         buffer += text
-        if buffer.count > 4000 { buffer = String(buffer.suffix(4000)) }
+        if buffer.count > 4000 {
+            // Front-truncation shifts every index; pull the lexicon watermark back by
+            // the same amount so it keeps pointing at the same (kept) text.
+            let over = buffer.count - 4000
+            buffer = String(buffer.suffix(4000))
+            lexiconWatermark[activeAppKey] = max(0, (lexiconWatermark[activeAppKey] ?? 0) - over)
+        }
         lastInput = Date()
         saveActiveAppState()
     }
@@ -244,6 +311,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         completion = nil
         prefetched = nil
         prefetchKey = ""
+        calibAnchor = nil
+        calibPredicted = 0
         overlay.orderOut(nil)
     }
 }

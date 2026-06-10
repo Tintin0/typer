@@ -25,6 +25,14 @@ battery_debounce_ms = 300     # debounce used while battery-saving
 window_context_enabled = true     # read surrounding text via Accessibility
 style_memory_enabled = true       # learn from your own recent writing (local only)
 clipboard_context_enabled = true  # include recently copied text
+
+# Personalization & suggestion quality (all on-device, clearable from the menu).
+lexicon_enabled = true            # learn your vocabulary; bias suggestions toward your words
+adaptive_suggestions = true       # adapt suggestion length + strictness to what you accept
+# Suggestions whose mean token probability is below this bar are not shown at all
+# ("show less, but right"). Raise it for fewer/better suggestions, lower it for
+# more/looser ones; 0 disables the gate entirely.
+min_confidence = 0.34
 screen_context_enabled = false    # screenshot OCR as prompt context — off by default (noisy)
 # Caret placement in apps with NO Accessibility caret (terminals, custom editors) via
 # screenshot + Vision OCR. OFF by default: it runs on the Neural Engine and is very

@@ -57,6 +57,9 @@ extension TyperApp {
         for fact in funFacts() { menu.addItem(disabledItem(fact)) }
         menu.addItem(.separator())
         menu.addItem(disabledItem("Shown \(numberFormatted(stats.shown)) · Accepted \(stats.acceptRate)% · Learned \(styleMemory.sentenceCount()) sentences"))
+        var personalization = "Vocabulary: \(numberFormatted(lexicon.wordCount())) words"
+        if let s = feedback.summary() { personalization += " · \(s)" }
+        menu.addItem(disabledItem(personalization))
         menu.addItem(.separator())
 
         menu.addItem(toggleItem("Enabled", key: "enabled", value: cfg.enabled))
@@ -85,6 +88,8 @@ extension TyperApp {
         let topic = toggleItem("Remember what I read (\(topicMemory.count()))", key: "topic_memory_enabled", value: cfg.topicMemoryEnabled)
         ctx.addItem(topic)
         ctx.addItem(toggleItem("Learn my style", key: "style_memory_enabled", value: cfg.styleMemoryEnabled))
+        ctx.addItem(toggleItem("Learn my vocabulary", key: "lexicon_enabled", value: cfg.lexiconEnabled))
+        ctx.addItem(toggleItem("Adapt to my accepts", key: "adaptive_suggestions", value: cfg.adaptiveSuggestions))
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
@@ -132,6 +137,8 @@ extension TyperApp {
         case "screen_context_enabled": cfg.screenContextEnabled = v
         case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = v
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
+        case "lexicon_enabled": cfg.lexiconEnabled = v
+        case "adaptive_suggestions": cfg.adaptiveSuggestions = v
         case "battery_saver": cfg.batterySaver = v
         case "topic_memory_enabled":
             cfg.topicMemoryEnabled = v
@@ -159,7 +166,7 @@ extension TyperApp {
     @objc func resetData() {
         let alert = NSAlert()
         alert.messageText = "Reset all Typer data?"
-        alert.informativeText = "Clears your learned writing style, remembered on-screen topics, and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
+        alert.informativeText = "Clears your learned writing style, vocabulary, suggestion feedback, remembered on-screen topics, and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
@@ -167,8 +174,11 @@ extension TyperApp {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         styleMemory.clear()
         topicMemory.clear()
+        lexicon.clear()
+        feedback.clear()
         stats = TyperStats(); stats.save()
         buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
+        lexiconWatermark.removeAll()
         cachedBackground = ""; lastTrailing = ""
         clearSuggestion()
         updateStatusTitle()

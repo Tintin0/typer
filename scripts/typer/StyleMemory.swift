@@ -10,6 +10,12 @@ import Vision
 // Persistent, on-device record of the user's own writing. A small rolling sample
 // is fed into the prompt so completions adopt the user's tone and vocabulary.
 // Entirely local: ~/Library/Application Support/typer/style.txt, capped in size.
+//
+// Each line is stored as "category\ttext" where category is the kind of app the
+// writing came from (chat/email/docs/code/browser/other) — the same person writes
+// very differently in Messages than in a design doc, and sampling should prefer
+// the voice that matches where they're typing NOW. Legacy lines without a tab are
+// treated as uncategorized and remain eligible everywhere.
 final class StyleMemory {
     private let url: URL
     private let maxBytes = 40_000
@@ -33,16 +39,23 @@ final class StyleMemory {
         return cached!
     }
 
-    func record(_ text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Split a stored line into (category, text). Legacy lines have no tab → ("", line).
+    private func parse(_ line: String) -> (category: String, text: String) {
+        guard let tab = line.firstIndex(of: "\t") else { return ("", line) }
+        return (String(line[..<tab]), String(line[line.index(after: tab)...]))
+    }
+
+    func record(_ text: String, category: String = "") {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        t = t.replacingOccurrences(of: "\t", with: " ")   // tab is the format delimiter
         // Only keep substantive, sentence-like writing — not stray words.
         guard t.split(separator: " ").count >= 4 else { return }
         lock.lock()
         var existing = cached ?? (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        // Dedupe: skip if this exact line is among the most recent entries (the
+        // Dedupe: skip if this exact text is among the most recent entries (the
         // same buffer is flushed on both app-switch and Return).
-        if existing.split(separator: "\n").suffix(8).map(String.init).contains(t) { lock.unlock(); return }
-        existing += "\n" + t
+        if existing.split(separator: "\n").suffix(8).map({ self.parse(String($0)).text }).contains(t) { lock.unlock(); return }
+        existing += "\n" + category + "\t" + t
         if existing.utf8.count > maxBytes { existing = String(existing.suffix(maxBytes / 2)) }
         cached = existing
         lock.unlock()
@@ -52,19 +65,23 @@ final class StyleMemory {
         }
     }
 
-    func sample(maxChars: Int, relevantTo context: String = "") -> String {
+    func sample(maxChars: Int, relevantTo context: String = "", category: String = "") -> String {
         guard maxChars > 0 else { return "" }
         let ctxWords = Set(context.lowercased().split { !$0.isLetter && !$0.isNumber }
             .map(String.init).filter { $0.count >= 4 })
         let recent = contents().split(separator: "\n").map(String.init).reversed()
         var ranked: [(score: Int, recency: Int, line: String)] = []
-        for (i, line) in recent.enumerated() {
+        for (i, raw) in recent.enumerated() {
+            let (cat, line) = parse(raw)
             let words = Set(line.lowercased().split { !$0.isLetter && !$0.isNumber }
                 .map(String.init).filter { $0.count >= 4 })
             let overlap = ctxWords.isEmpty ? 0 : words.intersection(ctxWords).count
-            // Relevance first, recency second. Keep recent lines eligible even with
-            // zero overlap so the model still hears the user's current voice.
-            ranked.append((overlap * 100 - min(i, 60), i, line))
+            // Topical overlap dominates; matching the current app's register (chat
+            // voice in chat apps, doc voice in editors) outweighs pure recency but
+            // never beats actual topic relevance. Uncategorized legacy lines stay
+            // neutral, and recent lines remain eligible even with zero overlap.
+            let voiceBonus = (!category.isEmpty && cat == category) ? 35 : 0
+            ranked.append((overlap * 100 + voiceBonus - min(i, 60), i, line))
         }
         ranked.sort { $0.score == $1.score ? $0.recency < $1.recency : $0.score > $1.score }
         var chosen: [(Int, String)] = []
