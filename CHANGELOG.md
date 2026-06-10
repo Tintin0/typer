@@ -3,6 +3,49 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## personalization + tracking — suggestions that sound like you, a ghost that keeps up
+
+Two complaints drove this pass: suggestions felt random (not "how I type"), and the
+ghost text lagged fast typing badly enough to be typed over — worse after a paste.
+
+- **Confidence gate ("show less, but right").** The helper now reports the model's
+  mean token probability with every partial and final completion, and suggestions
+  below a configurable bar (`min_confidence`, default 0.22 — calibrated so observed
+  garbage like "use a ." at 0.20 dies while good completions at 0.27+ survive) are
+  simply never painted. Most of what made suggestions feel random was the model
+  guessing; now it stays quiet instead.
+- **Personal vocabulary lexicon.** Typer learns a frequency table of the words you
+  actually type (letters-only, stop-words excluded, local JSON, clearable). The top
+  ~48 words ride along with each request and the helper gives their leading tokens a
+  gentle +0.5 logit bias — completions lean toward *your* vocabulary, not generic
+  prose. Toggle: "Learn my vocabulary" / `lexicon_enabled`.
+- **Accept/reject feedback loop.** Every suggestion now resolves as used (Tab,
+  backtick, or typing straight through it) or rejected (typed over / Esc), persisted
+  locally. Two adaptations come out of it: suggestion length tracks the median you
+  actually take (someone who grabs 1–2 words gets short, dense suggestions), and the
+  confidence bar tightens when most suggestions get rejected, relaxes when nearly
+  everything is used. Toggle: "Adapt to my accepts" / `adaptive_suggestions`.
+- **Per-app voice in style memory.** Style samples are now tagged with the app
+  register they came from (chat/email/docs/code/browser) and sampling prefers lines
+  matching where you're typing *now* — Messages-you and Docs-you no longer share one
+  blended voice. Existing style.txt entries keep working untagged.
+- **Paste/cut/undo duck-out.** ⌘V/⌘X/⌘Z previously fell through a "command key —
+  ignore" early-return: the ghost stayed frozen over the pasted text and the keystroke
+  buffer went stale. They now instantly hide the suggestion, cancel in-flight
+  generations, and re-sync the buffer from Accessibility once the host app has applied
+  the edit — so the next suggestion builds on what's really in the field.
+- **Per-app ghost width calibration.** The ghost advances by text width measured in
+  OUR font; hosts with wider fonts made every keystroke land on top of the ghost until
+  a re-anchor caught up. Typer now compares its predicted advance against the real
+  caret movement at each settled re-anchor and learns a per-app correction ratio
+  (EMA), so the optimistic per-keystroke shift is right for that app's actual font.
+- **Event-driven re-anchoring (AXObserver).** Instead of guessing with fixed 90ms /
+  280ms timers, Typer now subscribes to `AXValueChanged`/`AXSelectedTextChanged` on
+  the focused element and re-anchors the instant the host app reports it applied the
+  edit. The timers remain as a fallback for apps that don't emit AX notifications.
+- Menu shows vocabulary size and recent suggestion-usage rate; "Reset All Data…" now
+  also clears the lexicon and feedback history.
+
 ## perf + ergonomics — KV-cache-friendly prompts, rapid-Tab fixes, better caret placement
 
 Inference latency and the feel of accepting suggestions, in one pass.

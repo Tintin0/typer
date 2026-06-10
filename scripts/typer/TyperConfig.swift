@@ -34,8 +34,10 @@ struct TyperConfig {
     var adaptiveSuggestions = true    // adapt suggestion length + gate strictness to accept history
     // Suggestions whose mean token probability falls below this are not shown at
     // all — "show less, but right" is most of what makes inline completion feel
-    // intentional rather than random. 0 disables the gate.
-    var minConfidence = 0.34
+    // intentional rather than random. 0 disables the gate. Default calibrated
+    // empirically on gemma-3n: good completions measured 0.27–0.78, observed
+    // garbage ("use a .") 0.20 — so 0.22 separates them with margin.
+    var minConfidence = 0.22
     var screenContextEnabled = false  // screenshot OCR as prompt context — off by default (noisy)
     // Screenshot+OCR caret locator for apps with no AX/text-marker caret (terminals,
     // custom editors). OFF by default: a full ScreenCaptureKit capture + Vision OCR
