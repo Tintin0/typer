@@ -60,6 +60,29 @@ Inference latency and the feel of accepting suggestions, in one pass.
   identical multiset to the original, and the app builds via `swiftc` the same way
   (`build.sh` now compiles `scripts/typer/*.swift` as one module).
 
+## ergonomics — click-safe generation, better caret anchoring, safer typo accept
+
+- **Clicking is not typing.** Mouse/cursor placement now clears pending suggestions,
+  invalidates in-flight generations, and refreshes context in the background without
+  scheduling a completion. Suggestions only appear after actual text input.
+- **Ghost overlay stays ahead of type-through.** The overlay now prefers WebKit/
+  Chromium `AXTextMarker` caret geometry, keeps an optimistic forward-shift when AX
+  reports a stale same-line caret, and slightly biases measured type-through movement
+  forward so the ghost doesn't muddy the current word.
+- **Prompt context is more relevant.** The helper context window grew (1024 → 1536),
+  prompt text cap increased (1600 → 2200), conversation/background context is labeled
+  ahead of the live text, and style-memory examples are selected by relevance to what
+  you're currently typing instead of pure recency.
+- **Sampler tuned for chat relevance.** Sampling is still conservative, but less
+  brittle: top-k/top-p/min-p/temp were loosened slightly so completions can adapt to
+  Discord/iMessage-style conversational phrasing instead of collapsing into generic
+  continuations.
+- **Typo replacement is harder to corrupt.** AX replacements are verified after the
+  write, WebKit/Electron-like fields use the keystroke deletion/paste path instead of
+  trusting stale AX selection writes, and the fallback sequence is paced so `helol` →
+  `hello` and `there was a dgo ` → `there was a dog ` replace the word rather than
+  interleaving text (e.g. `ththeis`).
+
 ## typo correction — fixed accept in Electron/Chromium apps
 
 Accepting a spell-fix (<kbd>Tab</kbd>) now actually replaces the misspelled word in

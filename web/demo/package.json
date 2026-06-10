@@ -1,0 +1,21 @@
+{
+  "name": "typer-demo-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts typer-demo-dark ../public/demo/typer-demo-dark.mp4 --codec h264 && remotion render src/index.ts typer-demo-light ../public/demo/typer-demo-light.mp4 --codec h264",
+    "posters": "remotion still src/index.ts typer-demo-dark ../public/demo/poster-dark.png --frame 150 && remotion still src/index.ts typer-demo-light ../public/demo/poster-light.png --frame 150"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "typescript": "^5.6.3"
+  }
+}

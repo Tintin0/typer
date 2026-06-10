@@ -1,62 +1,159 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>typr — autocomplete that lives at your cursor</title>
-    <meta
-      name="description"
-      content="Local, on-device autocomplete for macOS. A faint suggestion at your caret, in almost any app. Runs on your Mac — no cloud, no account."
-    />
-    <meta property="og:title" content="typr" />
-    <meta property="og:description" content="Local autocomplete for macOS. On your Mac. Nowhere else." />
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://typr.frgmt.xyz" />
-    <meta name="theme-color" content="#08070a" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  </head>
-  <body>
-    <canvas id="scene" class="scene" aria-hidden="true"></canvas>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>typr — autocomplete that lives at your cursor</title>
+<meta name="description" content="Local, on-device autocomplete for macOS. A faint suggestion at your caret, in almost any app. Runs on your Mac — no cloud, no account." />
+<meta property="og:title" content="typr" />
+<meta property="og:description" content="Local autocomplete for macOS. On your Mac. Nowhere else." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://typr.frgmt.xyz" />
+<meta name="theme-color" content="#0b0b0e" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --bg: #0b0b0e;
+    --fg: #ececef;
+    --dim: #87878f;
+    --ghost: #4a4a53;
+    --rule: #1f1f25;
+    --caret: #5b8def;
+    --green: #34c759;
+    --surface: #141418;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-size: 17px; line-height: 1.7; -webkit-font-smoothing: antialiased;
+    padding: 0 1.5rem 4rem;
+  }
+  .col { max-width: 680px; margin: 0 auto; }
+  a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--ghost); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--caret); }
+  a:focus-visible { outline: 2px solid var(--caret); outline-offset: 2px; border-radius: 2px; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding: 1.75rem 0; }
+  .brand { font-family: var(--mono); font-size: 16px; text-decoration: none; color: var(--fg); }
+  .brand .g { color: var(--ghost); }
+  .top .gh { color: var(--dim); font-size: 14px; text-decoration: none; }
+  .top .gh:hover { color: var(--fg); }
+  .hero { padding: 4.5rem 0 2.5rem; }
+  h1, h2 { font-weight: 650; letter-spacing: -0.025em; line-height: 1.15; }
+  h1 { font-size: clamp(2rem, 6vw, 3.1rem); margin: 0 0 1.4rem; }
+  h2 { font-size: clamp(1.45rem, 4vw, 1.9rem); margin: 4.5rem 0 1rem; }
+  .g { color: var(--ghost); }
+  .caret-bar {
+    display: inline-block; width: 2.5px; height: 0.95em; background: var(--caret);
+    vertical-align: -0.1em; margin: 0 2px; animation: blink 1.1s steps(1) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .caret-bar { animation: none; } }
+  @keyframes blink { 50% { opacity: 0; } }
+  p { margin: 0 0 1.1rem; color: var(--dim); }
+  p b, p a { color: var(--fg); font-weight: 550; }
+  .hero p { font-size: 18.5px; }
+  video {
+    width: 100%; border-radius: 14px; display: block; background: #0b0b0e;
+    border: 1px solid var(--rule);
+  }
+  .vid-cap { font-family: var(--mono); font-size: 12.5px; color: var(--ghost); margin-top: 0.8rem; }
+  .vid-cap b { color: var(--dim); font-weight: 400; }
+  .keyrow { display: flex; flex-wrap: wrap; gap: 0.6rem 1.6rem; margin: 1.4rem 0 0; padding: 0; list-style: none; }
+  .keyrow li { color: var(--dim); font-size: 15.5px; }
+  kbd {
+    font-family: var(--mono); font-size: 13px; color: var(--fg);
+    border: 1px solid var(--rule); border-bottom-width: 3px; background: var(--surface);
+    border-radius: 6px; padding: 0.1em 0.55ch; margin-right: 0.4ch;
+  }
+  .pair { display: grid; gap: 0; border: 1px solid var(--rule); border-radius: 14px; overflow: hidden; }
+  @media (min-width: 640px) { .pair { grid-template-columns: 1fr 1fr; } }
+  .pair > div { padding: 1.6rem 1.7rem; background: var(--surface); }
+  .pair > div + div { border-top: 1px solid var(--rule); }
+  @media (min-width: 640px) { .pair > div + div { border-top: none; border-left: 1px solid var(--rule); } }
+  .pair h3 { margin: 0 0 0.6rem; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  .pair h3 .tick { color: var(--green); margin-right: 0.5ch; }
+  .pair p { font-size: 15px; margin: 0; }
+  .cmd {
+    font-family: var(--mono); font-size: 14px; background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 12px; padding: 1.05rem 1.2rem;
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+  }
+  .cmd code { color: #b5e8a0; word-break: break-all; }
+  .copy {
+    font: inherit; font-size: 12.5px; background: none; color: var(--dim);
+    border: 1px solid var(--rule); border-radius: 7px; padding: 0.3rem 0.85rem; cursor: pointer;
+  }
+  .copy:hover { color: var(--fg); border-color: var(--dim); }
+  .fine { font-size: 14px; color: var(--ghost); margin-top: 0.9rem; }
+  .fine a { color: var(--dim); }
+  footer { margin-top: 5rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 13px; color: var(--ghost); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; }
+  footer a { color: var(--dim); text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="col">
+  <header class="top">
+    <a class="brand" href="/">typr<span class="g">_</span></a>
+    <a class="gh" href="https://github.com/frgmt0/typer">github ↗</a>
+  </header>
 
-    <header class="nav">
-      <a class="brand" href="/">
-        <span class="brand-glyph" aria-hidden="true">⌨</span>
-        <span class="brand-word">typr<b class="brand-caret" aria-hidden="true"></b></span>
-      </a>
-      <a class="nav-gh" href="https://github.com/frgmt0/typer">GitHub ↗</a>
-    </header>
+  <section class="hero">
+    <h1>you type the first half<span class="caret-bar" aria-hidden="true"></span><span class="g"> — it shows you the rest.</span></h1>
+    <p>typr is local autocomplete for macOS. a dim suggestion appears at your caret in almost any app, streaming in word by word — the first word in under ~100ms. follow it by typing, take it with two keys, or ignore it entirely. it runs <b>on your Mac, and nowhere else.</b></p>
+  </section>
 
-    <main class="stage">
-      <h1 class="sr-only">typr — local autocomplete for macOS</h1>
+  <video src="/demo/typer-demo-dark.mp4" poster="/demo/poster-dark.png" autoplay muted loop playsinline preload="metadata"></video>
+  <p class="vid-cap"><b>●</b> recorded behavior, not a concept reel — this is the entire interaction model.</p>
+  <ul class="keyrow">
+    <li><kbd>tab</kbd>one word</li>
+    <li><kbd>`</kbd>everything</li>
+    <li><kbd>esc</kbd>never mind</li>
+    <li><kbd>abc…</kbd>keep typing, the ghost shrinks</li>
+  </ul>
 
-      <div class="reveal" id="reveal" hidden>
-        <p class="reveal-lead">
-          local autocomplete for macOS. it finishes your line, right at the cursor,
-          in almost any app — and it runs <em>on your Mac</em>. nowhere else.
-        </p>
-        <div class="cmd" id="cmd">
-          <span class="cmd-label"># macOS 14+ · Apple Silicon · free &amp; open source</span>
-          <div class="cmd-row">
-            <code class="cmd-line" id="cmdLine"></code>
-            <button class="copy-btn" id="copyBtn" type="button">Copy</button>
-          </div>
-        </div>
-        <p class="reveal-meta">
-          <button class="rebuild" id="rebuild" type="button">↻ put it back</button>
-          <span class="sep">·</span>
-          <a href="https://github.com/frgmt0/typer">source</a>
-          <span class="sep">·</span>
-          <span class="dim">runs locally · alpha</span>
-        </p>
-      </div>
-    </main>
+  <h2>it learns you<span class="g">, not the other way around.</span></h2>
+  <p>each app keeps its own session — your group chat doesn't leak into your commit messages. a small on-device record of what you actually write (messages you send, suggestions you keep) primes the model toward how <b>you</b> sound. it even tracks how often you accept vs. type past it, so you can see if it's earning its keep. all of it sits on your disk, clearable from the menu.</p>
 
-    <noscript>
-      <p style="position: fixed; bottom: 1rem; left: 0; right: 0; text-align: center; color: #888; font-family: monospace">
-        typr — local autocomplete for macOS · github.com/frgmt0/typer
-      </p>
-    </noscript>
+  <h2>two promises<span class="g">, kept by design.</span></h2>
+  <div class="pair">
+    <div>
+      <h3><span class="tick">✓</span>free, forever</h3>
+      <p>no subscription is coming. typr is MIT-licensed and the source stays public — fork it if you ever doubt us. missing a feature? <a href="https://github.com/frgmt0/typer/pulls">open a PR</a>; maybe we'll ship it.</p>
+    </div>
+    <div>
+      <h3><span class="tick">✓</span>local, always</h3>
+      <p>it's autocomplete — it doesn't need your data. no account, no server, no telemetry. inference runs on your GPU via llama.cpp. airplane mode changes nothing.</p>
+    </div>
+  </div>
 
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+  <h2>one small model<span class="g">, on purpose.</span></h2>
+  <p>typr ships with <b>gemma-4-E2B</b> (Q4_K_M) because it works best on the machine typr is developed on. any GGUF drops in if you want to experiment — keep it under <b>4B parameters</b>. finishing a sentence is a small-model problem, and small models are fast on anything with 16GB+ of unified memory.</p>
+
+  <h2>install<span class="g"> — about two minutes, one command.</span></h2>
+  <div class="cmd">
+    <code id="install-cmd">git clone https://github.com/frgmt0/typer.git && cd typer && ./install.sh</code>
+    <button class="copy" data-copy>copy</button>
+  </div>
+  <p class="fine">macOS 14+ · Apple Silicon recommended · grant Accessibility when asked. alpha software: terminals and custom-drawn editors still get approximate caret placement. <a href="https://github.com/frgmt0/typer/issues">say what broke</a> and we'll get to it.</p>
+
+  <footer>
+    <span>typr — local autocomplete for macOS</span>
+    <span><a href="https://github.com/frgmt0/typer">source</a> · <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a> · MIT</span>
+  </footer>
+</div>
+
+<script type="module">
+  const btn = document.querySelector("[data-copy]");
+  btn?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(document.getElementById("install-cmd").textContent);
+    btn.textContent = "copied"; setTimeout(() => (btn.textContent = "copy"), 1500);
+  });
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    document.querySelectorAll("video").forEach((v) => { v.removeAttribute("autoplay"); v.pause(); v.controls = true; });
+  }
+</script>
+</body>
 </html>

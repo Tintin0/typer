@@ -221,7 +221,7 @@ public:
     llama_model *model = nullptr;
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
-    int n_ctx = 1024;
+    int n_ctx = 1536;
     int pos = 0;
     std::vector<llama_token> last_prompt_tokens;
     std::vector<llama_logit_bias> special_biases;
@@ -295,20 +295,20 @@ public:
             llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)special_biases.size(), special_biases.data()));
         }
         // Inline autocomplete wants the high-probability continuation, not a
-        // creative tangent. Mild repetition penalty, then a tight nucleus:
-        // top-k + top-p, plus MIN-P (drop any token below ~6% of the top token's
-        // probability) which is the key lever against "random word" drift, then a
-        // low temperature. Tuned conservative after comparing against cotabby.
-        llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, 1.05f, 0.0f, 0.0f));
-        llama_sampler_chain_add(chain, llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.80f, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.06f, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.12f));
+        // creative tangent. Mild repetition penalty, then a moderately tight nucleus:
+        // top-k + top-p, plus MIN-P (drop tokens far below the best token's
+        // probability) to avoid "random word" drift, with just enough temperature to
+        // adapt to conversational phrasing instead of collapsing into generic text.
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(96, 1.04f, 0.0f, 0.0f));
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(32));
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.88f, 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.04f, 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.16f));
         llama_sampler_chain_add(chain, llama_sampler_init_dist(0xC07A));
-        // Only the penalties sampler is stateful, with penalty_last_n = 64, so only the
-        // last 64 prompt tokens can affect sampling. Replaying the whole (up to ~1024)
-        // prompt through accept() every request is wasted work.
-        size_t start = prompt_tokens.size() > 64 ? prompt_tokens.size() - 64 : 0;
+        // Only the penalties sampler is stateful, with penalty_last_n = 96, so only the
+        // last 96 prompt tokens can affect sampling. Replaying the whole prompt through
+        // accept() every request is wasted work.
+        size_t start = prompt_tokens.size() > 96 ? prompt_tokens.size() - 96 : 0;
         for (size_t i = start; i < prompt_tokens.size(); ++i) llama_sampler_accept(chain, prompt_tokens[i]);
         return chain;
     }
@@ -474,7 +474,7 @@ int main(int argc, char **argv) {
             try {
                 std::string context = json_get_string(line, "context");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
-                if (context.size() > 1600) context = stable_tail(context, 1600);
+                if (context.size() > 2200) context = stable_tail(context, 2200);
 
                 int max_tokens = std::max(8, std::min(18, max_words + 7));
                 bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
