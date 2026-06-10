@@ -1,7 +1,11 @@
-// The announcements feed is built from ANNOUNCEMENTS.md at the repo root —
-// that file is the single source of truth (format spec lives in a comment at
-// its top). Vite inlines it at build time; nothing is fetched at runtime.
-import raw from "../../ANNOUNCEMENTS.md?raw";
+// The announcements feed comes from ANNOUNCEMENTS.md at the repo root — that
+// file is the single source of truth (format spec lives in a comment at its
+// top). The page fetches it live from GitHub on every load, so pushing to main
+// publishes; the copy Vite inlines at build time renders instantly and covers
+// fetch failures (offline, rate-limited, GitHub down).
+import baked from "../../ANNOUNCEMENTS.md?raw";
+
+const LIVE_URL = "https://raw.githubusercontent.com/frgmt0/typer/main/ANNOUNCEMENTS.md";
 
 type Entry = { date: string; title: string; bodyHtml: string };
 
@@ -68,10 +72,13 @@ function parse(md: string): Entry[] {
   return entries;
 }
 
-const entries = parse(raw);
 const feed = document.getElementById("feed")!;
 
-if (entries.length) {
+function render(entries: Entry[]): void {
+  if (!entries.length) {
+    feed.innerHTML = `<p class="empty">nothing announced yet — check the <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a>.</p>`;
+    return;
+  }
   const [latest, ...older] = entries;
   feed.innerHTML = `
     <article class="featured">
@@ -93,6 +100,20 @@ if (entries.length) {
       )
       .join("")}
   `;
-} else {
-  feed.innerHTML = `<p class="empty">nothing announced yet — check the <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a>.</p>`;
 }
+
+// Paint the baked copy immediately, then swap in the live file if it differs.
+render(parse(baked));
+
+(async () => {
+  try {
+    const res = await fetch(LIVE_URL, { cache: "no-store" });
+    if (!res.ok) return;
+    const live = await res.text();
+    if (live === baked) return;
+    const entries = parse(live);
+    if (entries.length) render(entries); // an unparseable live file never blanks the page
+  } catch {
+    // offline / blocked — the baked copy is already on screen
+  }
+})();
