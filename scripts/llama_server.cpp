@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <functional>
 #include <cstdlib>
 #include <cstring>
@@ -338,6 +339,27 @@ public:
         }
     }
 
+    // Allocation-free decode of one generated token (the per-token hot loop): the
+    // general decode_tokens builds six heap vectors per call, all of which collapse
+    // to single stack values for a batch of one.
+    void decode_one(llama_token tok) {
+        llama_pos p = pos;
+        int32_t n_seq = 1;
+        llama_seq_id seq = 0;
+        llama_seq_id *seq_ptr = &seq;
+        int8_t want_logits = 1;
+        llama_batch batch{};
+        batch.n_tokens = 1;
+        batch.token = &tok;
+        batch.embd = nullptr;
+        batch.pos = &p;
+        batch.n_seq_id = &n_seq;
+        batch.seq_id = &seq_ptr;
+        batch.logits = &want_logits;
+        if (llama_decode(ctx, batch) != 0) throw std::runtime_error("llama_decode failed");
+        pos++;
+    }
+
     void prepare_prompt(const std::vector<llama_token> &toks) {
         int common = 0;
         int max_common = std::min(last_prompt_tokens.size(), toks.size());
@@ -386,14 +408,32 @@ public:
             llama_sampler_accept(smpl.get(), id);
             if (llama_vocab_is_eog(vocab, id)) break;
             out += detok(id);
-            std::vector<llama_token> one = { id };
-            decode_tokens(one, 0, 1, pos, true);
-            pos++;
+            decode_one(id);
             if (on_token && !on_token(out)) break;
         }
         return out;
     }
 };
+
+// Tail window with a STABLE start, mirroring the Swift side. A plain "last N bytes"
+// cut slides forward with every request, so the prompt's first tokens differ each
+// time and prepare_prompt's KV prefix reuse never fires — every request re-decodes
+// the whole prompt. Snapping the cut to a text boundary keeps the prompt prefix
+// identical across requests until the boundary leaves the search range.
+static std::string stable_tail(const std::string &s, size_t max_chars) {
+    if (s.size() <= max_chars) return s;
+    std::string tail = s.substr(s.size() - max_chars);
+    size_t strong = std::string::npos, space = std::string::npos;
+    for (size_t i = 0; i < max_chars / 2; ++i) {
+        char c = tail[i];
+        if (c == '\n' || c == '\r') { strong = i; break; }
+        if (i > 0 && c == ' ' && (tail[i-1] == '.' || tail[i-1] == '!' || tail[i-1] == '?')) { strong = i; break; }
+        if (space == std::string::npos && c == ' ') space = i;
+    }
+    size_t cut = strong != std::string::npos ? strong : space;
+    if (cut == std::string::npos || cut + 1 >= tail.size()) return tail;
+    return tail.substr(cut + 1);
+}
 
 static std::string prompt_complete(const std::string &context) {
     // Gemma is trained with a leading <bos>. Without it the base model emits
@@ -434,7 +474,7 @@ int main(int argc, char **argv) {
             try {
                 std::string context = json_get_string(line, "context");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
-                if (context.size() > 1600) context = context.substr(context.size() - 1600);
+                if (context.size() > 1600) context = stable_tail(context, 1600);
 
                 int max_tokens = std::max(8, std::min(18, max_words + 7));
                 bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());

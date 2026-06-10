@@ -280,8 +280,18 @@ extension TyperApp {
             blocks.append("Earlier relevant topic: \(note)")
         }
         if cfg.styleMemoryEnabled {
-            let s = styleMemory.sample(maxChars: immediate.count < cfg.maxImmediateForBackground ? 360 : 160,
-                                       relevantTo: immediate)
+            // Cache the ranked sample for a few seconds: relevance doesn't need
+            // keystroke granularity, ranking the whole corpus per keystroke costs
+            // main-thread time, and a sample that reshuffles per request changes the
+            // middle of the prompt — invalidating the helper's KV prefix cache that
+            // the stable context windows exist to preserve.
+            let maxChars = immediate.count < cfg.maxImmediateForBackground ? 360 : 160
+            if Date().timeIntervalSince(styleSampleAt) > 5 || styleSampleChars != maxChars {
+                cachedStyleSample = styleMemory.sample(maxChars: maxChars, relevantTo: immediate)
+                styleSampleAt = Date()
+                styleSampleChars = maxChars
+            }
+            let s = cachedStyleSample
             if s.split(separator: " ").count >= 4 { blocks.append("Examples of my recent writing style:\n" + s) }
         }
         blocks.append(immediate)

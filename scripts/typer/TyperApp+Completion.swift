@@ -22,10 +22,11 @@ extension TyperApp {
 
     // reanchor=true re-reads the caret from AX (fresh suggestion / new line);
     // reanchor=false reuses the cached point (already shifted by typed width) to
-    // avoid per-keystroke AX jitter.
-    func showCompletionRemainder(reanchor: Bool = true, animate: Bool = false) {
+    // avoid per-keystroke AX jitter. trustAX=true drops the no-backward-snap guard
+    // so a late re-anchor can correct accumulated forward overshoot.
+    func showCompletionRemainder(reanchor: Bool = true, animate: Bool = false, trustAX: Bool = false) {
         guard let comp = completion, !comp.done else { overlay.orderOut(nil); return }
-        let guardPoint = comp.consumed > 0 ? lastCaretPoint : nil
+        let guardPoint = (comp.consumed > 0 && !trustAX) ? lastCaretPoint : nil
         let point = reanchor ? currentCaretPoint(allowBackwardFrom: guardPoint) : (lastCaretPoint ?? currentCaretPoint())
         overlay.showCompletion(comp.remainder, at: point, lineHeight: lastCaretHeight, animate: animate)
     }
@@ -37,12 +38,25 @@ extension TyperApp {
     // Coalesced, so fast typing never triggers a synchronous AX read.
     func scheduleReanchor() {
         reanchorWork?.cancel()
+        settleWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.completion != nil else { return }
             self.showCompletionRemainder(reanchor: true)
         }
         reanchorWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: work)
+        // The quick re-anchor above keeps the no-backward-snap guard (the host app's
+        // AX caret may still be a frame behind), but ghostWidth deliberately overshoots,
+        // so repeated Tab accepts accumulate rightward drift the guard then refuses to
+        // correct. Once the app has definitely caught up, snap to the authoritative AX
+        // caret — backwards included. Cancelled and re-armed on every keystroke, so it
+        // only fires after a real pause.
+        let settle = DispatchWorkItem { [weak self] in
+            guard let self, self.completion != nil else { return }
+            self.showCompletionRemainder(reanchor: true, trustAX: true)
+        }
+        settleWork = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: settle)
     }
 
     // Tab: realize the next word of the prediction (we insert it; the user did not
@@ -57,8 +71,12 @@ extension TyperApp {
         comp.consumed = end
         stats.accepted += 1; recordCompleted(piece); statsTouched()
         if comp.done {
+            // Arm the grace window BEFORE completion=nil so refreshAcceptTap (its
+            // didSet) never bounces the tap off and back on. A rapid next Tab is then
+            // swallowed instead of tabbing focus away while the next chunk arrives.
+            armAcceptGrace()
             completion = nil
-            if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
+            if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate(quick: true) }
         } else {
             completion = comp
             // Move immediately by the inserted word's width (the app hasn't applied
@@ -79,9 +97,10 @@ extension TyperApp {
         insert(piece)
         appendToBuffer(piece)
         stats.accepted += 1; recordCompleted(piece); statsTouched()
+        armAcceptGrace()
         completion = nil
         overlay.orderOut(nil)
-        scheduleGenerate()
+        scheduleGenerate(quick: true)
         return true
     }
 
@@ -93,7 +112,7 @@ extension TyperApp {
         guard cfg.prefetchEnabled, !powerSaving else { return }
         guard let comp = completion, !comp.done else { return }
         guard comp.chars.count - comp.consumed <= 12, !prefetchInFlight, !requestInFlight else { return }
-        let predicted = String((buffer + comp.remainder).suffix(500))
+        let predicted = stableTail(buffer + comp.remainder, max: 500)
         if predicted == prefetchKey, prefetched != nil { return }
         prefetchInFlight = true
         let promptContext = assembledContext(immediate: predicted)
@@ -113,7 +132,7 @@ extension TyperApp {
 
     // If a prefetched chunk matches the current buffer state, show it instantly.
     func promotePrefetch() -> Bool {
-        guard let pf = prefetched, prefetchKey == String(buffer.suffix(500)) else { return false }
+        guard let pf = prefetched, prefetchKey == stableTail(buffer, max: 500) else { return false }
         completion = pf
         prefetched = nil
         prefetchKey = ""
@@ -123,9 +142,14 @@ extension TyperApp {
         return true
     }
 
-    func scheduleGenerate() {
+    func scheduleGenerate(quick: Bool = false) {
         debounce?.invalidate()
-        let ms = powerSaving ? max(cfg.debounceMs, cfg.batteryDebounceMs) : cfg.debounceMs
+        var ms = powerSaving ? max(cfg.debounceMs, cfg.batteryDebounceMs) : cfg.debounceMs
+        // An explicit accept that exhausted the suggestion is a direct request for
+        // more. The debounce exists to coalesce keystrokes — there are none — so wait
+        // only long enough for the host app to apply our insertion (the AX context
+        // read must include it), not the full typing debounce.
+        if quick { ms = min(ms, 60) }
         debounce = Timer.scheduledTimer(withTimeInterval: Double(ms) / 1000.0, repeats: false) { [weak self] _ in
             self?.generate()
         }
@@ -148,9 +172,12 @@ extension TyperApp {
         // flight we just remember to re-run with the latest context when it returns.
         if requestInFlight { rerequestNeeded = true; return }
 
+        // Both context sources go through stableTail (not a sliding suffix) so the
+        // prompt prefix stays byte-identical across keystrokes and the helper's KV
+        // prefix cache actually hits. textAroundCursor applies it internally.
         let axCtx = textAroundCursor(limit: 500)
         let axContextRaw = axCtx?.before
-        let keyContext = String(buffer.suffix(500))
+        let keyContext = stableTail(buffer, max: 500)
         let axContext = (axContextRaw?.count ?? 0) >= max(cfg.minContextChars, min(20, keyContext.count / 2)) ? axContextRaw : nil
         let contextSource = axContext == nil ? "key-buffer" : "AXValue"
         let context = axContext ?? keyContext

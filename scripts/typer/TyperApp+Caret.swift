@@ -111,7 +111,9 @@ extension TyperApp {
         let utf16 = value.utf16
         let cut = min(range.location, utf16.count)
         let caretIdx = String.Index(utf16Offset: cut, in: value)
-        let before = String(String(value[..<caretIdx]).suffix(limit))
+        // stableTail, not suffix: a window that slides per keystroke makes the prompt
+        // prefix differ on every request and defeats the helper's KV prefix cache.
+        let before = stableTail(String(value[..<caretIdx]), max: limit)
         let after = String(String(value[caretIdx...]).prefix(limit))
         dlog("[\(activeAppKey)] AX text context valueChars=\(value.count) cursorUtf16=\(range.location) before=\(before.count) after=\(after.count)")
         return AXContext(before: before, after: after)
@@ -146,8 +148,21 @@ extension TyperApp {
         // some of those apps also answer AXBoundsForRange, but one frame stale or
         // anchored to the previous glyph, which puts the ghost over the current word.
         // Native AppKit text views usually use AXBoundsForRange, so keep it as the
-        // fallback.
-        guard let rect = textMarkerCaretRect(element: element) ?? boundsForSelectedRange(element: element) else { return nil }
+        // fallback. Which path an app answers is toolkit-level and never changes, so
+        // remember it per bundle: caret reads happen on every re-anchor, and probing
+        // the wrong API first costs two failing synchronous IPC round-trips each time.
+        let bundle = currentAppBundleAndName().bundle
+        var rect: CGRect?
+        var path: CaretPath?
+        if caretPathByBundle[bundle] == .bounds {
+            if let r = boundsForSelectedRange(element: element) { rect = r; path = .bounds }
+            else if let r = textMarkerCaretRect(element: element) { rect = r; path = .marker }
+        } else {
+            if let r = textMarkerCaretRect(element: element) { rect = r; path = .marker }
+            else if let r = boundsForSelectedRange(element: element) { rect = r; path = .bounds }
+        }
+        guard let rect else { return nil }
+        if let path { caretPathByBundle[bundle] = path }
         // rect is already in AppKit (bottom-left) coordinates. Return the caret's
         // right edge + bottom; the line height lets the overlay render inline.
         lastCaretHeight = stabilizeCaretHeight(rect.height)
@@ -190,7 +205,12 @@ extension TyperApp {
         guard AXValueGetValue(posValue as! AXValue, .cgPoint, &point),
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
         let rect = axRectToAppKit(CGRect(origin: point, size: size))
-        let fallback = NSPoint(x: rect.minX + 12, y: rect.maxY - 24)
+        // Single-line inputs (search bars, chat boxes): vertically center on the
+        // field's one text line instead of guessing 24px down from the top, which
+        // landed the ghost below short fields. Tall views keep the top-area guess.
+        let fallback = rect.height <= 60
+            ? NSPoint(x: rect.minX + 12, y: rect.midY - lastCaretHeight / 2)
+            : NSPoint(x: rect.minX + 12, y: rect.maxY - 24)
         dlog("fallback focused element point=\(fallback) ax=\(point) size=\(size) converted=\(rect)")
         return fallback
     }

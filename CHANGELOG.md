@@ -3,6 +3,51 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## perf + ergonomics — KV-cache-friendly prompts, rapid-Tab fixes, better caret placement
+
+Inference latency and the feel of accepting suggestions, in one pass.
+
+- **Stable context windows (the big inference win).** The prompt's before-cursor
+  window was a plain `suffix(500)` (and `last 1600 bytes` in the helper), which slides
+  forward one character per keystroke — so the prompt's first tokens differed on every
+  request and the helper's KV prefix cache *never* matched once a field passed 500
+  chars: every pause re-decoded the whole prompt. The window start now snaps to a text
+  boundary (newline / sentence end / word) on both the Swift and C++ sides, keeping the
+  prompt prefix byte-identical across keystrokes until the boundary scrolls out. In a
+  simulated 800-keystroke run the prefix changed 12 times instead of 800 — generation
+  now usually decodes only the few new tokens instead of hundreds.
+- **Stable style sample.** The style-memory sample was re-ranked against the live text
+  on every generation, reshuffling the middle of the prompt (another KV-cache killer)
+  and burning main-thread time per keystroke. It's now cached for a few seconds and
+  re-ranked on app switch.
+- **Rapid Tab no longer tabs you out of the field.** The consuming accept tap tore
+  down the instant a suggestion was exhausted, so the second of two quick Tabs leaked
+  to the host app — moving focus or inserting a literal tab mid-sentence. After an
+  accept exhausts the suggestion, the tap now stays armed for a short grace window and
+  swallows Tabs while the next chunk is on its way (typing any real character ends the
+  window immediately, and Esc/clicking always restores normal Tab).
+- **Faster next chunk after an accept.** Exhausting a suggestion via Tab/backtick now
+  schedules the next generation after ~60ms (just long enough for the host app to apply
+  our insertion) instead of the full typing debounce — there are no keystrokes to
+  coalesce when the user explicitly asked for more.
+- **Multi-Tab ghost drift fixed.** The ghost advances optimistically by measured text
+  width on each accept (deliberately overshooting), and the quick re-anchor refused to
+  snap backwards — so repeated Tab accepts accumulated rightward drift. A second,
+  authoritative re-anchor now runs after the host app has definitely caught up and
+  snaps the ghost exactly onto the caret, backwards included.
+- **Caret reads remember which AX API the app answers.** Whether an app exposes its
+  caret via `AXTextMarker` (WebKit/Chromium) or `AXBoundsForRange` (native AppKit) is
+  toolkit-level and never changes, so it's now cached per bundle — caret reads happen
+  on every re-anchor, and probing the wrong API first cost two failing synchronous IPC
+  round-trips each time.
+- **Better last-resort placement in single-line fields.** When an app exposes no caret
+  geometry at all, the fallback now vertically centers on short fields (search bars,
+  chat boxes) instead of guessing 24px down from the field top.
+- **Helper micro-costs.** Single generated tokens are decoded via a stack-allocated
+  batch (the general path heap-allocated six vectors per token), the JSON
+  encoder/decoder in the Swift client is reused across requests, and `<cmath>` is
+  included explicitly for `INFINITY`.
+
 ## refactor — split the menu-bar app into per-topic files
 
 - **No more single hell file.** The 2,487-line `scripts/typer_native.swift` is split

@@ -29,7 +29,13 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
     var reanchorWork: DispatchWorkItem? // deferred AX caret re-anchor after a keystroke
+    var settleWork: DispatchWorkItem?   // late authoritative re-anchor (corrects drift)
     var caretHeightFloor: CGFloat?      // smallest caret height seen this focus session
+    // Which caret-geometry API the frontmost app actually answers (AXTextMarker for
+    // WebKit/Chromium, AXBoundsForRange for native AppKit). Remembered per bundle so
+    // every caret read doesn't pay failing IPC round-trips probing the wrong one.
+    enum CaretPath { case marker, bounds }
+    var caretPathByBundle: [String: CaretPath] = [:]
     // Screenshot-based caret cache for apps without AX caret geometry. We compute it
     // occasionally (it is slow) and extrapolate horizontally as the user types.
     var shotCaretPoint: NSPoint?
@@ -47,6 +53,16 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Single-flight generation: at most one request in the helper at a time.
     var requestInFlight = false
     var rerequestNeeded = false
+    // Brief window after a Tab/backtick accept exhausts the suggestion during which
+    // further Tabs are swallowed (the user is asking for more, not tabbing focus away)
+    // while the next chunk generates.
+    var acceptGraceUntil = Date.distantPast
+    // Style sample cached between generations: recomputing it per keystroke both costs
+    // main-thread time and changes the prompt's middle, which would invalidate the
+    // helper's KV prefix cache on every request.
+    var cachedStyleSample = ""
+    var styleSampleAt = Date.distantPast
+    var styleSampleChars = 0
     // Monotonic invalidation token. User typing advances it; mouse/cursor placement
     // advances it too, which cancels stale in-flight completions without scheduling a
     // new one. This prevents "I only clicked in a text box and Typer suggested".
@@ -152,6 +168,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cachedBackground = ""
         backgroundRefreshedAt = .distantPast
         backgroundKey = ""
+        styleSampleAt = .distantPast    // re-rank the style sample for the new app's text
         shotCaretPoint = nil
         shotCaretApp = ""
         lastCaretPoint = nil
@@ -189,12 +206,40 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         CharacterSet.whitespacesAndNewlines.contains(s) || CharacterSet.punctuationCharacters.contains(s)
     }
 
+    // Tail window with a STABLE start. A plain suffix(max) slides forward one character
+    // per keystroke once the text exceeds `max`, so the prompt's first tokens differ on
+    // every request and the helper's KV prefix cache never matches — each pause then
+    // re-decodes the entire prompt instead of just the few new tokens. Snapping the
+    // window start to a text boundary keeps the prompt prefix byte-identical across
+    // keystrokes until that boundary scrolls out of range (~once per sentence), which is
+    // the difference between incremental decode and a full prompt re-decode per pause.
+    func stableTail(_ s: String, max: Int) -> String {
+        guard max > 0, s.count > max else { return s }
+        let tail = Array(s.suffix(max))
+        // Search only the first half so the window keeps at least max/2 of context.
+        var strongCut = -1   // newline or sentence end: moves rarely
+        var spaceCut = -1    // any word boundary: still far better than per-character
+        for i in 0..<(max / 2) {
+            let c = tail[i]
+            if c == "\n" || c == "\r" { strongCut = i; break }
+            if i > 0, c == " ", ".!?".contains(tail[i - 1]) { strongCut = i; break }
+            if spaceCut < 0, c == " " { spaceCut = i }
+        }
+        let cut = strongCut >= 0 ? strongCut : spaceCut
+        guard cut >= 0, cut + 1 < tail.count else { return String(tail) }
+        return String(tail[(cut + 1)...])
+    }
+
     // True when we should trim energy use: battery-saver enabled AND on battery or in
     // Low Power Mode. Drives a longer debounce and disables speculative prefetch.
     var powerSaving: Bool { cfg.batterySaver && PowerState.shared.saving }
 
     func clearSuggestion() {
         reanchorWork?.cancel()
+        settleWork?.cancel()
+        // An explicit dismissal (Esc/click/app switch) must also end the post-accept
+        // Tab grace window — a Tab right after Esc is a real Tab.
+        acceptGraceUntil = .distantPast
         active = nil
         completion = nil
         prefetched = nil
