@@ -14,6 +14,10 @@ final class LlamaClient {
     private var output: FileHandle?
     private var readBuffer = Data()   // leftover bytes past the last newline (chunked reads)
     private let lock = NSLock()
+    // Requests are serialized by `lock`, so sharing one encoder/decoder is safe and
+    // avoids re-allocating both on every request (and per streamed line's decode).
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     init(cfg: TyperConfig) { self.cfg = cfg }
 
@@ -97,8 +101,7 @@ final class LlamaClient {
         try start()
         let req = HelperRequest(task: task, context: context, max_words: maxWords)
         dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
-        let data = try JSONEncoder().encode(req) + Data([0x0A])
-        let decoder = JSONDecoder()
+        let data = try encoder.encode(req) + Data([0x0A])
         do {
             try input?.write(contentsOf: data)
             while true {

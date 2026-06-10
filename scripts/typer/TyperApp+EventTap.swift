@@ -55,10 +55,23 @@ extension TyperApp {
     // whole CPU core. Only touch the tap when the desired state actually changes.
     func refreshAcceptTap() {
         guard let acceptTap else { return }
-        let want = completion != nil || active != nil
+        let want = completion != nil || active != nil || Date() < acceptGraceUntil
         if want == acceptTapEnabled { return }
         acceptTapEnabled = want
         CGEvent.tapEnable(tap: acceptTap, enable: want)
+    }
+
+    // Hold the accept tap open briefly after an accept exhausts the suggestion. Without
+    // this, the tap tears down the instant completion=nil, and the second of two rapid
+    // Tabs leaks to the host app — tabbing focus out of the field or inserting a literal
+    // tab right where the user was accepting words. The trailing refresh releases the
+    // tap once the grace expires (nothing else fires refreshAcceptTap on a timer).
+    func armAcceptGrace(_ interval: TimeInterval = 0.35) {
+        acceptGraceUntil = Date().addingTimeInterval(interval)
+        refreshAcceptTap()
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval + 0.05) { [weak self] in
+            self?.refreshAcceptTap()
+        }
     }
 
     private func reEnable(_ tap: CFMachPort?, _ label: String) {
@@ -149,7 +162,7 @@ extension TyperApp {
         // while nothing is up is our own tapEnable(false) echoing back — re-enabling
         // here (a blocking mach call) would spin a whole CPU core indefinitely.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if completion != nil || active != nil {
+            if completion != nil || active != nil || Date() < acceptGraceUntil {
                 acceptTapEnabled = true
                 if let acceptTap { CGEvent.tapEnable(tap: acceptTap, enable: true) }
             } else {
@@ -163,6 +176,14 @@ extension TyperApp {
         if code == CGKeyCode(kVK_Tab) {
             if acceptCompletionWord() { return nil }
             if acceptOneWord() { return nil }
+            // A Tab in the grace window right after an accept exhausted the suggestion
+            // is the user asking for MORE, not a focus change — swallow it. Keep the
+            // window open while the next chunk is actually on its way, so Tab-mashing
+            // through a generation never tabs out of the field.
+            if Date() < acceptGraceUntil {
+                if requestInFlight || (debounce?.isValid ?? false) { armAcceptGrace() }
+                return nil
+            }
         } else if code == CGKeyCode(kVK_ANSI_Grave) {
             if acceptCompletionAll() { return nil }
             if acceptAll() { return nil }
@@ -176,6 +197,7 @@ extension TyperApp {
     func handleTyping(_ text: String) {
         generationSerial &+= 1
         lastUserTypedAt = Date()
+        acceptGraceUntil = .distantPast   // typed a real character — moved on; a Tab now is a real Tab
         appendToBuffer(text)
         // A just-finished misspelled word takes priority over following a live
         // completion: typing the separator that ends "peopel" should surface the fix,
