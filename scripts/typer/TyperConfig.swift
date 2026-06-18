@@ -52,6 +52,11 @@ struct TyperConfig {
     var backgroundRefreshSeconds = 4.0
     var maxImmediateForBackground = 220 // only fold in background when the field itself is sparse
     var debugLogging = false            // when true, logs include typed text/snippets
+    // Opt-in local capture of (context → suggestion, accepted?) examples to
+    // ~/Library/Application Support/typer/training.jsonl — the seed corpus + reward
+    // signal for training a local autocomplete model. OFF by default; never leaves the
+    // machine; cleared by "Reset All Data". See TrainingLog.swift and training/.
+    var trainingLogEnabled = false
     var disabledApps: Set<String> = []  // bundle IDs where Typer stays silent
     var disableInTerminals = false      // skip terminal apps entirely
 
@@ -89,6 +94,7 @@ struct TyperConfig {
             case "topic_capture_seconds": cfg.topicCaptureSeconds = Double(value) ?? cfg.topicCaptureSeconds
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds
             case "debug_logging": cfg.debugLogging = value == "true"
+            case "training_log_enabled": cfg.trainingLogEnabled = value == "true"
             case "disable_in_terminals": cfg.disableInTerminals = value == "true"
             case "disabled_apps": cfg.disabledApps = Set(value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
             default: break

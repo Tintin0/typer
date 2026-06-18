@@ -83,6 +83,14 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // and their accept/reject history (adapts suggestion length + confidence gate).
     let lexicon = PersonalLexicon()
     let feedback = FeedbackMemory()
+    // Opt-in training-data capture (see TrainingLog). `pendingTraining` holds a shown
+    // suggestion's context until it resolves (accepted/rejected), then one record is
+    // written. The prefetch stash lets a promoted prefetch be logged with the context
+    // it was actually generated for. All no-ops unless cfg.trainingLogEnabled.
+    let trainingLog = TrainingLog()
+    var pendingTraining: PendingTrainingExample?
+    var prefetchTrainImmediate = ""
+    var prefetchTrainConf = 0.0
     // How far into each app's buffer the lexicon has already learned, so repeated
     // flushes (app switches, clicks) never double-count the same typed words.
     var lexiconWatermark: [String: Int] = [:]
@@ -302,6 +310,10 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var powerSaving: Bool { cfg.batterySaver && PowerState.shared.saving }
 
     func clearSuggestion() {
+        // A suggestion that vanishes without going through resolveCompletionOutcome
+        // (app switch, click, paste, disable) still has an outcome: whatever was taken
+        // before it was abandoned. Capture it before we drop the completion.
+        flushTrainingOutcome(consumedChars: completion?.consumed ?? 0, reason: "dismissed")
         reanchorWork?.cancel()
         settleWork?.cancel()
         // An explicit dismissal (Esc/click/app switch) must also end the post-accept

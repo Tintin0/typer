@@ -92,6 +92,9 @@ extension TyperApp {
         ctx.addItem(toggleItem("Adapt to my accepts", key: "adaptive_suggestions", value: cfg.adaptiveSuggestions))
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
+        // Opt-in local training-data capture: records (context → suggestion, accepted?)
+        // to train a local model later. Off by default; stays on this Mac.
+        menu.addItem(toggleItem("Save suggestions to train a local model (\(trainingLog.count()))", key: "training_log_enabled", value: cfg.trainingLogEnabled))
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
         menu.addItem(.separator())
@@ -139,6 +142,7 @@ extension TyperApp {
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
         case "lexicon_enabled": cfg.lexiconEnabled = v
         case "adaptive_suggestions": cfg.adaptiveSuggestions = v
+        case "training_log_enabled": cfg.trainingLogEnabled = v
         case "battery_saver": cfg.batterySaver = v
         case "topic_memory_enabled":
             cfg.topicMemoryEnabled = v
@@ -166,7 +170,7 @@ extension TyperApp {
     @objc func resetData() {
         let alert = NSAlert()
         alert.messageText = "Reset all Typer data?"
-        alert.informativeText = "Clears your learned writing style, vocabulary, suggestion feedback, remembered on-screen topics, and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
+        alert.informativeText = "Clears your learned writing style, vocabulary, suggestion feedback, remembered on-screen topics, saved training data, and all stats, returning Typer to a fresh state. Your settings are kept. This can't be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
@@ -176,6 +180,7 @@ extension TyperApp {
         topicMemory.clear()
         lexicon.clear()
         feedback.clear()
+        trainingLog.clear()
         stats = TyperStats(); stats.save()
         buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
         lexiconWatermark.removeAll()

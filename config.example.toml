@@ -48,6 +48,14 @@ topic_memory_enabled = false
 topic_capture_seconds = 180
 background_refresh_seconds = 4.0   # how often the background context is refreshed
 
+# Training-data capture (opt-in, OFF by default). When true, Typer appends one JSON
+# line per shown suggestion to ~/Library/Application Support/typer/training.jsonl,
+# recording the context, the suggestion, and whether you accepted it (and how many
+# words). This is the seed corpus + accept/reject reward signal for training a local
+# autocomplete model (see training/). It stays on this Mac, is 0600, and is wiped by
+# the menu's "Reset All Data". Skipped during secure input and in disabled apps.
+training_log_enabled = false
+
 # Diagnostics. When false (default) the log never records typed text / snippets.
 # Typer always skips capture entirely while macOS secure input is active
 # (password fields, login window, sudo prompts), regardless of this setting.

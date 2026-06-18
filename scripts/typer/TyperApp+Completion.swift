@@ -55,10 +55,48 @@ extension TyperApp {
     // used (Tab/backtick accepts and typing straight through both count) and feed
     // the outcome to the adaptive layer (suggestion length + confidence gate).
     func resolveCompletionOutcome(_ comp: ActiveCompletion) {
-        guard cfg.adaptiveSuggestions else { return }
         let used = String(comp.chars[0..<comp.consumed])
             .split(whereSeparator: { $0.isWhitespace }).count
-        feedback.recordResolution(usedWords: used)
+        if cfg.adaptiveSuggestions { feedback.recordResolution(usedWords: used) }
+        // Write the training example for the suggestion that just resolved. This is the
+        // universal resolution path (Tab/backtick accept, type-through, divergence, Esc),
+        // so it captures both accepts and rejects with the final consumed count.
+        flushTrainingOutcome(consumedChars: comp.consumed, reason: "resolved")
+    }
+
+    // MARK: - Training-data capture (opt-in; see TrainingLog)
+
+    // A suggestion was just shown: remember the context it continued so the eventual
+    // accept/reject can be written as one example. No-op unless logging is enabled, and
+    // never captures during secure input or in disabled apps.
+    func noteTraining(context: String, suggestion: String, conf: Double?, source: String) {
+        guard cfg.trainingLogEnabled, !suggestion.isEmpty else { return }
+        if IsSecureEventInputEnabled() || isAppDisabled() { return }
+        let ctx = stableTail(context, max: 600).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ctx.count >= cfg.minContextChars else { return }
+        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
+        pendingTraining = PendingTrainingExample(context: ctx, suggestion: suggestion,
+                                                 conf: conf ?? 0, maxWords: maxWords,
+                                                 category: appCategory(), source: source)
+    }
+
+    // The shown suggestion left the screen with `consumedChars` of it taken. Write the
+    // record and clear the pending slot. Idempotent: safe to call from multiple
+    // lifecycle points (only the first sees a pending example).
+    func flushTrainingOutcome(consumedChars: Int, reason: String) {
+        guard let p = pendingTraining else { return }
+        pendingTraining = nil
+        guard cfg.trainingLogEnabled else { return }
+        let chars = Array(p.suggestion)
+        let n = min(max(consumedChars, 0), chars.count)
+        let takenWords = String(chars[0..<n]).split(whereSeparator: { $0.isWhitespace }).count
+        let shownWords = p.suggestion.split(whereSeparator: { $0.isWhitespace }).count
+        trainingLog.record(TrainingLog.Record(
+            schema_version: 1, ts: Date().timeIntervalSince1970,
+            context: p.context, suggestion: p.suggestion,
+            accepted: takenWords > 0, words_accepted: takenWords, words_shown: shownWords,
+            confidence: p.conf, max_words: p.maxWords, app_category: p.category,
+            source: p.source, reason: reason))
     }
 
     // The confidence bar a suggestion must clear to be shown: the configured base,
@@ -190,6 +228,8 @@ extension TyperApp {
                 if let c = sug?.conf, c < self.effectiveMinConfidence { return }
                 self.prefetched = ActiveCompletion(chars: Array(t))
                 self.prefetchKey = predicted
+                self.prefetchTrainImmediate = predicted   // context this prefetch continued (for training capture on promote)
+                self.prefetchTrainConf = sug?.conf ?? 0
                 log("prefetched chars=\(t.count)")
             }
         }
@@ -202,6 +242,7 @@ extension TyperApp {
         prefetched = nil
         prefetchKey = ""
         stats.shown += 1; statsTouched()   // a promoted prefetch is a shown suggestion
+        noteTraining(context: prefetchTrainImmediate, suggestion: String(pf.chars), conf: prefetchTrainConf, source: "prefetch")
         showCompletionRemainder(animate: true)
         calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         log("promoted prefetch")
@@ -353,6 +394,7 @@ extension TyperApp {
             scheduleGenerate(); return         // typed off the prediction
         }
         stats.shown += 1; statsTouched()
+        noteTraining(context: requestedBuffer, suggestion: text, conf: conf, source: "generate")
         showCompletionRemainder(animate: true)
         calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         maybePrefetch()
