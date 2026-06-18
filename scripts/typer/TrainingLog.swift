@@ -2,35 +2,67 @@ import Foundation
 
 // Opt-in, on-device corpus of (context → shown suggestion, accepted?) examples,
 // captured straight from the live completion loop. This is the seed dataset for a
-// future local autocomplete model AND its accept/reject reward signal: every shown
-// suggestion eventually resolves as accepted (≥1 word taken via Tab/backtick/typing
-// through) or rejected (typed away / Esc), and we record that outcome alongside the
-// context the model was continuing.
+// future local autocomplete model AND its accept/reject reward signal.
 //
 // OFF by default. Stored at ~/Library/Application Support/typer/training.jsonl, 0600,
-// and wiped by "Reset All Data". One self-contained JSON object per line (JSONL), so
-// the file is append-only and trivially streamable by the training pipeline.
+// and wiped by "Reset All Data". One self-contained JSON object per line (JSONL).
 //
-// Privacy: `context` and `suggestion` are text the user actually typed/was shown —
-// the same sensitivity as style.txt, which Typer already keeps locally. Nothing here
-// ever leaves the machine; this only writes a local file the user can inspect, hand
-// to the training pipeline, or clear. Capture is skipped during macOS secure input
-// and in disabled apps (the caller never shows a suggestion there, so no example is
-// produced), and the context is bounded to a short trailing window.
+// PRIVACY. `context` is ONLY the immediate before-cursor text the user typed — never
+// the folded-in window/clipboard/OCR background blocks. Even so, typed text can hold
+// secrets (a password in a non-secure field, a 2FA code, an API key), so before a row
+// is written the context and suggestion are screened by `looksSensitive` and the whole
+// example is DROPPED if anything secret-shaped appears (emails, URLs, long digit runs,
+// key-like tokens, file paths). Capture is also skipped during macOS secure input, in
+// disabled apps, and in known credential apps (`sensitiveAppBundles`). Nothing here
+// ever leaves the machine. This corrects the earlier "same sensitivity as style.txt"
+// framing — the raw buffer is strictly more sensitive, so it is filtered, not trusted.
 final class TrainingLog {
     struct Record: Codable {
-        let schema_version: Int
+        let schema_version: Int   // 2
         let ts: Double            // unix seconds when the suggestion resolved
-        let context: String       // trailing text the model was asked to continue
-        let suggestion: String    // the full suggestion that was shown
-        let accepted: Bool        // at least one word taken
-        let words_accepted: Int   // words taken (Tab / backtick / typed-through)
-        let words_shown: Int      // words in the full suggestion
-        let confidence: Double    // mean token probability the model reported
-        let max_words: Int        // words requested for this generation
-        let app_category: String  // chat / email / docs / code / browser / other
-        let source: String        // "generate" | "prefetch"
-        let reason: String        // how it ended: "resolved" | "dismissed"
+        let context: String       // immediate before-cursor text (screened, no secrets)
+        let suggestion: String     // the full suggestion that was shown
+        let accepted: Bool         // at least one word taken
+        let accept_kind: String    // "tab" | "backtick" | "typethrough" | "none"
+        let words_accepted: Int    // words taken
+        let words_shown: Int       // words in the full suggestion
+        let confidence: Double     // mean token probability the model reported
+        let shown: Bool            // false for exploration/suppressed (never displayed)
+        let exploration: Bool      // logged below the confidence gate (suppressed region)
+        let min_conf: Double       // effective confidence gate at the time
+        let max_words: Int         // words requested for this generation
+        let app_category: String   // chat / email / docs / code / browser / other
+        let source: String         // "generate" | "prefetch"
+        let model: String          // gguf filename — the policy/version this came from
+        let reason: String         // "resolved" | "dismissed" | "suppressed"
+    }
+
+    // Credential / secret-manager apps where suggestions must never be captured at all,
+    // independent of macOS secure-input (which only covers OS-designated fields).
+    static let sensitiveAppBundles: Set<String> = [
+        "com.1password.1password", "com.1password.1password-launcher", "com.agilebits.onepassword7",
+        "com.bitwarden.desktop", "com.dashlane.dashlanephonefinal", "com.callpod.keepermac",
+        "com.lastpass.lastpassmacdesktop", "com.apple.keychainaccess", "com.apple.Passwords",
+    ]
+
+    // True if `s` contains anything secret-shaped. Conservative on purpose: a few
+    // false positives (dropping a sentence that mentions a year or a long word) is a
+    // fine price for never persisting a credential. Mirrors PersonalLexicon's intent
+    // of refusing digits/URLs/emails/paths.
+    static func looksSensitive(_ s: String) -> Bool {
+        if s.isEmpty { return false }
+        let patterns = [
+            "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",  // email
+            "https?://|www\\.",                                  // url
+            "[0-9]{4,}",                                         // 4+ digit run (codes, cards, ids)
+            "(?:[0-9][ -]){6,}[0-9]",                            // spaced/hyphenated number (phone/card)
+            "[A-Za-z0-9+/=_-]{20,}",                             // long token (keys, hashes, jwts)
+            "(?:/[A-Za-z0-9._~-]+){2,}",                         // filesystem path
+        ]
+        for p in patterns where s.range(of: p, options: .regularExpression) != nil {
+            return true
+        }
+        return false
     }
 
     private let url: URL
@@ -65,8 +97,7 @@ final class TrainingLog {
             _ = try? fh.seekToEnd()
             try? fh.write(contentsOf: data)
         }
-        // Roll the file when it grows past the cap: keep the most recent half so the
-        // log stays bounded without a per-write rewrite.
+        // Roll the file when it grows past the cap: keep the most recent half.
         let attrs = try? fm.attributesOfItem(atPath: url.path)
         if let size = attrs?[.size] as? Int, size > maxBytes,
            let whole = try? String(contentsOf: url, encoding: .utf8) {
@@ -102,7 +133,9 @@ struct PendingTrainingExample {
     let context: String
     let suggestion: String
     let conf: Double
+    let minConf: Double
     let maxWords: Int
     let category: String
     let source: String
+    let model: String
 }

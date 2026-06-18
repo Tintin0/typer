@@ -148,7 +148,7 @@ extension TyperApp {
         }
         if code == CGKeyCode(kVK_Escape) {
             // Esc with a suggestion showing is an explicit rejection — feed it back.
-            if let comp = completion { resolveCompletionOutcome(comp) }
+            if let comp = completion { resolveCompletionOutcome(comp, via: "none") }
             clearSuggestion(); return
         }
         if code == CGKeyCode(kVK_Delete) {
@@ -243,7 +243,7 @@ extension TyperApp {
             // Deviated from the prediction: an implicit rejection (or partial use, if
             // some words were consumed first). Feed it back, then drop the prediction
             // and any speculative prefetch.
-            resolveCompletionOutcome(comp)
+            resolveCompletionOutcome(comp, via: comp.consumed > 0 ? "typethrough" : "none")
             completion = nil
             prefetched = nil
             prefetchKey = ""
@@ -264,7 +264,7 @@ extension TyperApp {
         if comp.done {
             // Typed all the way through — a strong "this matched my intent" signal.
             stats.accepted += 1; statsTouched()
-            resolveCompletionOutcome(comp)
+            resolveCompletionOutcome(comp, via: "typethrough")
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate() }
         } else {

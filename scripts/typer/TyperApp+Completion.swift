@@ -54,36 +54,58 @@ extension TyperApp {
     // A completion's lifecycle ended: count how many of its words the user actually
     // used (Tab/backtick accepts and typing straight through both count) and feed
     // the outcome to the adaptive layer (suggestion length + confidence gate).
-    func resolveCompletionOutcome(_ comp: ActiveCompletion) {
+    func resolveCompletionOutcome(_ comp: ActiveCompletion, via kind: String) {
         let used = String(comp.chars[0..<comp.consumed])
             .split(whereSeparator: { $0.isWhitespace }).count
         if cfg.adaptiveSuggestions { feedback.recordResolution(usedWords: used) }
-        // Write the training example for the suggestion that just resolved. This is the
-        // universal resolution path (Tab/backtick accept, type-through, divergence, Esc),
-        // so it captures both accepts and rejects with the final consumed count.
-        flushTrainingOutcome(consumedChars: comp.consumed, reason: "resolved")
+        // Universal resolution path (Tab/backtick accept, type-through, divergence, Esc),
+        // so it captures both accepts and rejects with the final consumed count and HOW
+        // it was taken — so a real Tab accept can be weighted above a type-through (words
+        // the user would have typed anyway) at training time.
+        flushTrainingOutcome(consumedChars: comp.consumed, acceptKind: kind, reason: "resolved")
     }
 
     // MARK: - Training-data capture (opt-in; see TrainingLog)
 
-    // A suggestion was just shown: remember the context it continued so the eventual
-    // accept/reject can be written as one example. No-op unless logging is enabled, and
-    // never captures during secure input or in disabled apps.
-    func noteTraining(context: String, suggestion: String, conf: Double?, source: String) {
-        guard cfg.trainingLogEnabled, !suggestion.isEmpty else { return }
-        if IsSecureEventInputEnabled() || isAppDisabled() { return }
-        let ctx = stableTail(context, max: 600).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ctx.count >= cfg.minContextChars else { return }
-        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
-        pendingTraining = PendingTrainingExample(context: ctx, suggestion: suggestion,
-                                                 conf: conf ?? 0, maxWords: maxWords,
-                                                 category: appCategory(), source: source)
+    // GGUF filename the suggestions came from (the policy/version tag). Cached: the
+    // model rarely changes and findModel touches disk.
+    func currentTrainingModel() -> String {
+        if trainingModelNameCache.isEmpty {
+            trainingModelNameCache = (LlamaClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "unknown"
+        }
+        return trainingModelNameCache
     }
 
-    // The shown suggestion left the screen with `consumedChars` of it taken. Write the
-    // record and clear the pending slot. Idempotent: safe to call from multiple
-    // lifecycle points (only the first sees a pending example).
-    func flushTrainingOutcome(consumedChars: Int, reason: String) {
+    // Safe to capture this context: logging on, not secure input, not a disabled or
+    // credential app, and no secret-shaped content (passwords/codes/keys/paths).
+    func canCaptureTraining(context: String, suggestion: String) -> Bool {
+        guard cfg.trainingLogEnabled else { return false }
+        if IsSecureEventInputEnabled() || isAppDisabled() { return false }
+        if TrainingLog.sensitiveAppBundles.contains(currentAppBundleAndName().bundle) { return false }
+        if TrainingLog.looksSensitive(context) || TrainingLog.looksSensitive(suggestion) { return false }
+        return true
+    }
+
+    var trainingMaxWords: Int {
+        cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
+    }
+
+    // A suggestion was just shown: remember the context it continued so the eventual
+    // accept/reject can be written as one example. No-op unless safe to capture.
+    func noteTraining(context: String, suggestion: String, conf: Double?, source: String) {
+        guard !suggestion.isEmpty else { return }
+        let ctx = stableTail(context, max: 600).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ctx.count >= cfg.minContextChars, canCaptureTraining(context: ctx, suggestion: suggestion) else { return }
+        pendingTraining = PendingTrainingExample(context: ctx, suggestion: suggestion,
+                                                 conf: conf ?? 0, minConf: effectiveMinConfidence,
+                                                 maxWords: trainingMaxWords, category: appCategory(),
+                                                 source: source, model: currentTrainingModel())
+    }
+
+    // The shown suggestion left the screen with `consumedChars` of it taken, via
+    // `acceptKind`. Write the record and clear the pending slot. Idempotent: safe to
+    // call from multiple lifecycle points (only the first sees a pending example).
+    func flushTrainingOutcome(consumedChars: Int, acceptKind: String, reason: String) {
         guard let p = pendingTraining else { return }
         pendingTraining = nil
         guard cfg.trainingLogEnabled else { return }
@@ -92,11 +114,32 @@ extension TyperApp {
         let takenWords = String(chars[0..<n]).split(whereSeparator: { $0.isWhitespace }).count
         let shownWords = p.suggestion.split(whereSeparator: { $0.isWhitespace }).count
         trainingLog.record(TrainingLog.Record(
-            schema_version: 1, ts: Date().timeIntervalSince1970,
+            schema_version: 2, ts: Date().timeIntervalSince1970,
             context: p.context, suggestion: p.suggestion,
-            accepted: takenWords > 0, words_accepted: takenWords, words_shown: shownWords,
-            confidence: p.conf, max_words: p.maxWords, app_category: p.category,
-            source: p.source, reason: reason))
+            accepted: takenWords > 0, accept_kind: takenWords > 0 ? acceptKind : "none",
+            words_accepted: takenWords, words_shown: shownWords,
+            confidence: p.conf, shown: true, exploration: false, min_conf: p.minConf,
+            max_words: p.maxWords, app_category: p.category, source: p.source,
+            model: p.model, reason: reason))
+    }
+
+    // A generated suggestion was suppressed by the confidence gate (never shown). Log it
+    // as a below-gate negative so the training set + gate recalibration cover the
+    // suppressed region, not just the gate-passing survivors (fixes the survivorship
+    // censoring that would otherwise blind the reward model). Written immediately.
+    func noteSuppressed(context: String, suggestion: String, conf: Double) {
+        let s = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        let ctx = stableTail(context, max: 600).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ctx.count >= cfg.minContextChars, canCaptureTraining(context: ctx, suggestion: suggestion) else { return }
+        let shownWords = s.split(whereSeparator: { $0.isWhitespace }).count
+        trainingLog.record(TrainingLog.Record(
+            schema_version: 2, ts: Date().timeIntervalSince1970,
+            context: ctx, suggestion: suggestion,
+            accepted: false, accept_kind: "none", words_accepted: 0, words_shown: shownWords,
+            confidence: conf, shown: false, exploration: true, min_conf: effectiveMinConfidence,
+            max_words: trainingMaxWords, app_category: appCategory(), source: "generate",
+            model: currentTrainingModel(), reason: "suppressed"))
     }
 
     // The confidence bar a suggestion must clear to be shown: the configured base,
@@ -171,7 +214,7 @@ extension TyperApp {
             // didSet) never bounces the tap off and back on. A rapid next Tab is then
             // swallowed instead of tabbing focus away while the next chunk arrives.
             armAcceptGrace()
-            resolveCompletionOutcome(comp)
+            resolveCompletionOutcome(comp, via: "tab")
             completion = nil
             if !promotePrefetch() { overlay.orderOut(nil); scheduleGenerate(quick: true) }
         } else {
@@ -196,7 +239,7 @@ extension TyperApp {
         stats.accepted += 1; recordCompleted(piece); statsTouched()
         armAcceptGrace()
         var resolved = comp; resolved.consumed = resolved.chars.count
-        resolveCompletionOutcome(resolved)
+        resolveCompletionOutcome(resolved, via: "backtick")
         completion = nil
         overlay.orderOut(nil)
         scheduleGenerate(quick: true)
@@ -225,7 +268,7 @@ extension TyperApp {
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
                 // A prefetch below the confidence bar would be promoted (shown)
                 // without ever passing through presentCompletion — gate it here.
-                if let c = sug?.conf, c < self.effectiveMinConfidence { return }
+                if let c = sug?.conf, c < self.effectiveMinConfidence { self.noteSuppressed(context: predicted, suggestion: t, conf: c); return }
                 self.prefetched = ActiveCompletion(chars: Array(t))
                 self.prefetchKey = predicted
                 self.prefetchTrainImmediate = predicted   // context this prefetch continued (for training capture on promote)
@@ -357,6 +400,7 @@ extension TyperApp {
         // down rather than leave a known-low-quality suggestion up.)
         if let conf, conf < effectiveMinConfidence {
             dlog("[\(activeAppKey)] suppressed low-confidence completion conf=\(String(format: "%.2f", conf)) bar=\(String(format: "%.2f", effectiveMinConfidence))")
+            noteSuppressed(context: requestedBuffer, suggestion: text, conf: conf)
             completion = nil
             overlay.orderOut(nil)
             return

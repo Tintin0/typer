@@ -93,8 +93,12 @@ extension TyperApp {
         let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
         menu.addItem(ctxItem)
         // Opt-in local training-data capture: records (context → suggestion, accepted?)
-        // to train a local model later. Off by default; stays on this Mac.
-        menu.addItem(toggleItem("Save suggestions to train a local model (\(trainingLog.count()))", key: "training_log_enabled", value: cfg.trainingLogEnabled))
+        // to train a local model later. Off by default; stays on this Mac. Enabling it
+        // shows a one-time explanation of exactly what is stored (see confirmTrainingCapture).
+        menu.addItem(toggleItem("Record my typing to train a local model (\(trainingLog.count()))", key: "training_log_enabled", value: cfg.trainingLogEnabled))
+        if cfg.trainingLogEnabled, trainingLog.count() > 0 {
+            menu.addItem(NSMenuItem(title: "Inspect training data…", action: #selector(openTrainingData), keyEquivalent: ""))
+        }
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
         menu.addItem(.separator())
@@ -142,7 +146,11 @@ extension TyperApp {
         case "style_memory_enabled": cfg.styleMemoryEnabled = v
         case "lexicon_enabled": cfg.lexiconEnabled = v
         case "adaptive_suggestions": cfg.adaptiveSuggestions = v
-        case "training_log_enabled": cfg.trainingLogEnabled = v
+        case "training_log_enabled":
+            // Turning capture ON shows a one-time explanation of what gets stored; if the
+            // user backs out, leave it off and don't persist.
+            if v, !confirmTrainingCapture() { rebuildMenu(); return }
+            cfg.trainingLogEnabled = v
         case "battery_saver": cfg.batterySaver = v
         case "topic_memory_enabled":
             cfg.topicMemoryEnabled = v
@@ -157,6 +165,29 @@ extension TyperApp {
 
     @objc func openConfig() { NSWorkspace.shared.open(configURL()) }
     @objc func openLog() { NSWorkspace.shared.open(typerLogURL) }
+
+    @objc func openTrainingData() {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/typer/training.jsonl")
+        if FileManager.default.fileExists(atPath: url.path) { NSWorkspace.shared.open(url) }
+    }
+
+    // One-time explanation shown before training capture is enabled. Spells out exactly
+    // what is stored, that it never leaves the Mac, the secret-skipping safeguards, and
+    // how to inspect or erase it — the consent step the data's sensitivity warrants.
+    func confirmTrainingCapture() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Record your typing to train a local model?"
+        alert.informativeText = """
+        Typer will save the text right before your cursor and each suggestion (plus whether you used it) to a file on THIS Mac — ~/Library/Application Support/typer/training.jsonl. It never leaves your computer; it exists only to train a local autocomplete model.
+
+        What you type can include private things, so capture is skipped in password fields, password managers, and disabled apps, and any line that looks like a password, code, key, path, or email is dropped automatically. You can inspect the file, turn this off anytime, or erase it with “Reset All Data.”
+        """
+        alert.addButton(withTitle: "Record Locally")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
 
     @objc func toggleDisableCurrentApp() {
         let (bundle, _) = currentAppBundleAndName()

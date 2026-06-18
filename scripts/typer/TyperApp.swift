@@ -91,6 +91,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pendingTraining: PendingTrainingExample?
     var prefetchTrainImmediate = ""
     var prefetchTrainConf = 0.0
+    var trainingModelNameCache = ""
     // How far into each app's buffer the lexicon has already learned, so repeated
     // flushes (app switches, clicks) never double-count the same typed words.
     var lexiconWatermark: [String: Int] = [:]
@@ -312,8 +313,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func clearSuggestion() {
         // A suggestion that vanishes without going through resolveCompletionOutcome
         // (app switch, click, paste, disable) still has an outcome: whatever was taken
-        // before it was abandoned. Capture it before we drop the completion.
-        flushTrainingOutcome(consumedChars: completion?.consumed ?? 0, reason: "dismissed")
+        // before it was abandoned. Any consumed words came from typing through it.
+        let consumed = completion?.consumed ?? 0
+        flushTrainingOutcome(consumedChars: consumed, acceptKind: consumed > 0 ? "typethrough" : "none", reason: "dismissed")
         reanchorWork?.cancel()
         settleWork?.cancel()
         // An explicit dismissal (Esc/click/app switch) must also end the post-accept
