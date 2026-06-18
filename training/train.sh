@@ -35,7 +35,7 @@ cd "$(dirname "$0")"
 # subcommands (cold-start / general / retrain) set their own per-mode defaults via these
 # *_USER values — otherwise the generic defaults here would already be set and would mask
 # the subcommand's intent (e.g. BASE would always be Qwen, ITERS always 600).
-for _v in BASE QUANT ITERS QLORA_BITS NUM_LAYERS WINDOW MAX_PER_SOURCE ADAPTER FUSED CORPUS GRAD_CKPT; do
+for _v in BASE QUANT ITERS QLORA_BITS NUM_LAYERS WINDOW MAX_PER_SOURCE ADAPTER FUSED CORPUS GRAD_CKPT LR; do
   eval "${_v}_USER=\"\${${_v}:-}\""
 done
 
@@ -76,6 +76,9 @@ NUM_LAYERS="${NUM_LAYERS:-8}"
 GRAD_CKPT="${GRAD_CKPT:-1}"                   # 1 = pass --grad-checkpoint
 WINDOW="${WINDOW:-150}"                       # iters per resumable chunk
 SAVE_EVERY="${SAVE_EVERY:-50}"
+LR="${LR:-1e-5}"                              # learning rate (mlx default). Each chunk restarts
+                                             # the optimizer, so for long single-chunk runs set
+                                             # WINDOW>=ITERS to avoid optimizer-reset slowdowns.
 BASE_Q="${BASE_Q:-base-q${QLORA_BITS}}"       # local path for the quantized base
 # The model the trainer actually loads: the quantized base when QLORA_BITS>0, else BASE.
 GGUF_F16="${GGUF_F16:-$FUSED/model-f16.gguf}"
@@ -173,7 +176,7 @@ PY
       resume=""; [ -f "$ADAPTER/adapters.safetensors" ] && resume="--resume-adapter-file $ADAPTER/adapters.safetensors"
       say "  +$chunk iters (from $done)"
       $RUN mlx_lm.lora --model "$TRAIN_MODEL" --train --data "$MLX_DATA" \
-        --fine-tune-type lora \
+        --fine-tune-type lora --learning-rate "$LR" \
         --num-layers "$NUM_LAYERS" --batch-size "$BATCH" --grad-accumulation-steps "$GRAD_ACCUM" \
         --max-seq-length "$MAX_SEQ" $gc --iters "$chunk" --save-every "$SAVE_EVERY" \
         --adapter-path "$ADAPTER" $resume
@@ -270,7 +273,12 @@ PY
     export QLORA_BITS="${QLORA_BITS_USER:-0}"     # fp16 base (best quality; central isn't <1GB-bound)
     export NUM_LAYERS="${NUM_LAYERS_USER:--1}"    # all 32 layers
     export ITERS="${ITERS_USER:-3000}"
-    export WINDOW="${WINDOW_USER:-500}"           # bigger resumable chunks for a longer run
+    # Single continuous chunk (WINDOW >= ITERS): central training must NOT reset the
+    # optimizer mid-run the way the on-device chunking does — mlx's --save-every still
+    # checkpoints for resume. Slightly higher LR than the 1e-5 on-device default to
+    # actually move an all-layers run in a reasonable number of iters.
+    export WINDOW="${WINDOW_USER:-$ITERS}"
+    export LR="${LR_USER:-2e-5}"
     export MAX_PER_SOURCE="${MAX_PER_SOURCE_USER:-12000}"
     export ADAPTER="${ADAPTER_USER:-adapters_general}"
     export FUSED="${FUSED_USER:-fused_general}"
