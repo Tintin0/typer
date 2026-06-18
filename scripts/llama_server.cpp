@@ -284,15 +284,23 @@ public:
     }
 
     void init_biases() {
-        std::vector<std::string> specials = {"<|", "|>", "<|think|>", "<|turn>", "<turn|>", "<|channel>", "<channel|>", "<bos>", "<eos>"};
-        std::vector<llama_token> ids;
-        for (const auto &s : specials) {
-            auto toks = tokenize(s, false);
-            ids.insert(ids.end(), toks.begin(), toks.end());
+        // Ban every control / special / added token by id, read from the actual vocab, so
+        // the model can't emit BOS/EOS/turn/chat/repo markup into a plaintext completion.
+        // Model-agnostic: covers Gemma's <bos>/<eos>/<start_of_turn>… and SmolLM2's
+        // <|endoftext|>/<|im_start|>/<reponame>… alike. The old approach tokenized literal
+        // Gemma strings ("<|", "|>", …) with parse_special — correct for Gemma, but in a
+        // byte-level-BPE vocab (Qwen/SmolLM2) "<|" is NOT one special token; it splits into
+        // the ordinary "<" and "|" byte-pairs, so banning them would stop the model from
+        // ever emitting those characters (fatal for code). Banning by attribute never
+        // touches a normal text token.
+        int n = llama_vocab_n_tokens(vocab);
+        for (llama_token id = 0; id < n; ++id) {
+            auto attr = llama_vocab_get_attr(vocab, id);
+            if (attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED |
+                        LLAMA_TOKEN_ATTR_UNKNOWN | LLAMA_TOKEN_ATTR_UNUSED)) {
+                special_biases.push_back({id, -INFINITY});
+            }
         }
-        std::sort(ids.begin(), ids.end());
-        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-        for (auto id : ids) special_biases.push_back({id, -INFINITY});
     }
 
     // `words` is a space-separated list of the user's distinctive vocabulary,
@@ -437,7 +445,10 @@ public:
     // suppression). The final mean probability lands in last_avg_prob.
     std::string generate(const std::string &prompt, int max_tokens,
                          const std::function<bool(const std::string &, double)> &on_token = nullptr) {
-        auto toks = tokenize(prompt, false);
+        // add_special lets llama.cpp prepend the model's own BOS only when its vocab
+        // declares one (Gemma yes; Qwen3/SmolLM2 base no) — replaces the old hardcoded
+        // "<bos>" literal so any base model tokenizes correctly.
+        auto toks = tokenize(prompt, llama_vocab_get_add_bos(vocab));
         int over = (int)toks.size() + max_tokens + 8 - n_ctx;
         if (over > 0) {
             // Front-truncate to fit the context window. Clamp so at least one token
@@ -495,12 +506,13 @@ static std::string stable_tail(const std::string &s, size_t max_chars) {
 }
 
 static std::string prompt_complete(const std::string &context) {
-    // Gemma is trained with a leading <bos>. Without it the base model emits
-    // degenerate, repetitive garbage ("the the The", "your help with your help
-    // with your"). tokenize() runs with parse_special=true, so the literal
-    // "<bos>" string is mapped to the real BOS token id. This single token is
-    // the difference between incoherent and coherent continuations.
-    return "<bos>" + context;
+    // The prompt is the plain context. The model's real BOS (if it uses one) is prepended
+    // at tokenize time via add_special — see generate(), which tokenizes with add_special
+    // = llama_vocab_get_add_bos(vocab). Models trained with a leading BOS (Gemma) get it;
+    // models without one (Qwen3/SmolLM2 base) get nothing. The old hardcoded literal
+    // "<bos>" was correct only for Gemma and tokenizes to junk bytes in other vocabularies,
+    // producing the degenerate, repetitive output a missing/wrong BOS causes.
+    return context;
 }
 
 int main(int argc, char **argv) {
