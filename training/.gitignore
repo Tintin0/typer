@@ -1,0 +1,9 @@
+# Generated training artifacts — never commit user data or model outputs.
+data/*.jsonl
+data/stats.json
+corpus/
+adapters/
+fused_model/
+*.gguf
+.venv/
+__pycache__/
