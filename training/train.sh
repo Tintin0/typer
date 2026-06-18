@@ -80,12 +80,25 @@ case "${1:-all}" in
     $RUN tokenizer_preflight.py --model "$BASE"
     ;;
   prepare)
-    say "Splitting sft.jsonl -> $MLX_DATA/{train,valid}.jsonl (90/10)"
+    say "Splitting sft.jsonl -> $MLX_DATA/{train,valid}.jsonl (90/10), text format"
     mkdir -p "$MLX_DATA"
+    # Emit mlx-lm's "text" format: the prompt and its gold continuation joined into one
+    # plain string — exactly the inference-time string (labeled context blocks + live
+    # text, then the space-led continuation). This is the correct shape for a BASE /
+    # continuation model: the prompt/completion format would route through a chat template
+    # (which a base model has none of, and which we don't want — it injects turn markers).
     $RUN python - "$DATA/sft.jsonl" "$MLX_DATA" <<'PY'
 import json, sys, random
 src, out = sys.argv[1], sys.argv[2]
-rows = [l for l in open(src, encoding="utf-8") if l.strip()]
+rows = []
+for l in open(src, encoding="utf-8"):
+    l = l.strip()
+    if not l:
+        continue
+    o = json.loads(l)
+    text = (o.get("prompt", "") + o.get("completion", "")).strip()
+    if text:
+        rows.append(json.dumps({"text": text}, ensure_ascii=False) + "\n")
 random.Random(0).shuffle(rows)
 k = max(1, len(rows) // 10)
 open(f"{out}/valid.jsonl", "w").writelines(rows[:k])
@@ -118,7 +131,7 @@ PY
       resume=""; [ -f "$ADAPTER/adapters.safetensors" ] && resume="--resume-adapter-file $ADAPTER/adapters.safetensors"
       say "  +$chunk iters (from $done)"
       $RUN mlx_lm.lora --model "$TRAIN_MODEL" --train --data "$MLX_DATA" \
-        --fine-tune-type lora --mask-prompt \
+        --fine-tune-type lora \
         --num-layers "$NUM_LAYERS" --batch-size "$BATCH" --grad-accumulation-steps "$GRAD_ACCUM" \
         --max-seq-length "$MAX_SEQ" $gc --iters "$chunk" --save-every "$SAVE_EVERY" \
         --adapter-path "$ADAPTER" $resume

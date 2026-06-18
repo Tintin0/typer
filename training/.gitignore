@@ -1,9 +1,9 @@
 # Generated training artifacts — never commit user data or model outputs.
-data/*.jsonl
-data/stats.json
+data/
 corpus/
 adapters/
 fused_model/
+base-q*/
 *.gguf
 .venv/
 __pycache__/
