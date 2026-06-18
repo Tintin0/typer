@@ -206,6 +206,17 @@ Typer learns your writing **locally** and uses it to prime the model:
 It never fine-tunes or uploads anything — personalization is purely the local
 style sample plus your per-app session text.
 
+### Train your own model (opt-in)
+
+Typer can build the dataset to **train its own small autocomplete model** and move off
+the big default Gemma. Enable *"Record my typing to train a local model"* in the menu
+and Typer saves `(context → suggestion, did you accept it)` examples to
+`~/Library/Application Support/typer/training.jsonl` — entirely on-device, `0600`,
+secret-screened, and wiped by "Reset All Data." The pipeline that turns that into a
+sub-1B GGUF (SFT → preference RL → quantize, all runnable on Apple Silicon) lives in
+[`training/`](training/), and the full plan — base-model choice, the RL recipe, and the
+privacy architecture — is in [`docs/autocomplete-model.md`](docs/autocomplete-model.md).
+
 ## Privacy
 
 Everything is local. The model runs on your machine; nothing is sent anywhere.

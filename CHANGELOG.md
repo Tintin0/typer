@@ -3,6 +3,40 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## own autocomplete model — data foundation + training pipeline (replace Gemma)
+
+Groundwork for replacing the ~3.5 GB Gemma the app ships with **our own sub-1B,
+Apache-2.0 model** — fast on Apple Silicon, cheap to train, calibrated for this narrow
+task. This lands the *data foundation* and *training pipeline*; training and the model
+swap follow the plan in [`docs/autocomplete-model.md`](docs/autocomplete-model.md).
+
+- **On-device training capture (opt-in, OFF by default).** A new menu toggle,
+  *"Record my typing to train a local model,"* writes one JSON line per shown
+  suggestion to `~/Library/Application Support/typer/training.jsonl` — the context, the
+  suggestion, whether you accepted it and **how** (Tab / backtick / typed-through), the
+  confidence, and below-gate suppressed suggestions. The accept/reject signal is the
+  reward; `accept_kind` lets training tell a real Tab accept (information you didn't
+  type) from a type-through (you'd have typed it anyway). `0600`, wiped by "Reset All
+  Data," documented in `config.toml` (`training_log_enabled`). See `TrainingLog.swift`.
+- **Privacy first.** `context` is only the immediate text you typed — never the
+  folded-in window/clipboard/OCR background. Anything secret-shaped (emails, URLs, long
+  digit runs, keys, paths) is dropped at capture, capture is skipped in password
+  managers and secure-input fields, and enabling it shows a one-time sheet explaining
+  exactly what's stored (with an "Inspect training data…" item). Nothing leaves the Mac.
+- **Training pipeline (`training/`).** `build_dataset.py` turns the capture + your
+  `style.txt` + public corpora into SFT/KTO/DPO/calibration sets in the app's exact
+  prompt format; `synth_negatives.py` manufactures cold-start preference data (no users
+  or teacher needed); `tokenizer_preflight.py` enforces the hard space-prefixed
+  word-boundary contract on any candidate base; `calibrate_gate.py` re-fits
+  `min_confidence` and reports good/junk **separation** as a model-selection gate;
+  `eval.py` benchmarks a candidate GGUF over the real server protocol; `train.sh`
+  runs the stages on Apple Silicon (mlx-lm) out to a quantized GGUF.
+- **Design doc.** `docs/autocomplete-model.md` — the locked build plan from a
+  research + adversarial-review pass: base-model + tokenizer decision (Qwen3-0.6B-Base
+  / SmolLM2-360M-Base), the de-confounded KTO recipe, the on-device-only privacy
+  architecture, and a milestone roadmap. Notes the required `llama_server.cpp` BOS
+  change (the literal `<bos>` is Gemma-only — *not* a drop-in for other tokenizers).
+
 ## personalization + tracking — suggestions that sound like you, a ghost that keeps up
 
 Two complaints drove this pass: suggestions felt random (not "how I type"), and the
