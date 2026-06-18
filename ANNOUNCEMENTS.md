@@ -11,124 +11,120 @@ Structure
     the rest collapse into dropdowns.
   - Every entry starts:  ## YYYY-MM-DD — title
     (em dash, with spaces). Headers that don't match are ignored.
-  - First paragraph is the lede: 1–3 sentences, plain words, the "why you
-    care". The site may show it even when the entry is collapsed.
-  - Then optional bullets. Each bullet leads with a **bolded phrase.**
-  - Optional closing paragraph.
+  - First paragraph is the lede: 1–3 sentences, the "why you care".
+    The site may show it even when the entry is collapsed.
+  - Write each paragraph as ONE line (no hard wraps) — the parser turns
+    every line break into a new paragraph.
+  - Bullets are optional and for actual lists only. Don't reach for them
+    by default, and don't open every bullet with a **bolded label:** —
+    that's the fastest way to make a real update read like a changelog
+    robot wrote it. Prose first. Lists when you genuinely have a list.
   - Markdown allowed in bodies: **bold**, `code`, [links](url), - bullets.
     Nothing else — no headings, images, tables, or HTML.
 
 Voice
+  - Write like the person who built the thing and actually cares about it.
+    One voice, talking to a real user — not a press release, not a robot
+    being cheerful on command.
+  - Vary your rhythm. Short sentences. Then a longer one when the thought
+    needs the room. If every sentence is the same shape, start over.
   - Genuinely happy, never hyped. "this one feels great" yes;
     "revolutionary" no. One exclamation point per entry, max.
   - Real numbers only, and only ours: if we measured 60% → 0%, say that.
-    Never round a vibe into a statistic.
-  - Announcements describe what you FEEL; the CHANGELOG holds the
-    engineering. Link it instead of re-explaining.
-  - Plain "we" and "you". Admit rough edges — alpha is alpha.
-  - lowercase, like the rest of the site. Keep titles under ~60 chars.
+    Never round a vibe into a statistic. No fake superlatives.
+  - Admit the rough edges. alpha is alpha, and pretending otherwise is
+    the most robotic thing you can do.
+  - Announcements are what you FEEL; the CHANGELOG holds the engineering.
+    Point at it when you've got nothing left to say — not in every entry.
+  - lowercase, like the rest of the site. titles under ~60 chars.
 -->
 
-## 2026-06-18 — typer has a model of its own now, and it's quick
+## 2026-06-18 — typer has a model of its own now
 
-since day one typer has run on gemma — a good 3.5 GB model that was never built for this one job. today it gets a model of its own. `typer-1` is small, trained for exactly one thing — finishing your sentence — and it's already serving some of your suggestions. on our held-out test it matches gemma's next-word quality while getting the first word to your screen in **35ms instead of 163ms**, at **386 MB instead of 3.5 GB**.
+for as long as typer has existed it's been running on gemma — a genuinely good 3.5 GB model, but a general one, doing a job it was never trained for. so we trained our own. typer-1 does exactly one thing, finish the sentence you're in the middle of, and it's small enough that it's already quietly handling a slice of your suggestions as you read this.
 
-- **it earns its way in.** typer-1 doesn't take over — it starts on about 10% of suggestions and grows its share only while it keeps pace with gemma on the words you actually accept. the moment it slips, gemma comes back on its own. nothing for you to tune.
-- **it was trained right here, under a gig of ram.** we made the training small and interruptible on purpose: it can run in the background without you feeling it, and if you close the lid it picks up where it left off.
-- **smaller now, and gathering what it needs to sound like you.** every suggestion you take is tagged to the model that made it — so as typer-1 earns your accepts it's collecting exactly the signal to start matching your voice, with gemma as the safety net underneath.
+on our own held-out test it keeps pace with gemma word-for-word. the difference is everywhere else: it gets the first word onto your screen in 35ms instead of 163ms, and it takes 386 MB on disk instead of 3.5 GB. that's the kind of thing you feel before you'd ever think to measure it.
 
-still alpha, still entirely on your Mac. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering.
+it doesn't barge in, either. typer-1 starts on about a tenth of your suggestions and earns more only while it's keeping up with gemma on the words you actually take — and the second it starts slipping, gemma steps back in on its own. there's nothing for you to switch or tune.
+
+the part we keep grinning about: the whole thing trained on a laptop, under a gigabyte of memory, and it survives you closing the lid mid-run. that's also what makes it personal from here — every suggestion you accept is now tagged to the model that wrote it, so typer-1 is already collecting the one thing it needs to start sounding like you specifically, with gemma underneath the whole time as the safety net.
+
+still alpha, still nothing ever leaves your Mac. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the wiring if you want it.
 
 ## 2026-06-09 — typer started learning you, and stopped guessing
 
-the two biggest complaints about typer were really one complaint: suggestions felt random. this update is about earning their place on your screen — typer now learns how you actually write, notices what you accept, and when the model is only guessing it says nothing at all.
+the two loudest complaints about typer turned out to be the same complaint wearing two coats: the suggestions felt random. so this whole update is about one thing — typer earning the right to be on your screen instead of just showing up.
 
-- **a confidence bar.** the model now reports how sure it is, and suggestions below the bar never appear. in our tests, good completions measured 0.27 and up while the junk ("use a .") measured 0.20 — the bar sits at 0.22, so the junk dies and the good stuff lives.
-- **your words, preferred.** typer keeps a local table of the words you really type and gently nudges the model toward them. your vocabulary, not generic prose.
-- **it notices what you take.** every suggestion now resolves as used or ignored. take one or two words at a time and suggestions get shorter; ignore most of them and the bar tightens on its own.
-- **chat-you and docs-you are different people.** style memory now remembers which kind of app a line came from — messages, email, docs — and prefers the voice that matches where you're typing.
-- **paste no longer breaks the ghost.** `cmd+v` used to leave the suggestion frozen on top of your pasted text. typer now ducks out instantly and rebuilds from what's actually in the field.
-- **the ghost keeps up with fast typing.** typer learns each app's real text width, and the app itself now tells typer the moment a keystroke lands — so the ghost moves with you instead of getting typed over.
+the biggest change is that the model now tells us how sure it is, and anything it's only half-guessing at never appears at all. we measured it: the good completions came in at 0.27 and up, while the junk — the "use a ." nonsense — sat around 0.20. the bar lives at 0.22, right in the gap, so the junk dies quietly and you never see it.
 
-all of it lives on your Mac and clears with one click, as always. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering.
+underneath that, typer is paying attention to you. it keeps a little local table of the words you actually reach for and nudges the model toward them. it watches what you take and what you wave off — grab a word or two at a time and the suggestions get shorter to match; ignore most of what shows up and the bar tightens on its own. it even keeps separate notes for chat, email, and docs, because the way you talk in iMessage is not the way you write a doc, and pretending otherwise made everything worse.
+
+two smaller things that were quietly driving people up the wall: pasting with `cmd+v` used to freeze the ghost on top of whatever you'd just pasted — it now ducks out the instant you paste and rebuilds from what's really in the field. and the ghost keeps up with fast typing now, because the app tells typer the exact moment a key lands instead of letting it guess.
+
+all of it lives on your Mac and clears with one click, same as always.
 
 ## 2026-06-09 — typer got faster in a way you can feel
 
-this one's our favorite kind of update: nothing new to learn, everything just feels quicker. the model used to re-read your whole context on nearly every pause — in an 800-keystroke test it now re-reads 12 times instead of 800, so suggestions spend their time on the new words, not the old ones.
+this is the kind of update with nothing new to learn — it just feels quicker. the model used to re-read your entire context on basically every pause; in an 800-keystroke test it now re-reads 12 times instead of 800, so its effort goes into the words you just typed instead of the ones it already knew about.
 
-- **rapid Tab is fixed.** hammering `tab` used to occasionally tab you out of the text field mid-sentence. typer now holds the key for a moment while the next chunk arrives, so Tab always means "more words", never "goodbye".
-- **the next suggestion comes right away.** after you accept a whole suggestion, the follow-up now starts generating in ~60ms instead of waiting out the typing debounce. you asked for more — no need to make you wait.
-- **the ghost stopped drifting.** accepting several words in a row used to nudge the ghost slightly right of your caret. it now snaps back exactly where it belongs, every time.
-- **clicking is not typing.** placing your cursor with the mouse no longer summons a suggestion — typer quietly refreshes its context and waits for you to actually type.
-- **smarter in chats.** the context window grew, and suggestions adapt better to Discord/iMessage-style phrasing instead of collapsing into generic sentence-finishers.
+a few things came with that. hammering `tab` used to occasionally tab you clean out of the text field mid-sentence, which is about as rude as software gets — typer now holds the key for a beat while the next chunk loads, so tab always means "more," never "goodbye." after you take a whole suggestion, the next one starts generating in about 60ms instead of sitting through the full typing pause. and accepting a run of words used to drift the ghost slightly right of your cursor every time; it snaps back where it belongs now.
 
-a stack of smaller caret and prompt wins landed too — the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has every gory detail.
+one more: clicking to place your cursor no longer summons a suggestion out of nowhere. typer just refreshes what it knows and waits for you to actually type something.
 
 ## 2026-06-02 — one giant file became twenty tidy ones
 
-confession: typer's menu-bar app was a single 2,487-line Swift file. it now lives in [scripts/typer/](https://github.com/frgmt0/typer/tree/main/scripts/typer) as one file per concern — completions, caret, event taps, config, stats, the lot. zero behavior changed; this is purely us making the codebase nicer to read.
+small confession: typer's menu-bar app was a single 2,487-line Swift file. it now lives in [scripts/typer/](https://github.com/frgmt0/typer/tree/main/scripts/typer) as one file per concern — completions, caret, event taps, config, stats, all of it. not a single thing changed about how typer behaves; this was purely us making the place nicer to live in.
 
-if you've been curious about contributing, this is the best time yet to go poke around. PRs welcome — that promise is real.
+if you've ever thought about poking around the code, this is the moment. it's readable now, and the "PRs welcome" line is not a bit — we mean it.
 
 ## 2026-05-30 — spell-fix now works in Discord, Slack, and VS Code
 
-typo correction had an embarrassing habit in Electron apps: accept a fix for `peopel` and you'd get `peoplepeopel`. turns out those editors quietly ignore the accessibility API while claiming they didn't. typer now checks its work and falls back to honest keystrokes when an app lies to it.
+typo correction had a genuinely embarrassing habit in Electron apps: you'd accept a fix for `peopel` and end up with `peoplepeopel`. turns out those editors quietly ignore the accessibility API while swearing they support it. typer now checks whether its fix actually landed and falls back to plain honest keystrokes when an app lies to it — backspace the exact length, type the correction, put your cursor back where it was. boring and correct, which is the whole goal.
 
-- **the fix replaces the word.** backspace the exact length, paste the correction, put your caret back where it was. boring, deterministic, correct.
-- **space surfaces the fix.** finishing a misspelled word with `space` now shows the correction even while a suggestion is on screen.
-
-typo correction is still off by default while we polish it — flip it on in the menu if you want to live a little.
+finishing a misspelled word with `space` will surface the fix now too, even with a suggestion already on screen. typo correction is still off by default while we sand down the edges — flip it on in the menu if you're feeling brave.
 
 ## 2026-05-30 — typer can remind you of what you just read
 
-new opt-in feature we're quite fond of: topic memory. every few minutes typer OCRs your focused window (Apple Vision, on-device), distills just the topics — names, products, a one-line note — and stores them locally. later, when you type "those Sony headphones I saw…", the details resurface in your suggestion.
+this is a new opt-in thing we're a little in love with: topic memory. every few minutes typer takes a quiet look at your focused window with on-device OCR, keeps just the gist — a name, a product, a one-line note — and files it locally. later, when you start typing "those Sony headphones i saw earlier," the detail is already there waiting in the suggestion.
 
-- **distilled, not hoarded.** it keeps entities and a 1–2 sentence note, never raw screen text, and only chimes in when a distinctive word you read shows up in what you're typing.
-- **respectfully cheap.** it skips terminals, secure input, and battery-saver, and Reset All Data wipes it like everything else.
+the thing we care about is what it doesn't keep. never the raw screen text, just the distilled note, and it only ever speaks up when a distinctive word you read actually shows up in what you're typing. it skips terminals, secure input, and battery-saver mode, and Reset All Data wipes it like everything else.
 
-off by default (it needs Screen Recording permission). menu → context sources → "remember what I read".
+it's off by default since it needs Screen Recording permission. menu → context sources → "remember what i read" if you want it.
 
 ## 2026-05-30 — a day spent shaving milliseconds
 
-no headline feature today, just a pile of small efficiencies that add up: the helper stopped replaying ~1024 tokens of prompt through the sampler on every request, hot-path disk reads and per-keystroke log writes are gone, speculative prefetch now politely yields to your actual typing, and ~120 lines of dead code left the building.
+no headline today, just a pile of small things that add up. the helper stopped replaying around 1,024 tokens of prompt through the sampler on every single request. hot-path disk reads and per-keystroke log writes are gone. speculative prefetch now yields politely to your actual typing instead of racing it. and roughly 120 lines of dead code left the building.
 
-oh — and the menu-bar icon could previously render at zero width, i.e. be invisible. it's a keyboard symbol with your accepted-words count now. you'd be surprised how long you can ship an invisible icon without noticing.
+also — and this one's good — the menu-bar icon could previously render at zero width, which is to say, be completely invisible. it's a keyboard symbol with your accepted-word count next to it now. you would be amazed how long you can ship an invisible icon before anyone mentions it.
 
 ## 2026-05-30 — we found the battery drain. it was us. sorry
 
-profiling showed idle typer at ~60% CPU — not the model, but our own event tap stuck in a re-enable loop, having a very fast argument with macOS about whether it should be awake. fixed: **idle CPU went from 60% to 0%.**
+profiling showed idle typer sitting at around 60% CPU. it wasn't the model — it was our own event tap stuck in a re-enable loop, having a very fast, very pointless argument with macOS about whether it should be awake. we fixed it. idle CPU went from 60% to 0%.
 
-- **one generation per pause.** the debounce was shorter than the gap between keystrokes, so typer ran inference on nearly every character. it now coalesces a burst of typing into a single generation.
-- **battery-saver mode.** on battery or Low Power Mode, typer automatically debounces harder and skips speculative prefetch. it's on by default; the menu shows when it's throttling.
-
-your fans should now stay quiet until you've actually earned the noise.
+while we were in there: the debounce was actually shorter than the gap between keystrokes, so typer was running inference on nearly every character you typed. it now waits out a burst of typing and generates once. and on battery or Low Power Mode it automatically eases off — longer pauses, no speculative prefetch — which the menu will tell you when it's doing. your fans should stay quiet until you've genuinely earned the noise.
 
 ## 2026-05-29 — the ghost grew up
 
-a big pass on the thing you look at all day. the ghost text is now drawn with Core Animation — matched to your caret line, a soft taper at the edge, a one-shot shimmer when a fresh suggestion lands — and it no longer lags or overlaps what you're typing.
+a real pass on the thing you stare at all day. the ghost text is drawn with Core Animation now — sitting on your caret line, tapering softly at the edge, with a one-shot shimmer when a fresh suggestion lands — and it's done lagging behind or overlapping what you're typing.
 
-- **it stays out of your keyboard.** event taps were rearchitected so typer only ever consumes a key while a suggestion is actually showing. no suggestion, no interference — your input never waits on us.
-- **accepting text skips the clipboard.** accepted words are typed as a synthesized keystroke, so your pasteboard stays yours.
-- **per-app off switch.** disable typer in specific apps, skip terminals entirely, and Reset All Data from the menu when you want a clean slate.
+it also stays out of your way more carefully than it used to. the event taps were rebuilt so typer only ever holds onto a keystroke while a suggestion is actually showing; no suggestion, no interference, your typing never waits on us. accepted words get typed as a synthesized keystroke, so your clipboard stays yours. and you can switch typer off in specific apps, skip terminals entirely, or wipe everything from the menu whenever you want a clean slate.
 
 ## 2026-05-29 — we asked a reviewer to attack typer. it found things
 
-we ran an adversarial security review on the whole pipeline and fixed everything it flagged. the highlights: typer now goes completely inert during macOS secure input (password fields, `sudo`, password managers) — no buffer, no learning, no logging, nothing. logs are off by default and file permissions got strict (`0600`). the clipboard reader skips concealed items like password-manager copies.
+we ran an adversarial security review across the whole pipeline and fixed everything it turned up. the short version: typer now goes completely inert during macOS secure input — password fields, `sudo`, password managers — no buffer, no learning, no logging, nothing at all. logs are off by default, file permissions got strict (`0600`), and the clipboard reader skips concealed items like password-manager copies.
 
-none of this changed how typer feels — that's the point. local-and-private is a promise, and promises get audited.
+none of this changed how typer feels, which is exactly the point. local-and-private is a promise, and promises are worth auditing.
 
 ## 2026-05-29 — fewer random words, and your stats got fun
 
-two unrelated things that both made us smile. first, a sampling overhaul: a min-p sampler and tighter settings mean suggestions drift into random-word territory far less, and the overlay stopped flickering while you type through it.
+two unrelated things that both made us happy. first, a real sampling overhaul — a min-p sampler and tighter settings mean the suggestions wander into random-word territory far less often, and the overlay stopped flickering while you type straight through it.
 
-second: the menu now tracks words completed, daily streak, and translates your total into books — accept enough suggestions and you'll learn you've typed 0.3 Hobbits. is this necessary? no. do we love it? yes.
+second, and admittedly less important: the menu now tracks words completed, a daily streak, and your running total translated into books. accept enough suggestions and it'll cheerfully inform you that you've typed 0.3 Hobbits. did we need this? no. are we keeping it? absolutely.
 
 ## 2026-05-29 — hello! typer is public
 
-first public release, and the foundation everything above is built on: inline ghost-text suggestions at your caret in almost any app, streaming in word-by-word with the first word in ~80ms. `tab` takes a word, `` ` `` takes everything, `esc` says no thanks — or just keep typing and the ghost follows along without regenerating.
+first public release, and the thing everything above is built on: inline ghost-text suggestions right at your cursor, in nearly any app, streaming in word by word with the first one landing in about 80ms. `tab` takes a word, `` ` `` takes the whole thing, `esc` says no thanks — or just keep typing and the ghost follows along without regenerating.
 
-- **it learns your voice, locally.** a small on-device record of what you actually write primes the model toward how you sound. clearable any time.
-- **per-app sessions.** your group chat and your code don't share a brain.
-- **MIT, free, no account.** one `./install.sh`, a small GGUF model, and llama.cpp. that's the whole stack, and it all runs on your Mac.
+it learns your voice locally, from a small on-device record of how you actually write, and you can clear it any time. your group chat and your codebase don't share a brain. and the whole stack is honestly small: one `./install.sh`, a little GGUF model, and llama.cpp, all running on your Mac, MIT-licensed, no account.
 
-alpha, honestly: caret placement in terminals and custom editors is approximate, and quality depends on your model. we're just getting started — [come watch](https://github.com/frgmt0/typer), or better, come help.
+it's alpha and we won't pretend otherwise — caret placement in terminals and custom editors is still approximate, and quality rides on your model. but it's real, it's ours, and it's only getting better. [come watch](https://github.com/frgmt0/typer), or better, come help.
