@@ -175,11 +175,13 @@ PY
       remain=$(( ITERS - done )); chunk=$(( remain < WINDOW ? remain : WINDOW ))
       resume=""; [ -f "$ADAPTER/adapters.safetensors" ] && resume="--resume-adapter-file $ADAPTER/adapters.safetensors"
       say "  +$chunk iters (from $done)"
+      # LORA_CONFIG (optional YAML) supplies an lr_schedule (cosine decay + warmup) the CLI
+      # can't express; CLI flags still override the rest.
       $RUN mlx_lm.lora --model "$TRAIN_MODEL" --train --data "$MLX_DATA" \
         --fine-tune-type lora --learning-rate "$LR" \
         --num-layers "$NUM_LAYERS" --batch-size "$BATCH" --grad-accumulation-steps "$GRAD_ACCUM" \
         --max-seq-length "$MAX_SEQ" $gc --iters "$chunk" --save-every "$SAVE_EVERY" \
-        --adapter-path "$ADAPTER" $resume
+        --adapter-path "$ADAPTER" $resume ${LORA_CONFIG:+-c "$LORA_CONFIG"}
       done=$(( done + chunk )); echo "$done" > "$done_file"
     done
     say "SFT done: $done iters -> $ADAPTER (rm $done_file to retrain from scratch)"
