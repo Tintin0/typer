@@ -34,6 +34,7 @@ CORPUS="${CORPUS:-}"                          # optional dir of public-corpus .t
 MAX_PER_SOURCE="${MAX_PER_SOURCE:-8000}"      # cap per source in `corpus` (bounds downloads)
 ADAPTER="${ADAPTER:-adapters}"
 FUSED="${FUSED:-fused_model}"
+QUANT_USER="${QUANT:-}"                        # what the user explicitly passed (empty if none)
 QUANT="${QUANT:-Q5_K_M}"                      # Q5_K_M default; Q8_0 if calibration drifts
 ITERS="${ITERS:-600}"
 # Where convert_hf_to_gguf.py lives. Auto-detect a clone so the launchd agent works
@@ -175,8 +176,14 @@ PY
       --data "$DATA/dpo_synth.jsonl" --adapter-path "$ADAPTER"
     ;;
   fuse)
-    say "Fusing adapter into $FUSED"
-    $RUN mlx_lm.fuse --model "$BASE" --adapter-path "$ADAPTER" --save-path "$FUSED"
+    # Fuse into the SAME base the adapter was trained on. With QLoRA that's the 4-bit base,
+    # whose layers are quantization-padded — fusing into the raw fp16 base mismatches those
+    # shapes. --dequantize writes a standard fp16 model the GGUF converter can read.
+    FUSE_MODEL="$BASE"; dq=""
+    if [ "$QLORA_BITS" -gt 0 ] && [ -d "$BASE_Q" ]; then FUSE_MODEL="$BASE_Q"; dq="--dequantize"; fi
+    say "Fusing adapter ($FUSE_MODEL${dq:+, dequantizing}) into $FUSED"
+    rm -rf "$FUSED"
+    $RUN mlx_lm.fuse --model "$FUSE_MODEL" --adapter-path "$ADAPTER" --save-path "$FUSED" $dq
     ;;
   gguf)
     say "Convert to GGUF ($QUANT) via $LLAMA_CPP"
@@ -216,7 +223,7 @@ PY
     # Override BASE/QUANT/CORPUS/ITERS via env. DPO is skipped here (optional extra;
     # SFT + offline gate calibration give a shippable cold-start on their own).
     export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"
-    export QUANT="${QUANT:-q8_0}"
+    export QUANT="${QUANT_USER:-q8_0}"
     export CORPUS="${CORPUS:-corpus}"
     say "Cold-start: BASE=$BASE QUANT=$QUANT CORPUS=$CORPUS (resumable, <4GB; safe to Ctrl-C / sleep / re-run)"
     "$0" corpus; "$0" data; "$0" synth; "$0" preflight; "$0" prepare; "$0" quantize; "$0" sft; "$0" fuse; "$0" gguf
@@ -228,7 +235,7 @@ PY
     # that resists forgetting), produces a candidate GGUF, and PROMOTES it over the live
     # typer-1 only if it doesn't regress on the frozen set of the user's real accepts.
     # Same <1GB resumable path as cold-start. Keeps a rollback copy.
-    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"; export QUANT="${QUANT:-q8_0}"; export CORPUS="${CORPUS:-corpus}"
+    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"; export QUANT="${QUANT_USER:-q8_0}"; export CORPUS="${CORPUS:-corpus}"
     MODELS="$HOME/Library/Application Support/typer/Models"
     LIVE="$MODELS/typer-1.gguf"
     CAND="$FUSED/typer-candidate-${QUANT}.gguf"
