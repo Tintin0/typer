@@ -29,6 +29,16 @@ Voice
   - lowercase, like the rest of the site. Keep titles under ~60 chars.
 -->
 
+## 2026-06-18 — typer has a model of its own now, and it's quick
+
+since day one typer has run on gemma — a good 3.5 GB model that was never built for this one job. today it gets a model of its own. `typer-1` is small, trained for exactly one thing — finishing your sentence — and it's already serving some of your suggestions. on our held-out test it matches gemma's next-word quality while getting the first word to your screen in **35ms instead of 163ms**, at **386 MB instead of 3.5 GB**.
+
+- **it earns its way in.** typer-1 doesn't take over — it starts on about 10% of suggestions and grows its share only while it keeps pace with gemma on the words you actually accept. the moment it slips, gemma comes back on its own. nothing for you to tune.
+- **it was trained right here, under a gig of ram.** we made the training small and interruptible on purpose: it can run in the background without you feeling it, and if you close the lid it picks up where it left off.
+- **smaller now, and gathering what it needs to sound like you.** every suggestion you take is tagged to the model that made it — so as typer-1 earns your accepts it's collecting exactly the signal to start matching your voice, with gemma as the safety net underneath.
+
+still alpha, still entirely on your Mac. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering.
+
 ## 2026-06-09 — typer started learning you, and stopped guessing
 
 the two biggest complaints about typer were really one complaint: suggestions felt random. this update is about earning their place on your screen — typer now learns how you actually write, notices what you accept, and when the model is only guessing it says nothing at all.

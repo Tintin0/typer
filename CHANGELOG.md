@@ -3,6 +3,46 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## typer-1 — our own model, live behind a self-tuning A/B rollout
+
+Typer now ships **its own model.** `typer-1` is a SmolLM2-360M-Base cold-start, fine-tuned
+for this exact task and served behind a runtime A/B router that starts at 10% and ratchets
+itself up as it earns real accepts — falling back to Gemma the moment it doesn't. On a
+held-out set it **matches Gemma's next-chunk quality** (first-word acc 0.453 vs 0.460,
+matched-words 0.96 vs 1.01) while being **~4× faster** (time-to-first-token p50 35 ms vs
+163 ms — under the 100 ms "feels instant" bar Gemma misses) and **~9× smaller** (386 MB
+Q8_0 vs 3.5 GB). This lands M1–M5 of [`docs/autocomplete-model.md`](docs/autocomplete-model.md).
+
+- **Progressive A/B rollout with an auto-ratchet (`ModelRouter.swift`).** The router serves
+  a growing *share* of suggestions from `typer-1` instead of the default — bumping the share
+  up while typer-1's real accept rate keeps pace, multiplicatively backing off (bringing the
+  default back) when it regresses, and a tripwire that drops straight to the floor on a burst
+  of rejects. "Good" is a Tab/backtick accept or a long type-through — the same de-confounded
+  reward the trainer uses, so the live rollout and offline training agree on what a win is.
+  The share is persisted (`router.json`), per-model attribution flows into the training
+  capture, the menu shows the live share + per-model accept rates, and "Reset typer-1
+  rollout" restarts it. No-op (100% default) until a `typer-1*.gguf` exists, so it ships dark
+  and lights up on its own.
+- **Model-agnostic inference server (`llama_server.cpp`).** `prompt_complete()` no longer
+  hardcodes the literal `<bos>` (Gemma-only); the real BOS is prepended at tokenize time via
+  `add_special = llama_vocab_get_add_bos(vocab)` — Gemma still gets one, SmolLM2/Qwen base
+  get none. `init_biases()` now bans control/special/added tokens **by id** from the actual
+  vocab instead of tokenizing Gemma literal strings (the old `"<|"`/`"|>"` list tokenized to
+  ordinary `<`,`|` byte-pairs in a byte-level-BPE vocab and would have blocked code output).
+  Verified coherent on both models — the M1 change the design doc flagged as *not* a drop-in.
+- **Ultra-efficient, resumable training (`training/`).** A one-command `train.sh cold-start`:
+  `fetch_corpus.py` streams a bounded, categorized general seed (OpenAssistant→chat,
+  Dolly→docs, FineWeb-Edu→web, CodeParrot→code) so the model learns general inline completion
+  before it ever tailors to one user. SFT runs under **~1 GB RAM** — a 4-bit QLoRA base,
+  batch 1 × grad-accumulation, short sequences, gradient checkpointing, LoRA on only the top
+  layers — and is **chunked + checkpointed**, so a sleep, a closed lid, or a Ctrl-C costs at
+  most one chunk and re-running resumes. The GGUF is produced directly at Q8_0 by
+  `convert_hf_to_gguf.py`, so no llama.cpp C++ build is needed.
+- **Honest data readiness.** `build_dataset.py` prints a per-model readiness report — genuine
+  accepts vs the ≥300 the design doc requires for real personalization (KTO) — so "cold-start
+  vs tailor" is never a guess. Today: a strong cold-start shipped, with personalization
+  waiting on the rollout to collect real accepts attributed to typer-1.
+
 ## own autocomplete model — data foundation + training pipeline (replace Gemma)
 
 Groundwork for replacing the ~3.5 GB Gemma the app ships with **our own sub-1B,
