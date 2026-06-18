@@ -31,6 +31,14 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")"
 
+# Capture user-supplied overrides BEFORE applying the generic defaults below. The
+# subcommands (cold-start / general / retrain) set their own per-mode defaults via these
+# *_USER values — otherwise the generic defaults here would already be set and would mask
+# the subcommand's intent (e.g. BASE would always be Qwen, ITERS always 600).
+for _v in BASE QUANT ITERS QLORA_BITS NUM_LAYERS WINDOW MAX_PER_SOURCE ADAPTER FUSED CORPUS GRAD_CKPT; do
+  eval "${_v}_USER=\"\${${_v}:-}\""
+done
+
 BASE="${BASE:-Qwen/Qwen3-0.6B-Base}"        # or HuggingFaceTB/SmolLM2-360M
 DATA="${DATA:-data}"
 MLX_DATA="${MLX_DATA:-data/mlx}"
@@ -38,7 +46,6 @@ CORPUS="${CORPUS:-}"                          # optional dir of public-corpus .t
 MAX_PER_SOURCE="${MAX_PER_SOURCE:-8000}"      # cap per source in `corpus` (bounds downloads)
 ADAPTER="${ADAPTER:-adapters}"
 FUSED="${FUSED:-fused_model}"
-QUANT_USER="${QUANT:-}"                        # what the user explicitly passed (empty if none)
 QUANT="${QUANT:-Q5_K_M}"                      # Q5_K_M default; Q8_0 if calibration drifts
 ITERS="${ITERS:-600}"
 # Where convert_hf_to_gguf.py lives. Auto-detect a clone so the launchd agent works
@@ -226,9 +233,9 @@ PY
     # to SmolLM2-360M @ Q8_0 (convert-only — no llama.cpp C++ build, light on a 16 GB Mac).
     # Override BASE/QUANT/CORPUS/ITERS via env. DPO is skipped here (optional extra;
     # SFT + offline gate calibration give a shippable cold-start on their own).
-    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"
+    export BASE="${BASE_USER:-HuggingFaceTB/SmolLM2-360M}"
     export QUANT="${QUANT_USER:-q8_0}"
-    export CORPUS="${CORPUS:-corpus}"
+    export CORPUS="${CORPUS_USER:-corpus}"
     say "Cold-start: BASE=$BASE QUANT=$QUANT CORPUS=$CORPUS (resumable, <4GB; safe to Ctrl-C / sleep / re-run)"
     "$0" corpus; "$0" data; "$0" synth; "$0" preflight; "$0" prepare; "$0" quantize; "$0" sft; "$0" fuse; "$0" gguf
     say "Cold-start done. Next: ./train.sh eval  and  ./train.sh calibrate"
@@ -257,16 +264,16 @@ PY
     # iters, the full scaled corpus; separate artifacts so it never touches the on-device
     # adapter. Cross-model distillation comes for free: Gemma's accepted suggestions are
     # already gold SFT targets (build_dataset tags every accept by the model that made it).
-    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"
+    export BASE="${BASE_USER:-HuggingFaceTB/SmolLM2-360M}"
     export QUANT="${QUANT_USER:-q8_0}"
-    export CORPUS="${CORPUS:-corpus}"
-    export QLORA_BITS="${QLORA_BITS:-0}"          # fp16 base (best quality; central isn't <1GB-bound)
-    export NUM_LAYERS="${NUM_LAYERS:--1}"         # all 32 layers
-    export ITERS="${ITERS:-3000}"
-    export WINDOW="${WINDOW:-500}"                # bigger resumable chunks for a longer run
-    export MAX_PER_SOURCE="${MAX_PER_SOURCE:-12000}"
-    export ADAPTER="${ADAPTER:-adapters_general}"
-    export FUSED="${FUSED:-fused_general}"
+    export CORPUS="${CORPUS_USER:-corpus}"
+    export QLORA_BITS="${QLORA_BITS_USER:-0}"     # fp16 base (best quality; central isn't <1GB-bound)
+    export NUM_LAYERS="${NUM_LAYERS_USER:--1}"    # all 32 layers
+    export ITERS="${ITERS_USER:-3000}"
+    export WINDOW="${WINDOW_USER:-500}"           # bigger resumable chunks for a longer run
+    export MAX_PER_SOURCE="${MAX_PER_SOURCE_USER:-12000}"
+    export ADAPTER="${ADAPTER_USER:-adapters_general}"
+    export FUSED="${FUSED_USER:-fused_general}"
     say "General build: fp16 $BASE, all layers, $ITERS iters, corpus ≤$MAX_PER_SOURCE/source"
     "$0" corpus; "$0" data; "$0" prepare; "$0" sft; "$0" fuse; "$0" gguf
     "$0" eval-heldout
@@ -281,7 +288,7 @@ PY
     # that resists forgetting), produces a candidate GGUF, and PROMOTES it over the live
     # typer-1 only if it doesn't regress on the frozen set of the user's real accepts.
     # Same <1GB resumable path as cold-start. Keeps a rollback copy.
-    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"; export QUANT="${QUANT_USER:-q8_0}"; export CORPUS="${CORPUS:-corpus}"
+    export BASE="${BASE_USER:-HuggingFaceTB/SmolLM2-360M}"; export QUANT="${QUANT_USER:-q8_0}"; export CORPUS="${CORPUS_USER:-corpus}"
     MODELS="$HOME/Library/Application Support/typer/Models"
     LIVE="$MODELS/typer-1.gguf"
     CAND="$FUSED/typer-candidate-${QUANT}.gguf"
