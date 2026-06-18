@@ -58,6 +58,9 @@ extension TyperApp {
         let used = String(comp.chars[0..<comp.consumed])
             .split(whereSeparator: { $0.isWhitespace }).count
         if cfg.adaptiveSuggestions { feedback.recordResolution(usedWords: used) }
+        // Feed the same outcome into the typer-1 rollout, attributed to the model that
+        // produced this suggestion. The ratchet uses it to grow or shrink typer-1's share.
+        router.record(pick: routedModel, accepted: used > 0, kind: kind, words: used)
         // Universal resolution path (Tab/backtick accept, type-through, divergence, Esc),
         // so it captures both accepts and rejects with the final consumed count and HOW
         // it was taken — so a real Tab accept can be weighted above a type-through (words
@@ -70,6 +73,10 @@ extension TyperApp {
     // GGUF filename the suggestions came from (the policy/version tag). Cached: the
     // model rarely changes and findModel touches disk.
     func currentTrainingModel() -> String {
+        // The model the router actually served (set at pick time in generate). This tags
+        // each captured example with the model that produced it, so a later rebuild can
+        // train typer-1 only on typer-1's own accepts.
+        if !routedModelName.isEmpty { return routedModelName }
         if trainingModelNameCache.isEmpty {
             trainingModelNameCache = (LlamaClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "unknown"
         }
@@ -261,8 +268,11 @@ extension TyperApp {
         let appKey = activeAppKey
         let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
         let lex = cfg.lexiconEnabled ? lexicon.topWords() : ""
+        // Continue on the SAME model the current suggestion came from — a prefetch is the
+        // tail of the same thought, and the eventual accept is attributed to routedModel.
+        let prefetchClient = router.client(for: routedModel)
         backgroundQueue.async {
-            let sug = (try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lowPriority: true)) ?? nil
+            let sug = (try? prefetchClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lowPriority: true)) ?? nil
             DispatchQueue.main.async {
                 self.prefetchInFlight = false
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
@@ -355,6 +365,12 @@ extension TyperApp {
         // typed since the request (guard below), so the caret can't have moved while
         // the rest of the tokens stream in — reuse the cached point instead of reading
         // AX per token.
+        // Pick the model for this generation (typer-1 vs the default). The choice serves
+        // the whole generation; prefetch continuations reuse it (see maybePrefetch) so one
+        // suggestion is never a mix, and the outcome is attributed to it on resolution.
+        let (routedClient, pick, routedName) = router.pick()
+        routedModel = pick
+        routedModelName = routedName
         var firstPartial = true
         DispatchQueue.global(qos: .userInitiated).async {
             // Live preview: paint partial completions as they stream in, but only
@@ -373,7 +389,7 @@ extension TyperApp {
                     firstPartial = false
                 }
             }
-            let sug = try? self.client.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, onPartial: onPartial)
+            let sug = try? routedClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded

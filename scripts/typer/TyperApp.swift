@@ -9,7 +9,11 @@ import Vision
 
 final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cfg = TyperConfig.load()
-    var client: LlamaClient!
+    var router: ModelRouter!
+    // Which model served the in-flight generation, so the training record and the
+    // ratchet attribute the eventual accept/reject to the model that produced it.
+    var routedModel: ModelRouter.Pick = .fallback
+    var routedModelName = ""
     var statusItem: NSStatusItem!
     let statusMenu = NSMenu()
     let overlay = SuggestionOverlay()
@@ -126,7 +130,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log("Typer launch cfg enabled=\(cfg.enabled) completion=\(cfg.completionEnabled) typo=\(cfg.typoEnabled) debounce=\(cfg.debounceMs) debugLog=\(cfg.debugLogging)")
         activeAppKey = currentAppKey()
         log("initial app=\(activeAppKey)")
-        client = LlamaClient(cfg: cfg)
+        router = ModelRouter(cfg: cfg)
+        routedModelName = router.fallbackName
         promptAccessibility()
         if (cfg.screenContextEnabled || cfg.topicMemoryEnabled), !CGPreflightScreenCaptureAccess() {
             // Triggers the one-time Screen Recording permission prompt. OCR/topic capture
@@ -141,7 +146,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Only spin up the model if inline completion is actually on (typo correction
         // is local-only). If it's off, the helper stays unspawned until it's enabled.
         if cfg.enabled, cfg.completionEnabled {
-            DispatchQueue.global(qos: .utility).async { self.client.warmUp() }
+            DispatchQueue.global(qos: .utility).async { self.router.warmUp() }
         }
     }
 

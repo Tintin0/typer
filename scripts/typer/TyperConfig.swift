@@ -60,6 +60,20 @@ struct TyperConfig {
     var disabledApps: Set<String> = []  // bundle IDs where Typer stays silent
     var disableInTerminals = false      // skip terminal apps entirely
 
+    // typer-1 progressive rollout (ModelRouter). When a candidate model whose filename
+    // begins with `typer1ModelGlob` is present in Models/, the router serves a growing
+    // share of suggestions from it instead of the default (Gemma) model, ratcheting that
+    // share up while the candidate's accept rate keeps pace and backing off — bringing the
+    // default back — when it regresses. No-op (100% default) until such a file exists.
+    var typer1Enabled = true
+    var typer1ModelGlob = "typer-1"     // filename prefix that marks the candidate model
+    var typer1ShareStart = 0.10         // candidate's traffic share when it first appears
+    var typer1ShareMin = 0.05           // floor the backoff/tripwire can drop the share to
+    var typer1ShareMax = 0.95           // cap the ratchet can raise the share to
+    var typer1RatchetStep = 0.05        // additive share increase per qualifying review
+    var typer1RatchetMinSamples = 40    // min candidate+default resolutions before adjusting
+    var typer1RegressionMargin = 0.08   // candidate must trail default by this to back off
+
     static func load() -> TyperConfig {
         var cfg = TyperConfig()
         let path = FileManager.default.homeDirectoryForCurrentUser
@@ -96,6 +110,14 @@ struct TyperConfig {
             case "debug_logging": cfg.debugLogging = value == "true"
             case "training_log_enabled": cfg.trainingLogEnabled = value == "true"
             case "disable_in_terminals": cfg.disableInTerminals = value == "true"
+            case "typer1_enabled": cfg.typer1Enabled = value == "true"
+            case "typer1_model_glob": cfg.typer1ModelGlob = value
+            case "typer1_share_start": cfg.typer1ShareStart = Double(value) ?? cfg.typer1ShareStart
+            case "typer1_share_min": cfg.typer1ShareMin = Double(value) ?? cfg.typer1ShareMin
+            case "typer1_share_max": cfg.typer1ShareMax = Double(value) ?? cfg.typer1ShareMax
+            case "typer1_ratchet_step": cfg.typer1RatchetStep = Double(value) ?? cfg.typer1RatchetStep
+            case "typer1_ratchet_min_samples": cfg.typer1RatchetMinSamples = Int(value) ?? cfg.typer1RatchetMinSamples
+            case "typer1_regression_margin": cfg.typer1RegressionMargin = Double(value) ?? cfg.typer1RegressionMargin
             case "disabled_apps": cfg.disabledApps = Set(value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
             default: break
             }

@@ -65,6 +65,21 @@ debug_logging = false
 # or set here. disabled_apps is a comma-separated list of bundle IDs.
 disable_in_terminals = false
 disabled_apps = ""
+
+# typer-1 progressive rollout. When a model whose filename begins with typer1_model_glob
+# (e.g. "typer-1.gguf") is placed in the Models directory, Typer serves a growing share of
+# suggestions from it instead of the default model — ratcheting that share UP while typer-1
+# keeps pace on real accepts and backing OFF (bringing the default back) when it regresses.
+# With no such file present these settings do nothing (100% default model). The live share
+# is persisted state (router.json), seeded from typer1_share_start; these are the bounds.
+typer1_enabled = true
+typer1_model_glob = "typer-1"      # filename prefix that marks the candidate model
+typer1_share_start = 0.10          # candidate's traffic share when it first appears
+typer1_share_min = 0.05            # floor backoff / the bad-burst tripwire can drop to
+typer1_share_max = 0.95            # cap the ratchet can raise the share to
+typer1_ratchet_step = 0.05         # additive share increase per qualifying review
+typer1_ratchet_min_samples = 40    # min candidate+default resolutions before adjusting
+typer1_regression_margin = 0.08    # candidate must trail default by this to back off
 # Note: caret placement still uses a screenshot fallback (with Screen Recording)
 # only when Accessibility/text-marker caret is unavailable; that is separate from
 # screen_context_enabled above.

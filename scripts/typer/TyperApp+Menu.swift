@@ -53,6 +53,8 @@ extension TyperApp {
         let model = (LlamaClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
         menu.addItem(disabledItem("Typer — \(cfg.enabled ? "on" : "paused")"))
         menu.addItem(disabledItem("Model: \(model)"))
+        // typer-1 rollout status (only when a candidate model is actually present).
+        if let rollout = router?.statusSummary() { menu.addItem(disabledItem(rollout)) }
         menu.addItem(.separator())
         for fact in funFacts() { menu.addItem(disabledItem(fact)) }
         menu.addItem(.separator())
@@ -98,6 +100,9 @@ extension TyperApp {
         menu.addItem(toggleItem("Record my typing to train a local model (\(trainingLog.count()))", key: "training_log_enabled", value: cfg.trainingLogEnabled))
         if cfg.trainingLogEnabled, trainingLog.count() > 0 {
             menu.addItem(NSMenuItem(title: "Inspect training data…", action: #selector(openTrainingData), keyEquivalent: ""))
+        }
+        if router?.candidateAvailable == true {
+            menu.addItem(NSMenuItem(title: "Reset typer-1 rollout", action: #selector(resetRollout), keyEquivalent: ""))
         }
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
@@ -211,6 +216,7 @@ extension TyperApp {
         topicMemory.clear()
         lexicon.clear()
         feedback.clear()
+        router.reset()
         trainingLog.clear()
         stats = TyperStats(); stats.save()
         buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
@@ -224,6 +230,14 @@ extension TyperApp {
     @objc func clearStyle() {
         styleMemory.clear()
         log("cleared learned style")
+        rebuildMenu()
+    }
+
+    // Restart typer-1's progressive rollout from the starting share (keeps the model,
+    // forgets its accumulated accept/reject history and earned share).
+    @objc func resetRollout() {
+        router.reset()
+        log("reset typer-1 rollout")
         rebuildMenu()
     }
 

@@ -9,6 +9,10 @@ import Vision
 
 final class LlamaClient {
     private let cfg: TyperConfig
+    // When set, this client always serves this exact .gguf (the ModelRouter spawns one
+    // client per model). When nil, it falls back to findModel(cfg) — the original
+    // single-model behaviour.
+    private let explicitModelPath: String?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -19,7 +23,10 @@ final class LlamaClient {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(cfg: TyperConfig) { self.cfg = cfg }
+    init(cfg: TyperConfig, modelPath: String? = nil) {
+        self.cfg = cfg
+        self.explicitModelPath = modelPath
+    }
 
     // Locate the GGUF model: an explicit config path if set, otherwise the first
     // .gguf found in the Models directory (so the exact filename doesn't matter).
@@ -38,7 +45,7 @@ final class LlamaClient {
         guard FileManager.default.isExecutableFile(atPath: llamaHelper) else {
             throw NSError(domain: "Typer", code: 3, userInfo: [NSLocalizedDescriptionKey: "helper not found at \(llamaHelper); run install.sh"])
         }
-        guard let model = LlamaClient.findModel(cfg) else {
+        guard let model = explicitModelPath ?? LlamaClient.findModel(cfg) else {
             throw NSError(domain: "Typer", code: 4, userInfo: [NSLocalizedDescriptionKey: "no .gguf model found in Models directory; run install.sh"])
         }
         let p = Process()
