@@ -120,6 +120,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=500, help="max examples to score")
     ap.add_argument("--json", action="store_true",
                     help="print one machine-readable metrics line (for the retrain promote-gate)")
+    ap.add_argument("--calib-out", type=Path, default=None,
+                    help="also write {confidence, good} per example here, for calibrate_gate.py "
+                         "(good = the model's first word matched gold) — offline gate calibration")
     args = ap.parse_args()
 
     if not args.server.exists():
@@ -151,6 +154,7 @@ def main() -> int:
     shown = 0
     latencies: list[float] = []
     ttfps: list[float] = []
+    calib: list[dict] = []
     try:
         for r in rows:
             text, conf, latency, ttfp = srv.request(r["prompt"], args.max_words)
@@ -162,14 +166,23 @@ def main() -> int:
             gold_words_total += gw
             mw = matched_words(text, gold)
             matched_total += mw
-            if first_word(text) and first_word(text) == first_word(gold):
+            good = bool(first_word(text)) and first_word(text) == first_word(gold)
+            if good:
                 fw_hits += 1
             if conf >= args.min_confidence and text.strip():
                 shown += 1
+            if args.calib_out is not None:
+                calib.append({"confidence": float(conf), "good": good})
             if n % 50 == 0:
                 print(f"  …{n}/{len(rows)}", file=sys.stderr)
     finally:
         srv.close()
+
+    if args.calib_out is not None:
+        with args.calib_out.open("w", encoding="utf-8") as f:
+            for c in calib:
+                f.write(json.dumps(c) + "\n")
+        print(f"wrote {len(calib)} calibration rows -> {args.calib_out}", file=sys.stderr)
 
     if args.json:
         # One line, parseable by train.sh's promote-gate. first_word_acc is the headline

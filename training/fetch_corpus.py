@@ -27,18 +27,25 @@ import json
 import sys
 from pathlib import Path
 
-# Each source: (key, category, hf repo, config, split, field-spec). field-spec is a list of
-# dataset columns to try, in order, for the natural-text body; the first non-empty wins. For
-# instruction sets we pull the human-written response, which is the prose worth completing.
+# Each source: (key, category, hf repo, config, split, field-spec, cap). field-spec is a
+# list of dataset columns to try, in order, for the natural-text body; the first non-empty
+# wins. cap is a per-source document cap (None = use --max-per-source); big-document sources
+# (books) get a lower cap so they don't dominate the download. All licenses are permissive
+# (Apache / CC-BY-SA / ODC-By / public-domain) — no Pile/Reddit/CC-BY-NC.
 SOURCES = [
     # chat / IM register — OpenAssistant conversations (Apache-2.0), English only.
-    ("chat",  "chat",    "OpenAssistant/oasst1",             None, "train",      ["text"]),
+    ("chat",  "chat",    "OpenAssistant/oasst1",              None, "train",      ["text"], None),
     # docs / instruction-response prose — Dolly (CC-BY-SA).
-    ("dolly", "docs",    "databricks/databricks-dolly-15k",  None, "train",      ["response", "context", "instruction"]),
-    # web / docs prose — FineWeb-Edu sample (ODC-By). The big one; streaming + cap keep it small.
-    ("web",   "browser", "HuggingFaceFW/fineweb-edu",        "sample-10BT", "train", ["text"]),
+    ("dolly", "docs",    "databricks/databricks-dolly-15k",   None, "train",      ["response", "context", "instruction"], None),
+    # general encyclopedic prose — English Wikipedia (CC-BY-SA). Broad topic coverage.
+    ("wiki",  "browser", "wikimedia/wikipedia",               "20231101.en", "train", ["text"], None),
+    # web / docs prose — FineWeb-Edu sample (ODC-By). Streaming + cap keep the download small.
+    ("web",   "browser", "HuggingFaceFW/fineweb-edu",         "sample-10BT", "train", ["text"], None),
+    # long-form / literary prose — Project Gutenberg (public domain). Big docs → lower cap;
+    # each is windowed into many short examples by build_dataset.
+    ("books", "docs",    "sedthh/gutenberg_english",          None, "train",      ["text", "TEXT"], 1500),
     # code register — permissive CodeParrot validation slice (the user types lots of code).
-    ("code",  "code",    "codeparrot/codeparrot-clean-valid", None, "train",     ["content", "code"]),
+    ("code",  "code",    "codeparrot/codeparrot-clean-valid", None, "train",      ["content", "code"], None),
 ]
 
 # Per-source language guards / minimal cleaning, keyed by source key.
@@ -86,12 +93,13 @@ def main() -> int:
 
     want = {s.strip() for s in args.sources.split(",") if s.strip()}
     total = 0
-    for key, category, repo, config, split, fields in SOURCES:
+    for key, category, repo, config, split, fields, cap in SOURCES:
         if want and key not in want:
             continue
+        n_cap = min(cap, args.max_per_source) if cap else args.max_per_source
         try:
-            print(f"==> {key:6} [{category}] {repo}{(' '+config) if config else ''} (≤{args.max_per_source})", flush=True)
-            got = fetch_one(key, category, repo, config, split, fields, args.max_per_source, args.out)
+            print(f"==> {key:6} [{category}] {repo}{(' '+config) if config else ''} (≤{n_cap})", flush=True)
+            got = fetch_one(key, category, repo, config, split, fields, n_cap, args.out)
             print(f"    {got} docs -> {args.out / (category + '.jsonl')}", flush=True)
             total += got
         except Exception as e:  # gated / offline / schema drift — skip, don't abort the rest

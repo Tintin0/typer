@@ -133,27 +133,35 @@ def classify(rec: dict) -> tuple[str, float, int]:
     return ("positive", float(max(1, wa)), wa)  # v1 accepted, unknown kind
 
 
+# Context window (words) for a sliced prompt — keeps SFT prompts the same bounded size the
+# model sees at inference (~500-char window) instead of feeding it the whole preceding
+# document. Bounding it both matches the real distribution and lets long-form docs (books)
+# yield many short, realistic examples instead of one giant prompt.
+CTX_WINDOW_WORDS = 80
+
+
 def slice_line(
     text: str, category: str, idx: int, rng: random.Random,
     min_ctx_words: int, comp_words: tuple[int, int],
 ) -> list[dict]:
-    """Turn one human-written line into prefix -> short-continuation SFT positives.
+    """Turn one human-written line/doc into prefix -> short-continuation SFT positives.
 
-    Picks a few cut points across the line; the prefix becomes the context, the next
-    5-7 words become the gold continuation — exactly the inline-completion task."""
+    Picks cut points across the text; the prefix is the preceding CTX_WINDOW_WORDS words,
+    the next 5-7 words are the gold continuation — exactly the inline-completion task."""
     words = text.split()
     if len(words) < min_ctx_words + comp_words[0]:
         return []
     out = []
-    # A couple of cuts per line (more for long lines), spread across it.
-    n_cuts = min(3, max(1, len(words) // 12))
+    # More cuts for longer text, since each prompt is now a bounded window (a book becomes
+    # many examples, not three). Capped so one doc can't dominate the set.
+    n_cuts = min(12, max(1, len(words) // 40))
     for _ in range(n_cuts):
         lo = min_ctx_words
         hi = len(words) - comp_words[0]
         if hi <= lo:
             break
         cut = rng.randint(lo, hi)
-        ctx = " ".join(words[:cut])
+        ctx = " ".join(words[max(0, cut - CTX_WINDOW_WORDS):cut])
         target_words = rng.randint(comp_words[0], comp_words[1])
         comp = " ".join(words[cut:cut + target_words])
         prompt = format_prompt(ctx, category, idx)
@@ -199,6 +207,9 @@ def main() -> int:
                     help="optional dir of public-corpus .txt/.jsonl to mix in")
     ap.add_argument("--out", type=Path, default=Path(__file__).parent / "data",
                     help="output dir for sft/kto/dpo jsonl. Default: %(default)s")
+    ap.add_argument("--heldout-frac", type=float, default=0.05,
+                    help="fraction of corpus docs reserved (never trained on) for the clean "
+                         "general-quality eval set heldout.jsonl. Default: %(default)s")
     ap.add_argument("--min-ctx-words", type=int, default=4)
     ap.add_argument("--comp-words", type=int, nargs=2, default=(5, 7), metavar=("MIN", "MAX"))
     ap.add_argument("--max-context-chars", type=int, default=600)
@@ -297,11 +308,19 @@ def main() -> int:
                 stats["by_category"][cat] += 1
 
     # --- 3. Public corpora: --corpus ------------------------------------------
+    # A deterministic per-document slice is held out for the *general*-quality scoreboard:
+    # these docs (and every example sliced from them) never enter SFT, so eval.py on
+    # heldout.jsonl measures real generalization, not memorization. Partition by a hash of
+    # the doc text so the split is stable across runs and across data growth.
+    heldout: list[dict] = []
+    cut = int(max(0.0, min(0.5, args.heldout_frac)) * 1000)
     if args.corpus and args.corpus.is_dir():
         for i, (text, cat) in enumerate(iter_corpus_texts(args.corpus)):
+            is_held = (zlib.crc32(text.encode("utf-8")) % 1000) < cut
+            bucket = heldout if is_held else sft
             for ex in slice_line(text, cat, i, rng, args.min_ctx_words, tuple(args.comp_words)):
-                sft.append(ex)
-                stats["sft"]["corpus"] += 1
+                bucket.append(ex)
+                stats["sft"]["heldout" if is_held else "corpus"] += 1
 
     # --- DPO pairs: same context with both a kept and a rejected suggestion ----
     dpo: list[dict] = []
@@ -338,6 +357,7 @@ def main() -> int:
     p_dpo = dump("dpo.jsonl", dpo)
     p_calib = dump("calib.jsonl", calib)
     dump("personal.jsonl", personal)
+    dump("heldout.jsonl", heldout)
     for k in ("sft", "kto", "calib", "by_category"):
         stats[k] = dict(stats[k])
     (args.out / "stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
@@ -346,6 +366,7 @@ def main() -> int:
     print(f"KTO   {len(kto):>7}  -> {p_kto}   ({stats['kto']})")
     print(f"DPO   {len(dpo):>7}  -> {p_dpo}")
     print(f"CALIB {len(calib):>7}  -> {p_calib}   ({stats['calib']})")
+    print(f"HELD  {len(heldout):>7}  -> heldout.jsonl   (general eval, never trained on)")
     print(f"by category: {stats['by_category']}")
 
     # --- Data-readiness report -------------------------------------------------

@@ -16,6 +16,10 @@
 #   ./train.sh all         data -> synth -> preflight -> prepare -> sft -> fuse -> gguf
 #   ./train.sh cold-start  corpus -> all, defaulting to SmolLM2-360M @ Q8_0 (convert-only,
 #                          no llama.cpp C++ build) — the one command to make typer-1.gguf
+#   ./train.sh general     central general-quality build: fp16 base, ALL layers, scaled
+#                          corpus, more iters; clean held-out eval + offline gate calibration
+#   ./train.sh eval-heldout       candidate vs Gemma on the never-trained held-out set
+#   ./train.sh calibrate-offline  re-fit min_confidence from the model's held-out generations
 #   ./train.sh retrain     incrementally personalize typer-1 on new accepts; promote the
 #                          result over the live model only if it doesn't regress (rollback kept)
 #   ./train.sh retrain-if-ready   the background guard (≥RETRAIN_EVERY new samples, on AC,
@@ -228,6 +232,48 @@ PY
     say "Cold-start: BASE=$BASE QUANT=$QUANT CORPUS=$CORPUS (resumable, <4GB; safe to Ctrl-C / sleep / re-run)"
     "$0" corpus; "$0" data; "$0" synth; "$0" preflight; "$0" prepare; "$0" quantize; "$0" sft; "$0" fuse; "$0" gguf
     say "Cold-start done. Next: ./train.sh eval  and  ./train.sh calibrate"
+    ;;
+  eval-heldout)
+    # The honest general-quality scoreboard: candidate vs Gemma on docs NEVER trained on
+    # (build_dataset reserves heldout.jsonl). This is the number to drive general dev.
+    GEMMA="$HOME/Library/Application Support/typer/Models/gemma-4-E2B-i1-Q4_K_M.gguf"
+    [ -s "$DATA/heldout.jsonl" ] || { echo "no $DATA/heldout.jsonl — run ./train.sh data first"; exit 1; }
+    say "Held-out eval — candidate: $GGUF_OUT"
+    $RUN eval.py --server "$SERVER" --model "$GGUF_OUT" --data "$DATA/heldout.jsonl" --limit 300
+    [ -f "$GEMMA" ] && { say "Held-out eval — baseline: Gemma"; $RUN eval.py --server "$SERVER" --model "$GEMMA" --data "$DATA/heldout.jsonl" --limit 300; }
+    ;;
+  calibrate-offline)
+    # Calibrate the confidence gate from the model's OWN generations on held-out prompts
+    # (good = first word matched gold) — the doc-mandated offline calibration that works for
+    # a fresh model with no real accepts yet. Re-fit min_confidence from the result.
+    say "Offline gate calibration from held-out generations of $GGUF_OUT"
+    $RUN eval.py --server "$SERVER" --model "$GGUF_OUT" --data "$DATA/heldout.jsonl" --limit 400 \
+      --calib-out "$DATA/calib_offline.jsonl" >/dev/null
+    $RUN calibrate_gate.py --data "$DATA/calib_offline.jsonl"
+    ;;
+  general)
+    # Central, general-quality training — ships to everyone, uses public data only, and is
+    # NOT memory-bound the way on-device personalization is. fp16 base, ALL layers, more
+    # iters, the full scaled corpus; separate artifacts so it never touches the on-device
+    # adapter. Cross-model distillation comes for free: Gemma's accepted suggestions are
+    # already gold SFT targets (build_dataset tags every accept by the model that made it).
+    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"
+    export QUANT="${QUANT_USER:-q8_0}"
+    export CORPUS="${CORPUS:-corpus}"
+    export QLORA_BITS="${QLORA_BITS:-0}"          # fp16 base (best quality; central isn't <1GB-bound)
+    export NUM_LAYERS="${NUM_LAYERS:--1}"         # all 32 layers
+    export ITERS="${ITERS:-3000}"
+    export WINDOW="${WINDOW:-500}"                # bigger resumable chunks for a longer run
+    export MAX_PER_SOURCE="${MAX_PER_SOURCE:-12000}"
+    export ADAPTER="${ADAPTER:-adapters_general}"
+    export FUSED="${FUSED:-fused_general}"
+    say "General build: fp16 $BASE, all layers, $ITERS iters, corpus ≤$MAX_PER_SOURCE/source"
+    "$0" corpus; "$0" data; "$0" prepare; "$0" sft; "$0" fuse; "$0" gguf
+    "$0" eval-heldout
+    "$0" calibrate-offline
+    say "General model -> $FUSED/typer-${QUANT}.gguf. If it wins, install: cp it to"
+    say "  ~/Library/Application Support/typer/Models/typer-1.gguf  (and rm -rf adapters/ to"
+    say "  reseed on-device personalization from the new base), then restart Typer."
     ;;
   retrain)
     # Incremental on-device personalization. Continues the CURRENT typer-1 adapter on a
