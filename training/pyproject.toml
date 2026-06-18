@@ -1,0 +1,25 @@
+[project]
+name = "typer-autocomplete-training"
+version = "0.1.0"
+description = "Train Typer's local autocomplete model: SFT + preference RL on Apple Silicon, exported to GGUF."
+requires-python = ">=3.10"
+# Core: dataset/eval/calibration scripts are stdlib-only and need nothing here. These
+# deps are for the actual training + tokenizer pre-flight + GGUF conversion stages.
+dependencies = [
+    "mlx-lm>=0.21.0",        # on-device LoRA SFT + fuse (Apple Silicon)
+    "transformers>=4.44.0",  # tokenizer pre-flight; HF model/tokenizer loading
+    "huggingface-hub>=0.24.0",
+    "sentencepiece>=0.2.0",  # some base tokenizers need it
+    "datasets>=2.20.0",      # optional: pulling public corpora
+]
+
+[project.optional-dependencies]
+# Preference training (DPO/ORPO/KTO) on Apple Silicon — community package, evolves fast,
+# so it is optional and pinned loosely. Verify `mlx_lm_lora.train --train-mode dpo` flags
+# against the installed version before a run.
+pref = ["mlx-lm-lora>=0.2.0"]
+# Real KTO is run on a rented GPU via HF TRL (trl.experimental.kto). Install on the GPU
+# box, not the Mac: `pip install "trl>=0.12,<0.13" peft accelerate bitsandbytes`.
+
+[tool.uv]
+package = false
