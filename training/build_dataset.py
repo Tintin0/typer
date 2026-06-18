@@ -215,7 +215,11 @@ def main() -> int:
     by_context: dict[tuple[str, str], dict[str, set]] = defaultdict(lambda: {"chosen": set(), "rejected": set()})
     stats: dict = {"sft": defaultdict(int), "kto": defaultdict(int), "dpo": 0,
                    "calib": defaultdict(int), "by_category": defaultdict(int),
-                   "skipped_sensitive": 0}
+                   "skipped_sensitive": 0, "genuine_positives": 0, "capture_records": 0}
+    # Real reward signal — Tab/backtick or long type-through accepts attributed PER MODEL.
+    # This is what gates real personalization (KTO): a per-model count vs the threshold.
+    pos_by_model: dict[str, int] = defaultdict(int)
+    KTO_THRESHOLD = 300   # docs/autocomplete-model.md §5.5: ≥300–500 genuine positives
 
     # --- 1. Live capture: training.jsonl --------------------------------------
     tlog = args.app_dir / "training.jsonl"
@@ -245,6 +249,10 @@ def main() -> int:
             comp = sug if sug.startswith(" ") else " " + sug
             klass, weight, kept_words = classify(r)
             stats["by_category"][cat] += 1
+            stats["capture_records"] += 1
+            if klass == "positive":
+                stats["genuine_positives"] += 1
+                pos_by_model[r.get("model", "unknown")] += 1
 
             # Confidence-gate calibration set: for every SHOWN suggestion, good = a real
             # accept (Tab/backtick, or a long type-through). This lets a calibration step
@@ -332,8 +340,32 @@ def main() -> int:
     print(f"DPO   {len(dpo):>7}  -> {p_dpo}")
     print(f"CALIB {len(calib):>7}  -> {p_calib}   ({stats['calib']})")
     print(f"by category: {stats['by_category']}")
+
+    # --- Data-readiness report -------------------------------------------------
+    # Cold-start (general SFT from --corpus + style.txt) needs no reward signal and is
+    # always trainable. Real personalization (KTO) needs genuine accepts. Make the gap
+    # explicit, per model, so it's obvious whether you're cold-starting or tailoring.
+    gp = stats["genuine_positives"]
+    print(f"\nDATA READINESS")
+    print(f"  capture records ........ {stats['capture_records']}")
+    print(f"  genuine positives ...... {gp}   (Tab/backtick or ≥3-word type-through)")
+    if pos_by_model:
+        for m, c in sorted(pos_by_model.items(), key=lambda kv: -kv[1]):
+            print(f"      {c:>5}  {m}")
+    sft_ok = len(sft) >= 2000
+    print(f"  cold-start SFT ......... {'READY' if sft_ok else 'thin'} "
+          f"({len(sft)} pairs from corpus+style+capture)")
+    if gp >= KTO_THRESHOLD:
+        print(f"  personalization (KTO) .. READY ({gp} ≥ {KTO_THRESHOLD})")
+    else:
+        print(f"  personalization (KTO) .. NOT YET ({gp}/{KTO_THRESHOLD}) — ship the cold-start"
+              f" model and let the router collect real accepts attributed to it first.")
+    if not sft_ok:
+        print("\n  Cold-start SFT is thin. Pass --corpus DIR (see fetch_corpus.py) so typer-1\n"
+              "  learns general inline completion before it ever tailors to one user.",
+              file=sys.stderr)
     if not sft and not kto:
-        print("\nNo data found. Enable 'Save suggestions to train a local model' in the\n"
+        print("\nNo data found. Enable 'Record my typing to train a local model' in the\n"
               "Typer menu and use it for a while, and/or pass --corpus DIR.", file=sys.stderr)
     return 0
 
