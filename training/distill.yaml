@@ -1,0 +1,16 @@
+# LoRA config for Gemma->Qwen3-0.6B distillation SFT.
+# Encodes the research-pass recipe the CLI flags can't express:
+#   rank 32 / scale 2.0  -> alpha = 2*rank, the anti-forgetting-safe LoRA capacity
+#   dropout 0.05         -> light regularization
+#   lr_schedule          -> 50-step warmup then cosine decay 1e-4 -> 1e-5 (peak LR is 10x a
+#                           full-FT LR, per LoRA-LR guidance; warmup avoids early drift)
+# num_layers (skip first 4), seq, batch, grad-accum, grad-ckpt, iters come from train.sh env.
+lora_parameters:
+  rank: 32
+  scale: 2.0
+  dropout: 0.05
+lr_schedule:
+  name: cosine_decay
+  arguments: [1.0e-4, 550, 1.0e-5]
+  warmup: 50
+  warmup_init: 1.0e-6
