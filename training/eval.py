@@ -118,6 +118,8 @@ def main() -> int:
     ap.add_argument("--max-words", type=int, default=7)
     ap.add_argument("--min-confidence", type=float, default=0.22)
     ap.add_argument("--limit", type=int, default=500, help="max examples to score")
+    ap.add_argument("--json", action="store_true",
+                    help="print one machine-readable metrics line (for the retrain promote-gate)")
     args = ap.parse_args()
 
     if not args.server.exists():
@@ -168,6 +170,19 @@ def main() -> int:
                 print(f"  …{n}/{len(rows)}", file=sys.stderr)
     finally:
         srv.close()
+
+    if args.json:
+        # One line, parseable by train.sh's promote-gate. first_word_acc is the headline
+        # quality metric; matched_avg is the type-through proxy.
+        print(json.dumps({
+            "model": args.model.name, "n": n,
+            "first_word_acc": round(fw_hits / n, 4),
+            "matched_avg": round(matched_total / n, 4),
+            "shown_rate": round(shown / n, 4),
+            "latency_p50": round(pct(latencies, 50), 1),
+            "ttfp_p50": round(pct(ttfps, 50), 1),
+        }))
+        return 0
 
     print("\n=== eval ===")
     print(f"model:           {args.model.name}")

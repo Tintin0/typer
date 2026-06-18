@@ -211,6 +211,7 @@ def main() -> int:
     sft: list[dict] = []
     kto: list[dict] = []
     calib: list[dict] = []   # {confidence, good} for recalibrating the runtime gate
+    personal: list[dict] = []  # genuine accepts {prompt, completion} — the retrain eval set
     # context -> {"chosen": set, "rejected": set} for DPO pairing
     by_context: dict[tuple[str, str], dict[str, set]] = defaultdict(lambda: {"chosen": set(), "rejected": set()})
     stats: dict = {"sft": defaultdict(int), "kto": defaultdict(int), "dpo": 0,
@@ -271,8 +272,13 @@ def main() -> int:
             stats["kto"]["positive" if label else "negative"] += 1
             if label:
                 kept = (first_words(sug, kept_words) if kept_words else sug) or sug
-                sft.append({"prompt": prompt, "completion": " " + kept.lstrip()})
+                ex = {"prompt": prompt, "completion": " " + kept.lstrip()}
+                sft.append(ex)
                 stats["sft"]["capture"] += 1
+                # The frozen "did the user actually take it" set: genuine accepts only.
+                # The retrain promote-gate evals candidate vs live on this, so a new model
+                # is shipped only if it doesn't regress on what this user really accepts.
+                personal.append(ex)
             by_context[(prompt, cat)]["chosen" if label else "rejected"].add(sug)
 
     # --- 2. The user's own writing: style.txt ---------------------------------
@@ -331,6 +337,7 @@ def main() -> int:
     p_kto = dump("kto.jsonl", kto)
     p_dpo = dump("dpo.jsonl", dpo)
     p_calib = dump("calib.jsonl", calib)
+    dump("personal.jsonl", personal)
     for k in ("sft", "kto", "calib", "by_category"):
         stats[k] = dict(stats[k])
     (args.out / "stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")

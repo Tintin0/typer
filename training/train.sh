@@ -16,6 +16,10 @@
 #   ./train.sh all         data -> synth -> preflight -> prepare -> sft -> fuse -> gguf
 #   ./train.sh cold-start  corpus -> all, defaulting to SmolLM2-360M @ Q8_0 (convert-only,
 #                          no llama.cpp C++ build) — the one command to make typer-1.gguf
+#   ./train.sh retrain     incrementally personalize typer-1 on new accepts; promote the
+#                          result over the live model only if it doesn't regress (rollback kept)
+#   ./train.sh retrain-if-ready   the background guard (≥RETRAIN_EVERY new samples, on AC,
+#                          idle, disk) — what the launchd agent runs; see install_retrain_agent.sh
 #
 # Override anything via env vars (see defaults below). This drives external tools
 # (mlx-lm, mlx-lm-lora, llama.cpp); install them first (uv sync; clone llama.cpp).
@@ -32,7 +36,14 @@ ADAPTER="${ADAPTER:-adapters}"
 FUSED="${FUSED:-fused_model}"
 QUANT="${QUANT:-Q5_K_M}"                      # Q5_K_M default; Q8_0 if calibration drifts
 ITERS="${ITERS:-600}"
-LLAMA_CPP="${LLAMA_CPP:-$HOME/src/llama.cpp}" # full clone (convert_hf_to_gguf.py + quantize)
+# Where convert_hf_to_gguf.py lives. Auto-detect a clone so the launchd agent works
+# unattended; override LLAMA_CPP to force one.
+if [ -z "${LLAMA_CPP:-}" ]; then
+  for d in "$HOME/src/llama.cpp" "$HOME/.cache/typer-build/llama.cpp" "$HOME/llama.cpp"; do
+    [ -f "$d/convert_hf_to_gguf.py" ] && { LLAMA_CPP="$d"; break; }
+  done
+  LLAMA_CPP="${LLAMA_CPP:-$HOME/src/llama.cpp}"
+fi
 
 # --- Ultra-low-memory, interruptible SFT knobs --------------------------------
 # Goal: a training run that stays under ~4 GB RAM and can be stopped/slept/restarted at any
@@ -60,7 +71,26 @@ GGUF_OUT="${GGUF_OUT:-$FUSED/typer-${QUANT}.gguf}"
 HELDOUT="${HELDOUT:-$DATA/sft.jsonl}"
 RUN="uv run"
 
+SERVER="${SERVER:-$HOME/.local/share/typer/typer-llama-server}"  # for the promote-gate eval
+RETRAIN_ITERS="${RETRAIN_ITERS:-150}"   # extra iters per incremental retrain
+RETRAIN_EVERY="${RETRAIN_EVERY:-100}"   # new captured samples that trigger a retrain
+RETRAIN_IDLE="${RETRAIN_IDLE:-120}"     # require this many seconds of user idle
+RETRAIN_MIN_FREE_GB="${RETRAIN_MIN_FREE_GB:-3}"
+PROMOTE_SLACK="${PROMOTE_SLACK:-0.01}"  # candidate may trail live by this and still ship
+
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+# First-word accuracy of a model on the frozen personal-accept set (0 if unavailable).
+# The retrain promote-gate compares candidate vs live on this number.
+eval_metric() {
+  local m="$1"
+  { [ -f "$m" ] && [ -s "$DATA/personal.jsonl" ] && [ -x "$SERVER" ]; } || { echo 0; return; }
+  $RUN eval.py --server "$SERVER" --model "$m" --data "$DATA/personal.jsonl" --json --limit 200 2>/dev/null \
+    | tail -1 \
+    | $RUN python -c "import sys,json
+try: print(json.load(sys.stdin)['first_word_acc'])
+except Exception: print(0)" 2>/dev/null || echo 0
+}
 
 case "${1:-all}" in
   corpus)
@@ -191,6 +221,65 @@ PY
     say "Cold-start: BASE=$BASE QUANT=$QUANT CORPUS=$CORPUS (resumable, <4GB; safe to Ctrl-C / sleep / re-run)"
     "$0" corpus; "$0" data; "$0" synth; "$0" preflight; "$0" prepare; "$0" quantize; "$0" sft; "$0" fuse; "$0" gguf
     say "Cold-start done. Next: ./train.sh eval  and  ./train.sh calibrate"
+    ;;
+  retrain)
+    # Incremental on-device personalization. Continues the CURRENT typer-1 adapter on a
+    # freshly rebuilt dataset (newly captured accepts + style + the general-corpus anchor
+    # that resists forgetting), produces a candidate GGUF, and PROMOTES it over the live
+    # typer-1 only if it doesn't regress on the frozen set of the user's real accepts.
+    # Same <1GB resumable path as cold-start. Keeps a rollback copy.
+    export BASE="${BASE:-HuggingFaceTB/SmolLM2-360M}"; export QUANT="${QUANT:-q8_0}"; export CORPUS="${CORPUS:-corpus}"
+    MODELS="$HOME/Library/Application Support/typer/Models"
+    LIVE="$MODELS/typer-1.gguf"
+    CAND="$FUSED/typer-candidate-${QUANT}.gguf"
+    { [ -d "$ADAPTER" ] && [ -f "$ADAPTER/adapters.safetensors" ]; } || { echo "no current typer-1 adapter in $ADAPTER — run cold-start first"; exit 1; }
+    "$0" data            # rebuild dataset including the newly captured accepts
+    "$0" prepare
+    rm -f "$ADAPTER/.iters_done"          # train RETRAIN_ITERS more, resuming the live adapter
+    ITERS="$RETRAIN_ITERS" "$0" sft
+    "$0" fuse
+    GGUF_OUT="$CAND" "$0" gguf
+    # Promote-gate: ship the candidate only if it holds up on the user's own accepts.
+    if [ -f "$LIVE" ] && [ -s "$DATA/personal.jsonl" ] && [ -x "$SERVER" ]; then
+      lm="$(eval_metric "$LIVE")"; cm="$(eval_metric "$CAND")"
+      say "promote-gate (first-word acc on real accepts): live=$lm candidate=$cm (slack $PROMOTE_SLACK)"
+      if awk "BEGIN{exit !(($cm + 0) >= ($lm + 0) - $PROMOTE_SLACK)}"; then
+        cp "$LIVE" "$MODELS/typer-1.prev.gguf"
+        cp "$CAND" "$LIVE"
+        # Drop the live typer-1 helper so the router reloads the new weights on its next
+        # pick (LlamaClient respawns a dead helper automatically) — no app restart.
+        pkill -f "typer-llama-server --model-path.*typer-1.gguf" 2>/dev/null || true
+        say "PROMOTED candidate -> typer-1.gguf (rollback at typer-1.prev.gguf)"
+      else
+        say "KEPT live model — candidate regressed. Candidate left at $CAND."
+      fi
+    else
+      cp "$CAND" "$LIVE"
+      say "No eval set/live model yet — installed candidate as typer-1.gguf."
+    fi
+    ;;
+  retrain-if-ready)
+    # The background guard the launchd agent calls. Only retrains when it won't bother the
+    # user: enough new samples, on AC power, the user idle, and enough free disk.
+    state="$DATA/.retrain_state"
+    appdir="$HOME/Library/Application Support/typer"
+    tlog="$appdir/training.jsonl"
+    [ -f "$tlog" ] || { echo "no capture log yet — nothing to do"; exit 0; }
+    now="$(wc -l < "$tlog" | tr -d ' ')"
+    last="$(cat "$state" 2>/dev/null || echo 0)"
+    new=$(( now - last ))
+    [ "$new" -lt 0 ] && new="$now"        # log rolled (8MB cap) — treat all current as new
+    [ "$new" -ge "$RETRAIN_EVERY" ] || { echo "only $new new samples (need $RETRAIN_EVERY)"; exit 0; }
+    # Capture-then-test (not pipe-into-grep): awk/grep exiting early would SIGPIPE the
+    # producer and, under `set -o pipefail`, abort the script silently.
+    batt="$(pmset -g batt 2>/dev/null || true)"
+    case "$batt" in *"AC Power"*) ;; *) echo "on battery — skip"; exit 0 ;; esac
+    idle="$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/{print int($NF/1000000000); exit}' || true)"
+    [ "${idle:-0}" -ge "$RETRAIN_IDLE" ] || { echo "user active (idle ${idle:-0}s) — skip"; exit 0; }
+    freeg="$(/bin/df -g "$appdir" | awk 'END{print $4}')"
+    [ "${freeg:-0}" -ge "$RETRAIN_MIN_FREE_GB" ] || { echo "low disk (${freeg}G free) — skip"; exit 0; }
+    say "ready: $new new samples, on AC, idle ${idle}s, ${freeg}G free — retraining typer-1"
+    if "$0" retrain; then echo "$now" > "$state"; say "done; watermark=$now"; fi
     ;;
   *)
     grep -E '^#( |$)' "$SELF" | sed 's/^# \{0,1\}//'; exit 1 ;;
