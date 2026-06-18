@@ -56,6 +56,21 @@ CATEGORY_APPS = {
 
 WORD_RE = re.compile(r"\S+\s*")
 
+# Defense-in-depth secret screen, mirroring TrainingLog.looksSensitive in the app. The
+# app already drops these at capture time; this re-screens in case of older (v1) records
+# or hand-added corpus so no credential-shaped text reaches a training file.
+_SENSITIVE = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"   # email
+    r"|https?://|www\."                                   # url
+    r"|[0-9]{4,}"                                          # 4+ digit run
+    r"|[A-Za-z0-9+/=_-]{20,}"                             # long token (keys/hashes)
+    r"|(?:/[A-Za-z0-9._~-]+){2,}"                         # filesystem path
+)
+
+
+def looks_sensitive(s: str) -> bool:
+    return bool(s) and _SENSITIVE.search(s) is not None
+
 
 def format_prompt(context: str, category: str, idx: int) -> str:
     """Mirror TyperApp.assembledContext: optional 'Writing app:' header, blank-line
@@ -87,6 +102,35 @@ def first_words(text: str, n: int) -> str:
 
 def word_count(text: str) -> int:
     return len(text.split())
+
+
+def classify(rec: dict) -> tuple[str, float, int]:
+    """Map one capture record (schema v2) to (klass, weight, kept_words).
+
+    klass ∈ {positive, negative, neutral}; weight ≈ information gain. This is where the
+    RL review's corrections live:
+      - Tab/backtick accepts are REAL gain (the user did not type those words) → strong
+        positive, weighted by words inserted.
+      - A long type-through (≥3 words matched) is a weak positive.
+      - A SHORT type-through (1–2 words) carries ~no information — the user would have
+        typed it anyway — so it is dropped (neutral), not rewarded.
+      - A below-gate / never-shown row (exploration) is a weak negative that lets the
+        trainer + calibration see the suppressed region instead of only survivors.
+    v1 records (no accept_kind/shown/exploration) fall back to accepted→positive."""
+    accepted = bool(rec.get("accepted"))
+    shown = rec.get("shown", True)
+    exploration = rec.get("exploration", False)
+    kind = rec.get("accept_kind") or ("tab" if accepted else "none")  # v1 fallback
+    wa = int(rec.get("words_accepted") or 0)
+    if exploration or not shown:
+        return ("negative", 0.5, 0)
+    if not accepted:
+        return ("negative", 1.0, 0)
+    if kind in ("tab", "backtick"):
+        return ("positive", float(max(1, wa)), wa)
+    if kind == "typethrough":
+        return ("positive", 0.5, wa) if wa >= 3 else ("neutral", 0.0, 0)
+    return ("positive", float(max(1, wa)), wa)  # v1 accepted, unknown kind
 
 
 def slice_line(
@@ -166,14 +210,17 @@ def main() -> int:
 
     sft: list[dict] = []
     kto: list[dict] = []
+    calib: list[dict] = []   # {confidence, good} for recalibrating the runtime gate
     # context -> {"chosen": set, "rejected": set} for DPO pairing
     by_context: dict[tuple[str, str], dict[str, set]] = defaultdict(lambda: {"chosen": set(), "rejected": set()})
-    stats: dict = {"sft": defaultdict(int), "kto": defaultdict(int), "dpo": 0, "by_category": defaultdict(int)}
+    stats: dict = {"sft": defaultdict(int), "kto": defaultdict(int), "dpo": 0,
+                   "calib": defaultdict(int), "by_category": defaultdict(int),
+                   "skipped_sensitive": 0}
 
     # --- 1. Live capture: training.jsonl --------------------------------------
     tlog = args.app_dir / "training.jsonl"
     if tlog.exists():
-        for i, line in enumerate(tlog.read_text(encoding="utf-8", errors="ignore").splitlines()):
+        for line in tlog.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -186,26 +233,39 @@ def main() -> int:
             cat = r.get("app_category", "other")
             if not ctx or not sug:
                 continue
+            if looks_sensitive(ctx) or looks_sensitive(sug):
+                stats["skipped_sensitive"] += 1
+                continue
             # Stable per-context app-name pick: identical context+category must yield
             # the identical prompt so accepted/rejected suggestions on the same context
             # pair up for DPO (a per-record counter would split them).
             prompt = format_prompt(ctx, cat, zlib.crc32(ctx.encode("utf-8")))
             if not prompt:
                 continue
-            accepted = bool(r.get("accepted"))
-            comp = " " + sug if not sug.startswith(" ") else sug
-            # KTO: every shown suggestion is a labeled reward example.
-            kto.append({"prompt": prompt, "completion": comp, "label": accepted})
-            stats["kto"]["accepted" if accepted else "rejected"] += 1
+            comp = sug if sug.startswith(" ") else " " + sug
+            klass, weight, kept_words = classify(r)
             stats["by_category"][cat] += 1
-            # SFT positive: the words the user actually kept (full text if typed-through).
-            if accepted:
-                kept = first_words(sug, int(r.get("words_accepted") or 0)) or sug
-                sft.append({"prompt": prompt, "completion": " " + kept})
+
+            # Confidence-gate calibration set: for every SHOWN suggestion, good = a real
+            # accept (Tab/backtick, or a long type-through). This lets a calibration step
+            # re-fit the ~0.22 gate per model version on real outcomes.
+            if r.get("shown", True):
+                good = bool(r.get("accepted")) and (
+                    r.get("accept_kind") in (None, "tab", "backtick")
+                    or int(r.get("words_accepted") or 0) >= 3)
+                calib.append({"confidence": float(r.get("confidence") or 0.0), "good": good})
+                stats["calib"]["good" if good else "bad"] += 1
+
+            if klass == "neutral":
+                continue  # short type-through: no information — neither reward nor SFT
+            label = klass == "positive"
+            kto.append({"prompt": prompt, "completion": comp, "label": label, "weight": weight})
+            stats["kto"]["positive" if label else "negative"] += 1
+            if label:
+                kept = (first_words(sug, kept_words) if kept_words else sug) or sug
+                sft.append({"prompt": prompt, "completion": " " + kept.lstrip()})
                 stats["sft"]["capture"] += 1
-            # DPO bucket.
-            bucket = by_context[(prompt, cat)]
-            bucket["chosen" if accepted else "rejected"].add(sug)
+            by_context[(prompt, cat)]["chosen" if label else "rejected"].add(sug)
 
     # --- 2. The user's own writing: style.txt ---------------------------------
     style = args.app_dir / "style.txt"
@@ -262,14 +322,15 @@ def main() -> int:
     p_sft = dump("sft.jsonl", sft)
     p_kto = dump("kto.jsonl", kto)
     p_dpo = dump("dpo.jsonl", dpo)
-    stats["sft"] = dict(stats["sft"])
-    stats["kto"] = dict(stats["kto"])
-    stats["by_category"] = dict(stats["by_category"])
+    p_calib = dump("calib.jsonl", calib)
+    for k in ("sft", "kto", "calib", "by_category"):
+        stats[k] = dict(stats[k])
     (args.out / "stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
-    print(f"SFT  {len(sft):>7}  -> {p_sft}")
-    print(f"KTO  {len(kto):>7}  -> {p_kto}   ({stats['kto']})")
-    print(f"DPO  {len(dpo):>7}  -> {p_dpo}")
+    print(f"SFT   {len(sft):>7}  -> {p_sft}")
+    print(f"KTO   {len(kto):>7}  -> {p_kto}   ({stats['kto']})")
+    print(f"DPO   {len(dpo):>7}  -> {p_dpo}")
+    print(f"CALIB {len(calib):>7}  -> {p_calib}   ({stats['calib']})")
     print(f"by category: {stats['by_category']}")
     if not sft and not kto:
         print("\nNo data found. Enable 'Save suggestions to train a local model' in the\n"
