@@ -102,13 +102,30 @@ final class FeedbackMemory {
     private func scheduleSave() {
         guard !saveScheduled else { return }
         saveScheduled = true
-        let snap = Snapshot(outcomes: outcomes, acceptWords: acceptWords)
         queue.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
-            DispatchQueue.main.async { self.saveScheduled = false }
-            guard let d = try? JSONEncoder().encode(snap) else { return }
-            try? d.write(to: self.url, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
+            // Re-read the latest state at fire time (state is main-thread-confined),
+            // so updates landing inside the debounce window aren't dropped. Encode +
+            // write off-main to keep the main thread light.
+            DispatchQueue.main.async {
+                self.saveScheduled = false
+                let snap = Snapshot(outcomes: self.outcomes, acceptWords: self.acceptWords)
+                self.queue.async {
+                    guard let d = try? JSONEncoder().encode(snap) else { return }
+                    try? d.write(to: self.url, options: .atomic)
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
+                }
+            }
         }
+    }
+
+    // Synchronously persist the current state — used on app terminate so the last
+    // debounce window of feedback survives a quit.
+    func flush() {
+        guard loaded else { return }
+        let snap = Snapshot(outcomes: outcomes, acceptWords: acceptWords)
+        guard let d = try? JSONEncoder().encode(snap) else { return }
+        try? d.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

@@ -123,6 +123,17 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var backgroundRefreshing = false
     let backgroundQueue = DispatchQueue(label: "typer.background", qos: .utility)
 
+    // Drain the learning + training stores synchronously on quit. Their normal saves
+    // are debounced / fire-and-forget on utility queues, so a plain ⌘Q would otherwise
+    // drop the last debounce window of feedback/router state and the tail of training
+    // capture. flush() on each is synchronous and idempotent.
+    func applicationWillTerminate(_ notification: Notification) {
+        stats.save()
+        feedback.flush()
+        router?.flush()
+        trainingLog.flush()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         debugLoggingEnabled = cfg.debugLogging
         // Enforce private perms even on a pre-existing log file.
