@@ -78,6 +78,25 @@ keep, including how many genuinely-useful suggestions the confidence gate suppre
 distilling). Raw mode is served by `typer-llama-server` itself (`"mode":"raw"`): same llama.cpp
 backend, greedy decode, none of TYPER's logic. Run `eval_compare.py -h` for all flags.
 
+### Distilling from the winning teacher (`distill_teacher_batch.py`)
+
+When `eval_compare.py` says a Claude model out-teaches the local Gemma, label the distillation
+contexts with it and retrain the 0.6B student on stronger gold. This uses the Anthropic **Message
+Batches** API (half price, async — distillation has no latency need), and is idempotent +
+resumable: run once to submit, again to collect (or `--wait` to block through both).
+
+```bash
+cd training
+ANTHROPIC_API_KEY=sk-... uv run distill_teacher_batch.py \
+    --contexts data/distill_contexts.jsonl --out data/distill_gold_claude.jsonl \
+    --model claude-haiku-4-5 --limit 4000 --shuffle --wait
+```
+
+It writes `{prompt, completion, teacher}` gold in the same contract as `distill_teacher.py`, so
+`build_distill_sft.py` folds it into the SFT mix unchanged. Start with a **capped** `--limit`
+bout, retrain, and re-run `eval_compare.py` to confirm the lift before labeling more (the batch
+state lives next to `--out`; already-labeled prompts are skipped on re-run).
+
 ## Cold start — one command
 
 ```bash
