@@ -19,7 +19,9 @@ extension TyperApp {
         let pop = NSPopover()
         pop.behavior = .transient           // dismiss on click-away
         pop.animates = true
-        pop.contentViewController = NSHostingController(rootView: MenuRootView(model: menuModel))
+        let host = NSHostingController(rootView: MenuRootView(model: menuModel))
+        host.sizingOptions = [.preferredContentSize]   // popover sizes to the SwiftUI content
+        pop.contentViewController = host
         popover = pop
         updateStatusTitle()
     }
@@ -42,9 +44,22 @@ extension TyperApp {
     @objc func togglePopover(_ sender: Any?) {
         guard let pop = popover, let button = statusItem?.button else { return }
         if pop.isShown { pop.performClose(sender); return }
+        // Capture the app you were actually in BEFORE activating Typer — otherwise the
+        // "Disable in <app>" row would target Typer itself.
+        popoverTargetAppKey = activeAppKey
         menuModel.refresh()
         NSApp.activate(ignoringOtherApps: true)
         pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    // The app the popover should act on for "Disable in <app>": the one captured at open time,
+    // never Typer itself.
+    func popoverTargetBundleAndName() -> (bundle: String, name: String) {
+        let key = popoverTargetAppKey.isEmpty ? activeAppKey : popoverTargetAppKey
+        let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+        let bundle = parts.first ?? ""
+        if bundle == "local.typer.menubar" { return ("", "") }   // don't offer to disable ourselves
+        return (bundle, parts.count > 1 ? parts[1] : bundle)
     }
 
     // Snapshot everything the popover renders. The app stays the source of truth; the UI
@@ -55,7 +70,7 @@ extension TyperApp {
         s.completionEnabled = cfg.completionEnabled
         s.typoEnabled = cfg.typoEnabled
 
-        let (curBundle, curName) = currentAppBundleAndName()
+        let (curBundle, curName) = popoverTargetBundleAndName()
         if !curBundle.isEmpty, curBundle != "no.bundle" {
             s.hasCurrentApp = true; s.currentAppName = curName
             s.currentAppDisabled = cfg.disabledApps.contains(curBundle)
@@ -187,7 +202,7 @@ extension TyperApp {
     }
 
     @objc func toggleDisableCurrentApp() {
-        let (bundle, _) = currentAppBundleAndName()
+        let (bundle, _) = popoverTargetBundleAndName()
         guard !bundle.isEmpty, bundle != "no.bundle" else { return }
         if cfg.disabledApps.contains(bundle) { cfg.disabledApps.remove(bundle) } else { cfg.disabledApps.insert(bundle) }
         writeConfig("disabled_apps", cfg.disabledApps.sorted().joined(separator: ","))

@@ -16,6 +16,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var routedModelName = ""
     var statusItem: NSStatusItem!
     var popover: NSPopover?
+    var popoverTargetAppKey = ""        // the app you were in when the popover opened (before
+                                        // it activated Typer) — for the "Disable in <app>" row
     lazy var menuModel: MenuModel = { let m = MenuModel(); m.app = self; return m }()
     let overlay = SuggestionOverlay()
     var observerTap: CFMachPort?        // listen-only: never gates input delivery
