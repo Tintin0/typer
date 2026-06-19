@@ -6,14 +6,21 @@ import SwiftUI
 // and the rarely-touched controls tucked into collapsible sections instead of a flat wall of
 // rows. The app stays the source of truth — MenuModel just snapshots state on open and routes
 // toggles/actions back to TyperApp.
+//
+// Layout note: every row is an explicit HStack with a leading label and a trailing control,
+// sharing one horizontal inset, so switches line up perfectly. No GeometryReader anywhere —
+// inside an auto-sizing NSPopover it reports an ambiguous size and beachballs the host.
 
-// What the popover needs to render, snapshotted from TyperApp each time it opens.
+private let kInset: CGFloat = 16
+private let kWidth: CGFloat = 300
+private let kBarWidth: CGFloat = kWidth - kInset * 2
+
+// What the popover renders, snapshotted from TyperApp each time it opens.
 struct MenuSnapshot {
     var enabled = true
     var completionEnabled = true
     var typoEnabled = false
 
-    // Behavior
     var hasCurrentApp = false
     var currentAppName = ""
     var currentAppDisabled = false
@@ -21,7 +28,6 @@ struct MenuSnapshot {
     var batterySaver = false
     var batteryThrottling = false
 
-    // Context & learning
     var windowContext = false
     var clipboardContext = false
     var screenContext = false
@@ -32,11 +38,9 @@ struct MenuSnapshot {
     var lexicon = false
     var adaptive = false
 
-    // Training & data
     var trainingEnabled = false
     var trainingCount = 0
 
-    // Model race
     var racing = false
     var aName = "a"
     var bName = "b"
@@ -44,9 +48,8 @@ struct MenuSnapshot {
     var aReward = 0.0
     var bReward = 0.0
     var lockedName: String?
-    var singleModel = ""          // when not racing: the one model's name
+    var singleModel = ""
 
-    // Stats (no emoji, just signal)
     var statsLine1 = ""
     var statsLine2 = ""
 }
@@ -69,7 +72,7 @@ final class MenuModel: ObservableObject {
     func action(_ a: MenuAction) { app?.performMenuAction(a); refresh() }
 }
 
-// MARK: - Views
+// MARK: - Root
 
 struct MenuRootView: View {
     @ObservedObject var model: MenuModel
@@ -78,56 +81,61 @@ struct MenuRootView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            sep
-            if s.racing { modelCard; sep } else if !s.singleModel.isEmpty { singleModelRow; sep }
+            divider
+            if s.racing { modelCard.padding(.bottom, 4); divider }
+            else if !s.singleModel.isEmpty { caption("Model", s.singleModel); divider }
             stats
-            sep
-            VStack(spacing: 0) {
-                ToggleRow(title: "Completions", isOn: model.bind("completion_enabled", \.completionEnabled))
-                ToggleRow(title: "Typo correction", isOn: model.bind("typo_correction_enabled", \.typoEnabled))
-            }
-            sep
+            divider
+            SwitchRow(title: "Completions", isOn: model.bind("completion_enabled", \.completionEnabled))
+            SwitchRow(title: "Typo correction", isOn: model.bind("typo_correction_enabled", \.typoEnabled))
+            divider
             sections
-            sep
+            divider
             footer
         }
-        .frame(width: 308)
+        .frame(width: kWidth)
         .padding(.vertical, 8)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var sep: some View { Divider().opacity(0.45).padding(.vertical, 6) }
+    private var divider: some View { Divider().opacity(0.4).padding(.horizontal, 12).padding(.vertical, 6) }
+
+    private func caption(_ left: String, _ right: String) -> some View {
+        HStack {
+            Text(left).font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer()
+            Text(right).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+        }.padding(.horizontal, kInset)
+    }
+
+    // MARK: header
 
     private var header: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 8) {
             Circle().fill(s.enabled ? Color.green : Color.red)
-                .frame(width: 9, height: 9)
-                .shadow(color: (s.enabled ? Color.green : Color.red).opacity(0.6), radius: 3)
+                .frame(width: 8, height: 8)
+                .shadow(color: (s.enabled ? Color.green : Color.red).opacity(0.7), radius: 2.5)
             Text("Typer").font(.system(size: 14, weight: .semibold))
             Text(s.enabled ? "on" : "paused").font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer()
             Toggle("", isOn: Binding(get: { s.enabled }, set: { _ in model.toggleApp() }))
-                .toggleStyle(.switch).tint(.green).labelsHidden().scaleEffect(0.85)
+                .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.green)
         }
-        .padding(.horizontal, 14).padding(.top, 2)
+        .frame(height: 24)
+        .padding(.horizontal, kInset).padding(.top, 2)
     }
 
-    private var singleModelRow: some View {
-        HStack {
-            Text("Model").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Text(s.singleModel).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-        }.padding(.horizontal, 14)
-    }
+    // MARK: model preference
 
     private var modelCard: some View {
         let aLeads = s.aShare >= 0.5
         let leader = s.lockedName ?? (aLeads ? s.aName : s.bName)
-        let label = s.lockedName != nil ? "locked on \(leader)" : "\(leader) leading"
+        let label = s.lockedName != nil ? "locked · \(leader)" : "\(leader) leading"
         return VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text("Model preference").font(.caption).foregroundStyle(.secondary)
+                Text("Model preference").font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
-                Text(label).font(.caption.weight(.medium))
+                Text(label).font(.system(size: 11, weight: .medium))
                     .foregroundStyle(s.lockedName != nil ? Color.green : Color.primary)
             }
             ShareBar(aShare: s.aShare, aLeads: aLeads, locked: s.lockedName != nil)
@@ -136,39 +144,44 @@ struct MenuRootView: View {
                 Spacer()
                 Text("\(s.bName) \(pct(1 - s.aShare))").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-        }.padding(.horizontal, 14)
+        }.padding(.horizontal, kInset)
     }
 
     private var stats: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(s.statsLine1).font(.system(size: 11))
             Text(s.statsLine2).font(.system(size: 11)).foregroundStyle(.secondary)
-        }.padding(.horizontal, 14)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, kInset)
     }
 
+    // MARK: sections
+
     private var sections: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             MenuSection(title: "Behavior") {
                 if s.hasCurrentApp {
-                    ToggleRow(title: "Disable in \(s.currentAppName)",
+                    SwitchRow(title: "Disable in \(s.currentAppName)",
                               isOn: Binding(get: { s.currentAppDisabled }, set: { _ in model.toggleCurrentApp() }))
                 }
-                ToggleRow(title: "Skip terminal apps", isOn: model.bind("disable_in_terminals", \.disableInTerminals))
-                ToggleRow(title: s.batteryThrottling ? "Battery saver (throttling)" : "Battery saver",
+                SwitchRow(title: "Skip terminal apps", isOn: model.bind("disable_in_terminals", \.disableInTerminals))
+                SwitchRow(title: "Battery saver", subtitle: s.batteryThrottling ? "throttling now" : nil,
                           isOn: model.bind("battery_saver", \.batterySaver))
             }
             MenuSection(title: "Context & learning") {
-                ToggleRow(title: "Window text", isOn: model.bind("window_context_enabled", \.windowContext))
-                ToggleRow(title: "Clipboard", isOn: model.bind("clipboard_context_enabled", \.clipboardContext))
-                ToggleRow(title: "Screen OCR", subtitle: "noisy", isOn: model.bind("screen_context_enabled", \.screenContext))
-                ToggleRow(title: "Screenshot caret", subtitle: "terminals; battery-heavy", isOn: model.bind("screenshot_caret_enabled", \.screenshotCaret))
-                ToggleRow(title: "Remember what I read", subtitle: s.topicCount > 0 ? "\(s.topicCount) topics" : nil, isOn: model.bind("topic_memory_enabled", \.topicMemory))
-                ToggleRow(title: "Learn my style", isOn: model.bind("style_memory_enabled", \.styleMemory))
-                ToggleRow(title: "Learn my vocabulary", isOn: model.bind("lexicon_enabled", \.lexicon))
-                ToggleRow(title: "Adapt to my accepts", isOn: model.bind("adaptive_suggestions", \.adaptive))
+                SwitchRow(title: "Window text", isOn: model.bind("window_context_enabled", \.windowContext))
+                SwitchRow(title: "Clipboard", isOn: model.bind("clipboard_context_enabled", \.clipboardContext))
+                SwitchRow(title: "Screen OCR", subtitle: "noisy", isOn: model.bind("screen_context_enabled", \.screenContext))
+                SwitchRow(title: "Screenshot caret", subtitle: "terminals; battery-heavy", isOn: model.bind("screenshot_caret_enabled", \.screenshotCaret))
+                SwitchRow(title: "Remember what I read", subtitle: s.topicCount > 0 ? "\(s.topicCount) topics" : nil, isOn: model.bind("topic_memory_enabled", \.topicMemory))
+                SwitchRow(title: "Learn my style", isOn: model.bind("style_memory_enabled", \.styleMemory))
+                SwitchRow(title: "Learn my vocabulary", isOn: model.bind("lexicon_enabled", \.lexicon))
+                SwitchRow(title: "Adapt to my accepts", isOn: model.bind("adaptive_suggestions", \.adaptive))
             }
             MenuSection(title: "Training & data") {
-                ToggleRow(title: "Record my typing", subtitle: s.trainingCount > 0 ? "\(s.trainingCount) samples" : "trains a local model",
+                SwitchRow(title: "Record my typing",
+                          subtitle: s.trainingCount > 0 ? "\(s.trainingCount) samples" : "trains a local model",
                           isOn: model.bind("training_log_enabled", \.trainingEnabled))
                 if s.trainingEnabled, s.trainingCount > 0 {
                     ActionRow(title: "Inspect training data…") { model.action(.inspectTraining) }
@@ -187,6 +200,7 @@ struct MenuRootView: View {
             Spacer()
             Button(action: { model.action(.quit) }) {
                 Text("Quit").font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
             }.buttonStyle(.plain)
         }.padding(.horizontal, 12)
     }
@@ -194,40 +208,45 @@ struct MenuRootView: View {
     private func pct(_ x: Double) -> String { "\(Int((x * 100).rounded()))%" }
 }
 
-// A slim two-segment bar showing the share split; the leader is tinted, the loser muted.
+// MARK: - Components
+
+// Two-segment bar at a fixed width (no GeometryReader): leader tinted, loser muted.
 private struct ShareBar: View {
     let aShare: Double
     let aLeads: Bool
     let locked: Bool
     var body: some View {
-        GeometryReader { geo in
-            let w = max(0, geo.size.width)
-            let aw = max(2, min(w - 2, w * aShare))
-            HStack(spacing: 2) {
-                Capsule().fill(color(aLeads)).frame(width: aw - 1)
-                Capsule().fill(color(!aLeads))
-            }
+        let aw = max(3, min(kBarWidth - 3, kBarWidth * aShare))
+        return HStack(spacing: 2) {
+            Capsule().fill(color(aLeads)).frame(width: aw - 1)
+            Capsule().fill(color(!aLeads))
         }
-        .frame(height: 6)
+        .frame(width: kBarWidth, height: 6)
     }
     private func color(_ leading: Bool) -> Color {
-        leading ? (locked ? Color.green : Color.accentColor) : Color.secondary.opacity(0.35)
+        leading ? (locked ? Color.green : Color.accentColor) : Color.secondary.opacity(0.3)
     }
 }
 
-private struct ToggleRow: View {
+// One settings row: leading label (+ optional subtitle), trailing switch. Uniform inset and
+// height so every switch lines up down the panel.
+private struct SwitchRow: View {
     let title: String
     var subtitle: String? = nil
     @Binding var isOn: Bool
     var body: some View {
-        Toggle(isOn: $isOn) {
+        HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 12))
                 if let subtitle { Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary) }
             }
+            Spacer(minLength: 8)
+            Toggle("", isOn: $isOn)
+                .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.green)
         }
-        .toggleStyle(.switch).tint(.green)
-        .padding(.horizontal, 14).padding(.vertical, 3)
+        .frame(minHeight: 26)
+        .padding(.horizontal, kInset).padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 }
 
@@ -240,7 +259,8 @@ private struct ActionRow: View {
         Button(action: action) {
             Text(title).font(.system(size: 12)).foregroundStyle(tint)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14).padding(.vertical, 5)
+                .frame(minHeight: 26)
+                .padding(.horizontal, kInset - 6)
                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hover ? 0.08 : 0)))
         }
         .buttonStyle(.plain)
@@ -258,14 +278,15 @@ private struct IconButton: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 13))
                 .foregroundStyle(.secondary)
-                .frame(width: 26, height: 24)
+                .frame(width: 28, height: 24)
                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hover ? 0.1 : 0)))
         }
         .buttonStyle(.plain).help(help).onHover { hover = $0 }
     }
 }
 
-// A collapsible section with a chevron header; collapsed by default so the panel stays compact.
+// Collapsible section: a tappable header with a chevron, content hidden until expanded so the
+// panel opens compact.
 private struct MenuSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -274,15 +295,17 @@ private struct MenuSection<Content: View>: View {
         VStack(spacing: 0) {
             Button(action: { withAnimation(.easeInOut(duration: 0.12)) { open.toggle() } }) {
                 HStack {
-                    Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.4)
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary).rotationEffect(.degrees(open ? 90 : 0))
                 }
+                .frame(height: 26)
                 .contentShape(Rectangle())
-                .padding(.horizontal, 14).padding(.vertical, 5)
+                .padding(.horizontal, kInset)
             }.buttonStyle(.plain)
-            if open { VStack(spacing: 0) { content }.padding(.bottom, 4) }
+            if open { VStack(spacing: 1) { content }.padding(.bottom, 2) }
         }
     }
 }
