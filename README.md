@@ -74,6 +74,26 @@ cd typer
 
 Then grant permissions and launch (see below).
 
+### Updating
+
+Because Typer builds from source (there's no pre-signed app to download), updates
+mean pulling the latest commits and rebuilding. Either run the updater from the
+checkout:
+
+```bash
+./update.sh            # fast-forward to the latest commits, rebuild, relaunch
+./update.sh --check    # just print how many commits behind you are
+```
+
+…or use the menu bar: click the ⌨︎ icon, then the **↻** button in the footer
+(next to the installed build, e.g. `#13f2827`). It fetches, tells you how many
+commits behind you are, and on confirmation rebuilds and restarts Typer in the
+background. The button only appears for source builds (those that know their
+checkout path). Update progress is logged to `~/Library/Logs/Typer-update.log`.
+
+`update.sh` only fast-forwards: if your checkout has local commits of its own it
+stops and asks you to reconcile by hand, so your changes are never overwritten.
+
 ### Permissions (System Settings → Privacy & Security)
 
 - **Accessibility → enable Typer** — *required.* This is how Typer reads your
@@ -89,7 +109,8 @@ tail -f ~/Library/Logs/Typer.log   # watch what it's doing
 
 A ⌨︎ icon appears in your menu bar. Click it to toggle features live (Enabled,
 Completions, Typo, context sources), see the model, accept-rate stats, and learned
-style count, clear learned style, or open the config/log — no file editing needed.
+style count, clear learned style, open the config/log, or check for updates — no
+file editing needed.
 
 ### Stable signing (recommended)
 

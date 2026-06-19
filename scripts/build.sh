@@ -68,6 +68,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Stamp the source checkout path + built commit into the bundle so the app's "Check for
+# updates" button can locate this repo and compare against upstream. Must run BEFORE codesign,
+# which seals the bundle (editing Info.plist afterwards would break the signature). Info.plist
+# is rewritten from scratch each build, so these keys never pre-exist — a plain Add is enough.
+GIT_SHA="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+/usr/libexec/PlistBuddy -c "Add :TyperRepoPath string $ROOT_DIR" "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Add :TyperGitCommit string $GIT_SHA" "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
+
 # ---- Sign --------------------------------------------------------------------
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CERT_CN"; then
   echo "==> Signing with stable identity '$CERT_CN'"
