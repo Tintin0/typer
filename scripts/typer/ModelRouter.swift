@@ -114,6 +114,10 @@ final class ModelRouter {
     // Wipe the race state (share + reward windows + any lock) — also called by "Reset All Data".
     func reset() { mem.reset() }
 
+    // Synchronously persist race state — called on app terminate so a winner locked
+    // in the last debounce window isn't lost on quit.
+    func flush() { mem.flush() }
+
     // The two arms: every Models/ file whose name begins with typer1ModelGlob (default
     // "typer-1"), sorted, first two taken as A and B. Gemma and anything else is ignored.
     // Fewer than two matches → fall back to the single configured/available model (no race).
@@ -267,14 +271,32 @@ final class RouterMemory {
     private func scheduleSave() {
         guard !saveScheduled else { return }
         saveScheduled = true
-        let snap = Snapshot(shareA: shareValue, rewardsA: rewardsA, rewardsB: rewardsB,
-                            sinceLastAdjust: sinceLastAdjust, locked: lockedValue)
         queue.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
-            DispatchQueue.main.async { self.saveScheduled = false }
-            guard let d = try? JSONEncoder().encode(snap) else { return }
-            try? d.write(to: self.url, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
+            // Re-read the latest state at fire time (state is main-thread-confined),
+            // so a lock or share move landing inside the debounce window isn't lost.
+            // Encode + write off-main to keep the main thread light.
+            DispatchQueue.main.async {
+                self.saveScheduled = false
+                let snap = Snapshot(shareA: self.shareValue, rewardsA: self.rewardsA, rewardsB: self.rewardsB,
+                                    sinceLastAdjust: self.sinceLastAdjust, locked: self.lockedValue)
+                self.queue.async {
+                    guard let d = try? JSONEncoder().encode(snap) else { return }
+                    try? d.write(to: self.url, options: .atomic)
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.url.path)
+                }
+            }
         }
+    }
+
+    // Synchronously persist the current state — used on app terminate so a winner
+    // locked in the last debounce window survives a quit.
+    func flush() {
+        guard loaded else { return }
+        let snap = Snapshot(shareA: shareValue, rewardsA: rewardsA, rewardsB: rewardsB,
+                            sinceLastAdjust: sinceLastAdjust, locked: lockedValue)
+        guard let d = try? JSONEncoder().encode(snap) else { return }
+        try? d.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

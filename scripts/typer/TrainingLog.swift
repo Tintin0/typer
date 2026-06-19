@@ -125,6 +125,10 @@ final class TrainingLog {
         lock.lock(); countCache = 0; lock.unlock()
         queue.async { try? FileManager.default.removeItem(at: self.url) }
     }
+
+    // Block until all queued appends have been written — called on app terminate so
+    // the tail of capture isn't lost to a fire-and-forget queue on quit.
+    func flush() { queue.sync {} }
 }
 
 // The context-side of a shown suggestion, held from the moment it is presented until
