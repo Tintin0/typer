@@ -87,24 +87,25 @@ def norm_completion(text: str, max_words: int) -> str:
     return " " + t if t and not t[0].isspace() else t
 
 
-def load_contexts(path: Path, limit: int, shuffle: bool, seed: int) -> list[str]:
+def load_contexts(path: Path, limit: int, shuffle: bool, seed: int) -> list[dict]:
     seen: set[str] = set()
-    prompts: list[str] = []
+    ctxs: list[dict] = []
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            p = json.loads(line).get("prompt")
+            o = json.loads(line)
         except json.JSONDecodeError:
             continue
+        p = o.get("prompt")
         if p and p not in seen:           # dedupe: identical prompts share a custom_id
             seen.add(p)
-            prompts.append(p)
+            ctxs.append({"prompt": p, "src": o.get("src", "?")})
     if shuffle:
         import random
-        random.Random(seed).shuffle(prompts)
-    return prompts[:limit] if limit else prompts
+        random.Random(seed).shuffle(ctxs)
+    return ctxs[:limit] if limit else ctxs
 
 
 def already_done(out: Path) -> set[str]:
@@ -121,14 +122,15 @@ def already_done(out: Path) -> set[str]:
     return done
 
 
-def submit(client, model, prompts, max_words, state_path) -> str:
+def submit(client, model, contexts, max_words, state_path) -> str:
     requests = []
-    cid_map: dict[str, str] = {}
+    cid_map: dict[str, dict] = {}
     system = SYSTEM.format(n=max_words)
-    for p in prompts:
+    for c in contexts:
+        p = c["prompt"]
         app, body = parse_prompt(p)
         cid = custom_id(p)
-        cid_map[cid] = p
+        cid_map[cid] = {"prompt": p, "src": c.get("src", "?")}
         requests.append({
             "custom_id": cid,
             "params": {
@@ -153,9 +155,13 @@ def collect(client, state: dict, out: Path) -> tuple[int, int]:
     with out.open("a", encoding="utf-8") as f:
         for entry in client.messages.batches.results(state["batch_id"]):
             cid = entry.custom_id
-            prompt = cid_map.get(cid)
-            if prompt is None:
+            m = cid_map.get(cid)
+            if m is None:
                 continue
+            # Tolerate the old map format (cid -> prompt string) and the new one
+            # (cid -> {prompt, src}) so in-flight batches collect either way.
+            prompt = m if isinstance(m, str) else m["prompt"]
+            src = "?" if isinstance(m, str) else m.get("src", "?")
             res = entry.result
             if res.type != "succeeded":
                 dropped += 1
@@ -166,8 +172,11 @@ def collect(client, state: dict, out: Path) -> tuple[int, int]:
             if not comp or len(comp.split()) < 1 or looks_meta(comp):
                 dropped += 1
                 continue
-            f.write(json.dumps({"prompt": prompt, "completion": comp,
-                                "teacher": state["model"]}, ensure_ascii=False) + "\n")
+            # teacher_conf=1.0: the API gives no token-confidence, and the gold is already
+            # meta-filtered — so build_distill_sft.py should run with --conf-keep 1.0.
+            f.write(json.dumps({"prompt": prompt, "completion": comp, "src": src,
+                                "teacher": state["model"], "teacher_conf": 1.0},
+                               ensure_ascii=False) + "\n")
             kept += 1
     return kept, dropped
 
@@ -218,18 +227,18 @@ def main() -> int:
         return 0
 
     # SUBMIT path: build a new batch from unlabeled contexts.
-    prompts = load_contexts(args.contexts, args.limit, args.shuffle, args.seed)
+    contexts = load_contexts(args.contexts, args.limit, args.shuffle, args.seed)
     done = already_done(args.out)
-    todo = [p for p in prompts if p not in done]
-    print(f"{len(prompts)} unique contexts (post-limit), {len(done)} already labeled, "
+    todo = [c for c in contexts if c["prompt"] not in done]
+    print(f"{len(contexts)} unique contexts (post-limit), {len(done)} already labeled, "
           f"{len(todo)} to submit", file=sys.stderr)
     if not todo:
         print("nothing to do", file=sys.stderr); return 0
     if args.dry_run:
         print(f"[dry-run] would submit {len(todo)} requests to {args.model} via the Batch API",
               file=sys.stderr)
-        for p in todo[:3]:
-            app, body = parse_prompt(p)
+        for c in todo[:3]:
+            app, body = parse_prompt(c["prompt"])
             print(f"  e.g. [{app}] {body[:80]!r}", file=sys.stderr)
         return 0
 
