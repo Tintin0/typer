@@ -49,6 +49,8 @@ struct TyperStats: Codable {
         return s
     }
     func save() {
-        if let d = try? JSONEncoder().encode(self) { try? d.write(to: TyperStats.url) }
+        guard let d = try? JSONEncoder().encode(self) else { return }
+        try? d.write(to: TyperStats.url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: TyperStats.url.path)
     }
 }
