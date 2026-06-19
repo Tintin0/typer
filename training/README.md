@@ -92,10 +92,23 @@ ANTHROPIC_API_KEY=sk-... uv run distill_teacher_batch.py \
     --model claude-haiku-4-5 --limit 4000 --shuffle --wait
 ```
 
-It writes `{prompt, completion, teacher}` gold in the same contract as `distill_teacher.py`, so
-`build_distill_sft.py` folds it into the SFT mix unchanged. Start with a **capped** `--limit`
-bout, retrain, and re-run `eval_compare.py` to confirm the lift before labeling more (the batch
-state lives next to `--out`; already-labeled prompts are skipped on re-run).
+It writes `{prompt, completion, src, teacher, teacher_conf}` gold in the same contract as
+`distill_teacher.py` (Claude gives no token-confidence, so `teacher_conf` is 1.0 and the gold is
+meta-filtered instead — build with `--conf-keep 1.0`). `build_distill_sft.py` folds it into the
+SFT mix unchanged. Start with a **capped** `--limit` bout, retrain, and re-run `eval_compare.py`
+to confirm the lift before labeling more (the batch state lives next to `--out`; already-labeled
+prompts are skipped on re-run).
+
+### Capping training memory (`mem_guard.sh`)
+
+The 0.6B distill SFT measures ~1.0 GB peak RSS at the default knobs (8 layers, seq 512, batch 1,
+grad-checkpoint, 4-bit base). To **guarantee** it never exceeds a ceiling, wrap the resumable SFT
+in `mem_guard.sh`, which samples worker RSS and kills the run (safe — it checkpoints and resumes)
+if it ever crosses the cap:
+
+```bash
+MEM_CAP_MB=1900 ./mem_guard.sh ./train.sh sft     # hard 2 GB ceiling; re-run to resume
+```
 
 ## Cold start — one command
 
