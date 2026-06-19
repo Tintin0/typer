@@ -3,6 +3,44 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## typer-1 is now Qwen3-0.6B, and two variants race for the slot
+
+The SmolLM2-360M `typer-1` hit a capacity ceiling — on a clean held-out set drawn from the
+registers people actually type in (chat, code, email, commits) it was the **worst** model we
+had (matched-words 0.197 vs raw Qwen3-0.6B's 0.401). The earlier "matches Gemma" number was
+real but measured on encyclopedic prose, which isn't how anyone types. So the base changed.
+**typer-1 is now Qwen3-0.6B-Base**, shipped as a two-model race; Gemma is retired from the
+runtime (both 0.6B models match it on real registers at ~3.7× the speed and ~1/5 the size).
+
+- **Two-model graded-reward race (`ModelRouter.swift`, rewritten).** Two models whose names
+  begin with `typer-1` — a raw base and a Gemma-distilled variant — are routed 50/50 and earn
+  a *graded* reward per suggestion: Tab/backtick = 1.0, a type-through pays 0.25 per word
+  followed, an ignored suggestion 0. Share shifts toward the higher average reward and **locks
+  the winner at 80%**. Replaces the single-candidate-vs-Gemma ratchet. The share + per-model
+  reward windows persist in `router.json`; "Reset model race" restarts it.
+- **Gemma→0.6B distillation pipeline (`training/`).** `distill_teacher.py` does sequence-level
+  KD — Gemma labels ~9k real/synthetic/corpus contexts over the app's own server, so the
+  student imitates the teacher's *in-app* behavior (logits aren't needed; GGUF only exposes
+  text). `build_distill_sft.py` filters by teacher confidence + dedup and mixes a **10%
+  general-prose replay anchor** (the anti-forgetting key); `distill.yaml` sets the LoRA recipe
+  (rank 32 / scale = α·2r, LR 1e-4 cosine, skip the first 4 layers). Result: the first
+  fine-tune to *raise* a clean metric with zero forgetting (prose matched-words 0.43 → 0.49) —
+  but it trades register terseness for prose fluency, which is why both raw and distilled ship
+  and race for real instead of one being declared the winner offline.
+- **Research-grounded recipe.** A literature pass set the approach: sequence-level KD (not
+  on-policy at this scale), confidence-filtered teacher outputs, ~10% replay against
+  catastrophic forgetting, and KTO-over-SFT for the next personalization stage. Qwen3-0.6B
+  ships native FIM tokens, so fill-in-the-middle (suffix-aware completion) is a de-risked v2
+  once the server stops banning special tokens.
+- **Custom menu-bar UI (`MenuPopover.swift`).** The stock `NSMenu` is replaced by a SwiftUI
+  popover: a green/red status dot, a model-preference bar (raw vs distill, green when locked),
+  real switch toggles, and the rarely-touched controls folded into three collapsible sections.
+  No emojis. "Disable in <app>" targets the app you were in when the popover opened, not Typer.
+- **On-device personalization paused.** The SmolLM2 retrain agent is unloaded (it would fight
+  the new base); personalization resumes once re-baselined to Qwen3-0.6B with KTO on the real
+  accepts the race is now collecting. Old SmolLM2 models are backed up under
+  `~/Library/Application Support/typer/backup-smol-*`.
+
 ## typer-1 — our own model, live behind a self-tuning A/B rollout
 
 Typer now ships **its own model.** `typer-1` is a SmolLM2-360M-Base cold-start, fine-tuned

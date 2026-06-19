@@ -39,6 +39,18 @@ Voice
   - lowercase, like the rest of the site. titles under ~60 chars.
 -->
 
+## 2026-06-18 — typer-1 grew up, and now two of them fight over your suggestions
+
+we shipped typer-1 and told you it kept pace with gemma. then we built a meaner test set out of the stuff you actually type — half-finished slack messages, code, commit lines, the start of an email — and watched our little 360M model come dead last on it. the "matches gemma" number was real, but we'd measured it on wikipedia prose, which is nothing like a person at a keyboard. so we went back and did it properly.
+
+typer-1 has a bigger brain now. still tiny — about a fifth of gemma's size — but with enough room to actually hold its own on real typing, where it lands right next to gemma on the words that matter and puts the first one on your screen in about 23 milliseconds instead of 160. that's the entire point of a small model: you stop noticing it's there.
+
+here's the part i can't stop grinning about. we genuinely don't know which version of typer-1 is best for *you* — so we stopped guessing and let them fight. two models ship now: a plain one, and one we taught by having gemma write out thousands of completions for it to imitate. they split your suggestions down the middle, and every time you take one with tab, or just type along with what it guessed, the model that wrote it earns a point — a small one for following loosely, a full one for taking it outright. the version you keep choosing slowly wins more of your traffic, and once it's clearly ahead — four times out of five — it gets the job for good. you never touch a setting. you type, and the better model wins.
+
+the menu stopped looking like a 1998 control panel, too. it's a real thing we designed now: a green dot when typer's on, red when it's not, a clean little bar showing which model's ahead, switches instead of checkmarks, and every knob you never touch folded away until you go looking for it. the emoji confetti is gone.
+
+two honest notes. the part that learns your exact style on-device is paused while we rebuild it on the new model — it's coming back, and it'll be better, trained on the preferences the race is collecting from you right now. and this is still alpha, still 100% on your Mac, nothing ever leaving the building. the [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the real wiring.
+
 ## 2026-06-18 — typer has a model of its own now
 
 for as long as typer has existed it's been running on gemma — a genuinely good 3.5 GB model, but a general one, doing a job it was never trained for. so we trained our own. typer-1 does exactly one thing, finish the sentence you're in the middle of, and it's small enough that it's already quietly handling a slice of your suggestions as you read this.
