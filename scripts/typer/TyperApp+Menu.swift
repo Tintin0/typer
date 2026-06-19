@@ -106,6 +106,14 @@ extension TyperApp {
         var l2 = "\(stats.acceptRate)% accepted · \(numberFormatted(lexicon.wordCount())) words learned"
         if stats.currentStreak > 0 { l2 = "\(stats.currentStreak)-day streak · " + l2 }
         s.statsLine2 = l2
+
+        // Self-update is only offered for source builds that know where their checkout is
+        // (stamped into Info.plist by build.sh) and still have an update.sh there to run.
+        let commit = Bundle.main.object(forInfoDictionaryKey: "TyperGitCommit") as? String ?? ""
+        s.version = commit.isEmpty ? "" : "#" + commit
+        if let repo = Bundle.main.object(forInfoDictionaryKey: "TyperRepoPath") as? String, !repo.isEmpty {
+            s.canUpdate = FileManager.default.fileExists(atPath: repo + "/update.sh")
+        }
         return s
     }
 
@@ -151,6 +159,7 @@ extension TyperApp {
         case .resetAll: resetData()
         case .quit: quit()
         case .disableCurrentApp: toggleDisableCurrentApp()
+        case .checkUpdates: checkForUpdates()
         }
     }
 
@@ -249,4 +258,127 @@ extension TyperApp {
     }
 
     @objc func quit() { stats.save(); NSApp.terminate(nil) }
+
+    // MARK: - Self-update
+    //
+    // The app can't ship pre-signed (no Developer ID), so updates work by rebuilding from the
+    // source checkout: build.sh stamps the repo path into Info.plist, and this drives update.sh
+    // there. "Check for updates" fetches and counts commits behind upstream; if any, confirming
+    // spawns a detached update.sh that fast-forwards, rebuilds (which kills this app), and
+    // relaunches the new build. Progress lands in ~/Library/Logs/Typer-update.log.
+
+    var updateLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Typer-update.log")
+    }
+
+    // The stamped source checkout, if this is a source build whose update.sh still exists.
+    private func updateRepoPath() -> String? {
+        guard let repo = Bundle.main.object(forInfoDictionaryKey: "TyperRepoPath") as? String,
+              !repo.isEmpty,
+              FileManager.default.fileExists(atPath: repo + "/update.sh") else { return nil }
+        return repo
+    }
+
+    @objc func checkForUpdates() {
+        guard !updateInProgress else { return }
+        guard let repo = updateRepoPath() else {
+            updateAlert(title: "Updates unavailable",
+                        text: "This Typer build can't find its source checkout, so it can't update itself. Re-run install.sh (or scripts/build.sh) from the cloned repository to enable in-app updates.")
+            return
+        }
+        updateInProgress = true
+        log("checking for updates in \(repo)")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            // update.sh --check fetches and prints just the commits-behind count on stdout.
+            let result = TyperApp.runUpdateScript(repo: repo, args: ["--check"], collectStdout: true)
+            let behind = Int((result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateInProgress = false
+                guard result.ok, let behind else {
+                    self.updateAlert(title: "Couldn’t check for updates",
+                                     text: "Failed to reach the Typer repository. Check your network connection and that the checkout at \(repo) is intact.")
+                    return
+                }
+                if behind == 0 {
+                    self.updateAlert(title: "Typer is up to date", text: "You’re on the latest version.")
+                } else {
+                    self.promptInstallUpdate(repo: repo, behind: behind)
+                }
+            }
+        }
+    }
+
+    private func promptInstallUpdate(repo: String, behind: Int) {
+        let plural = behind == 1 ? "" : "s"
+        let alert = NSAlert()
+        alert.messageText = "\(behind) update\(plural) available"
+        alert.informativeText = """
+        Typer is \(behind) commit\(plural) behind. It will download the latest changes, rebuild itself, and restart automatically — this takes about a minute and runs in the background.
+
+        Progress is written to ~/Library/Logs/Typer-update.log.
+        """
+        alert.addButton(withTitle: "Update & Restart")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        startUpdate(repo: repo)
+    }
+
+    private func startUpdate(repo: String) {
+        // Fresh log for this run.
+        FileManager.default.createFile(atPath: updateLogURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: updateLogURL) else {
+            updateAlert(title: "Update failed", text: "Couldn’t open the update log for writing.")
+            return
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [repo + "/update.sh"]
+        p.currentDirectoryURL = URL(fileURLWithPath: repo)
+        p.standardOutput = handle
+        p.standardError = handle
+        do {
+            try p.run()
+        } catch {
+            try? handle.close()
+            updateAlert(title: "Update failed", text: "Couldn’t start update.sh: \(error.localizedDescription)")
+            return
+        }
+        // Don't wait: build.sh terminates this app near the end, and update.sh (a separate
+        // process, not matched by build.sh's pkill) survives to rebuild and relaunch the app.
+        updateInProgress = true
+        log("update started in background; rebuilding (log: \(updateLogURL.path))")
+        statusItem?.button?.title = " ↻"
+    }
+
+    // Run update.sh and, when asked, capture its stdout (the --check count). stderr carries
+    // progress and is discarded so it can't fill a pipe buffer and stall the read.
+    private static func runUpdateScript(repo: String, args: [String], collectStdout: Bool) -> (ok: Bool, stdout: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [repo + "/update.sh"] + args
+        p.currentDirectoryURL = URL(fileURLWithPath: repo)
+        let outPipe = Pipe()
+        p.standardOutput = collectStdout ? outPipe : FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+        } catch {
+            return (false, "")
+        }
+        let data = collectStdout ? outPipe.fileHandleForReading.readDataToEndOfFile() : Data()
+        p.waitUntilExit()
+        return (p.terminationStatus == 0, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private func updateAlert(title: String, text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
 }

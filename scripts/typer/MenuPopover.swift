@@ -52,10 +52,13 @@ struct MenuSnapshot {
 
     var statsLine1 = ""
     var statsLine2 = ""
+
+    var version = ""              // short git commit this build was made from ("" if unknown)
+    var canUpdate = false         // true only for source builds that know their checkout path
 }
 
 enum MenuAction {
-    case config, log, inspectTraining, resetRace, clearStyle, resetAll, quit, disableCurrentApp
+    case config, log, inspectTraining, resetRace, clearStyle, resetAll, quit, disableCurrentApp, checkUpdates
 }
 
 final class MenuModel: ObservableObject {
@@ -201,7 +204,14 @@ struct MenuRootView: View {
         HStack(spacing: 4) {
             IconButton(symbol: "gearshape", help: "Open config") { model.action(.config) }
             IconButton(symbol: "doc.plaintext", help: "Open log") { model.action(.log) }
+            if s.canUpdate {
+                IconButton(symbol: "arrow.triangle.2.circlepath", help: "Check for updates") { model.action(.checkUpdates) }
+            }
             Spacer()
+            if !s.version.isEmpty {
+                Text(s.version).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    .help("Installed build")
+            }
             Button(action: { model.action(.quit) }) {
                 Text("Quit").font(.system(size: 12)).foregroundStyle(.secondary)
                     .padding(.horizontal, 6).padding(.vertical, 3)
