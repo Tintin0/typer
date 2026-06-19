@@ -101,6 +101,16 @@ final class ModelRouter {
         return stem
     }
 
+    // Structured race state for the custom menu UI: short names, arm-A share, average reward
+    // per arm, and the winner's name once locked. nil when there's no race to show.
+    func raceState() -> (a: String, b: String, aShare: Double, aReward: Double, bReward: Double, lockedName: String?)? {
+        guard racing else { return nil }
+        let a = short(nameA), b = short(nameB ?? "b")
+        let locked = mem.lockedPick.map { $0 == .a ? a : b }
+        let (ra, rb) = mem.rewards()
+        return (a, b, mem.shareA, ra, rb, locked)
+    }
+
     // Wipe the race state (share + reward windows + any lock) — also called by "Reset All Data".
     func reset() { mem.reset() }
 
@@ -231,6 +241,8 @@ final class RouterMemory {
     private func mean(_ xs: [Double]) -> Double {
         xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count)
     }
+
+    func rewards() -> (Double, Double) { loadIfNeeded(); return (mean(rewardsA), mean(rewardsB)) }
 
     func summary(nameA: String, nameB: String) -> String {
         loadIfNeeded()

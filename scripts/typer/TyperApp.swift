@@ -15,7 +15,8 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var routedModel: ModelRouter.Pick = .a
     var routedModelName = ""
     var statusItem: NSStatusItem!
-    let statusMenu = NSMenu()
+    var popover: NSPopover?
+    lazy var menuModel: MenuModel = { let m = MenuModel(); m.app = self; return m }()
     let overlay = SuggestionOverlay()
     var observerTap: CFMachPort?        // listen-only: never gates input delivery
     var acceptTap: CFMachPort?          // consuming: enabled only while a suggestion shows

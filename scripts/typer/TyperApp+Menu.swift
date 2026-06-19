@@ -5,16 +5,23 @@ import Foundation
 import IOKit.ps
 import NaturalLanguage
 import ScreenCaptureKit
+import SwiftUI
 import Vision
 
 extension TyperApp {
     func setupMenu() {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusMenu.delegate = self           // repopulate fresh each time it opens
-        statusItem.menu = statusMenu
+        if let button = statusItem.button {
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+        }
+        let pop = NSPopover()
+        pop.behavior = .transient           // dismiss on click-away
+        pop.animates = true
+        pop.contentViewController = NSHostingController(rootView: MenuRootView(model: menuModel))
+        popover = pop
         updateStatusTitle()
-        rebuildMenu()
     }
 
     // The menu-bar badge: a keyboard icon (renders reliably; a text-only status item
@@ -31,89 +38,105 @@ extension TyperApp {
         button.title = cfg.enabled ? " \(stats.accepted)" : " ⏸"
     }
 
-    // NSMenuDelegate: rebuild on open so stats/toggles are always current without
-    // rebuilding the whole menu on every suggestion.
-    func menuNeedsUpdate(_ menu: NSMenu) { if menu === statusMenu { rebuildMenu() } }
-
-    func disabledItem(_ title: String) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: nil, keyEquivalent: ""); i.isEnabled = false; return i
+    // Open/close the custom popover under the status item, snapshotting fresh state first.
+    @objc func togglePopover(_ sender: Any?) {
+        guard let pop = popover, let button = statusItem?.button else { return }
+        if pop.isShown { pop.performClose(sender); return }
+        menuModel.refresh()
+        NSApp.activate(ignoringOtherApps: true)
+        pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
-    func toggleItem(_ title: String, key: String, value: Bool) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: #selector(toggleSetting(_:)), keyEquivalent: "")
-        i.state = value ? .on : .off
-        i.representedObject = key
-        i.target = self
-        return i
-    }
+    // Snapshot everything the popover renders. The app stays the source of truth; the UI
+    // just reads this on open and writes back through setToggle / performMenuAction.
+    func menuSnapshot() -> MenuSnapshot {
+        var s = MenuSnapshot()
+        s.enabled = cfg.enabled
+        s.completionEnabled = cfg.completionEnabled
+        s.typoEnabled = cfg.typoEnabled
 
-    func rebuildMenu() {
-        let menu = statusMenu
-        menu.removeAllItems()
-        let model = (LlamaClient.findModel(cfg).map { ($0 as NSString).lastPathComponent }) ?? "no model"
-        menu.addItem(disabledItem("Typer — \(cfg.enabled ? "on" : "paused")"))
-        menu.addItem(disabledItem("Model: \(model)"))
-        // typer-1 rollout status (only when a candidate model is actually present).
-        if let rollout = router?.statusSummary() { menu.addItem(disabledItem(rollout)) }
-        menu.addItem(.separator())
-        for fact in funFacts() { menu.addItem(disabledItem(fact)) }
-        menu.addItem(.separator())
-        menu.addItem(disabledItem("Shown \(numberFormatted(stats.shown)) · Accepted \(stats.acceptRate)% · Learned \(styleMemory.sentenceCount()) sentences"))
-        var personalization = "Vocabulary: \(numberFormatted(lexicon.wordCount())) words"
-        if let s = feedback.summary() { personalization += " · \(s)" }
-        menu.addItem(disabledItem(personalization))
-        menu.addItem(.separator())
-
-        menu.addItem(toggleItem("Enabled", key: "enabled", value: cfg.enabled))
-        menu.addItem(toggleItem("Completions", key: "completion_enabled", value: cfg.completionEnabled))
-        menu.addItem(toggleItem("Typo correction", key: "typo_correction_enabled", value: cfg.typoEnabled))
-
-        // Per-app disable for the app currently being typed in.
         let (curBundle, curName) = currentAppBundleAndName()
         if !curBundle.isEmpty, curBundle != "no.bundle" {
-            let item = NSMenuItem(title: "Disable in \(curName)", action: #selector(toggleDisableCurrentApp), keyEquivalent: "")
-            item.state = cfg.disabledApps.contains(curBundle) ? .on : .off
-            item.target = self
-            menu.addItem(item)
+            s.hasCurrentApp = true; s.currentAppName = curName
+            s.currentAppDisabled = cfg.disabledApps.contains(curBundle)
         }
-        menu.addItem(toggleItem("Skip terminal apps", key: "disable_in_terminals", value: cfg.disableInTerminals))
-        let batt = toggleItem("Battery saver", key: "battery_saver", value: cfg.batterySaver)
-        if cfg.batterySaver && PowerState.shared.saving { batt.title = "Battery saver (throttling now)" }
-        menu.addItem(batt)
-        menu.addItem(.separator())
+        s.disableInTerminals = cfg.disableInTerminals
+        s.batterySaver = cfg.batterySaver
+        s.batteryThrottling = cfg.batterySaver && PowerState.shared.saving
 
-        let ctx = NSMenu()
-        ctx.addItem(toggleItem("Window text", key: "window_context_enabled", value: cfg.windowContextEnabled))
-        ctx.addItem(toggleItem("Clipboard", key: "clipboard_context_enabled", value: cfg.clipboardContextEnabled))
-        ctx.addItem(toggleItem("Screen OCR (noisy)", key: "screen_context_enabled", value: cfg.screenContextEnabled))
-        ctx.addItem(toggleItem("Screenshot caret (terminals; battery-heavy)", key: "screenshot_caret_enabled", value: cfg.screenshotCaretEnabled))
-        let topic = toggleItem("Remember what I read (\(topicMemory.count()))", key: "topic_memory_enabled", value: cfg.topicMemoryEnabled)
-        ctx.addItem(topic)
-        ctx.addItem(toggleItem("Learn my style", key: "style_memory_enabled", value: cfg.styleMemoryEnabled))
-        ctx.addItem(toggleItem("Learn my vocabulary", key: "lexicon_enabled", value: cfg.lexiconEnabled))
-        ctx.addItem(toggleItem("Adapt to my accepts", key: "adaptive_suggestions", value: cfg.adaptiveSuggestions))
-        let ctxItem = NSMenuItem(title: "Context sources", action: nil, keyEquivalent: ""); ctxItem.submenu = ctx
-        menu.addItem(ctxItem)
-        // Opt-in local training-data capture: records (context → suggestion, accepted?)
-        // to train a local model later. Off by default; stays on this Mac. Enabling it
-        // shows a one-time explanation of exactly what is stored (see confirmTrainingCapture).
-        menu.addItem(toggleItem("Record my typing to train a local model (\(trainingLog.count()))", key: "training_log_enabled", value: cfg.trainingLogEnabled))
-        if cfg.trainingLogEnabled, trainingLog.count() > 0 {
-            menu.addItem(NSMenuItem(title: "Inspect training data…", action: #selector(openTrainingData), keyEquivalent: ""))
-        }
-        if router?.racing == true {
-            menu.addItem(NSMenuItem(title: "Reset model race", action: #selector(resetRollout), keyEquivalent: ""))
-        }
-        menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
-        menu.addItem(.separator())
+        s.windowContext = cfg.windowContextEnabled
+        s.clipboardContext = cfg.clipboardContextEnabled
+        s.screenContext = cfg.screenContextEnabled
+        s.screenshotCaret = cfg.screenshotCaretEnabled
+        s.topicMemory = cfg.topicMemoryEnabled; s.topicCount = topicMemory.count()
+        s.styleMemory = cfg.styleMemoryEnabled
+        s.lexicon = cfg.lexiconEnabled
+        s.adaptive = cfg.adaptiveSuggestions
 
-        menu.addItem(NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Open Log…", action: #selector(openLog), keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Typer", action: #selector(quit), keyEquivalent: "q"))
-        for item in menu.items where item.action != nil && item.target == nil { item.target = self }
+        s.trainingEnabled = cfg.trainingLogEnabled; s.trainingCount = trainingLog.count()
+
+        if let r = router?.raceState() {
+            s.racing = true; s.aName = r.a; s.bName = r.b; s.aShare = r.aShare
+            s.aReward = r.aReward; s.bReward = r.bReward; s.lockedName = r.lockedName
+        } else if let r = router {
+            s.singleModel = (r.nameA as NSString).deletingPathExtension
+        }
+
+        let w = stats.wordsCompleted, m = w / 40
+        if w > 0 {
+            s.statsLine1 = "\(numberFormatted(w)) words completed" + (m >= 1 ? " · ~\(numberFormatted(m)) min saved" : "")
+        } else {
+            s.statsLine1 = "No completions yet — start typing"
+        }
+        var l2 = "\(stats.acceptRate)% accepted · \(numberFormatted(lexicon.wordCount())) words learned"
+        if stats.currentStreak > 0 { l2 = "\(stats.currentStreak)-day streak · " + l2 }
+        s.statsLine2 = l2
+        return s
+    }
+
+    // Apply one toggle from the popover (mirrors the old NSMenu toggleSetting, minus the
+    // NSMenuItem). Training capture still shows its one-time consent sheet before enabling.
+    func setToggle(key: String, on v: Bool) {
+        switch key {
+        case "enabled": cfg.enabled = v; if !v { clearSuggestion() }
+        case "completion_enabled": cfg.completionEnabled = v
+        case "typo_correction_enabled": cfg.typoEnabled = v
+        case "window_context_enabled": cfg.windowContextEnabled = v
+        case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
+        case "screen_context_enabled": cfg.screenContextEnabled = v
+        case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = v
+        case "style_memory_enabled": cfg.styleMemoryEnabled = v
+        case "lexicon_enabled": cfg.lexiconEnabled = v
+        case "adaptive_suggestions": cfg.adaptiveSuggestions = v
+        case "training_log_enabled":
+            if v, !confirmTrainingCapture() { return }   // user backed out → leave off
+            cfg.trainingLogEnabled = v
+        case "battery_saver": cfg.batterySaver = v
+        case "topic_memory_enabled":
+            cfg.topicMemoryEnabled = v
+            if v, !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+            startTopicTimer()
+        default: return
+        }
+        writeConfig(key, v ? "true" : "false")
+        log("toggle \(key)=\(v)")
         updateStatusTitle()
+    }
+
+    // Route a popover button to its handler. Everything but the per-app toggle closes the
+    // popover first so any file/sheet it opens isn't stuck behind it.
+    func performMenuAction(_ a: MenuAction) {
+        if a != .disableCurrentApp { popover?.performClose(nil) }
+        switch a {
+        case .config: openConfig()
+        case .log: openLog()
+        case .inspectTraining: openTrainingData()
+        case .resetRace: resetRollout()
+        case .clearStyle: clearStyle()
+        case .resetAll: resetData()
+        case .quit: quit()
+        case .disableCurrentApp: toggleDisableCurrentApp()
+        }
     }
 
     func configURL() -> URL {
@@ -135,37 +158,6 @@ extension TyperApp {
         }
         if !found { lines.append("\(key) = \(value)") }
         try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    @objc func toggleSetting(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
-        let v = sender.state != .on
-        switch key {
-        case "enabled": cfg.enabled = v; if !v { clearSuggestion() }
-        case "completion_enabled": cfg.completionEnabled = v
-        case "typo_correction_enabled": cfg.typoEnabled = v
-        case "window_context_enabled": cfg.windowContextEnabled = v
-        case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
-        case "screen_context_enabled": cfg.screenContextEnabled = v
-        case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = v
-        case "style_memory_enabled": cfg.styleMemoryEnabled = v
-        case "lexicon_enabled": cfg.lexiconEnabled = v
-        case "adaptive_suggestions": cfg.adaptiveSuggestions = v
-        case "training_log_enabled":
-            // Turning capture ON shows a one-time explanation of what gets stored; if the
-            // user backs out, leave it off and don't persist.
-            if v, !confirmTrainingCapture() { rebuildMenu(); return }
-            cfg.trainingLogEnabled = v
-        case "battery_saver": cfg.batterySaver = v
-        case "topic_memory_enabled":
-            cfg.topicMemoryEnabled = v
-            if v, !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
-            startTopicTimer()
-        default: break
-        }
-        writeConfig(key, v ? "true" : "false")
-        log("toggle \(key)=\(v)")
-        rebuildMenu()
     }
 
     @objc func openConfig() { NSWorkspace.shared.open(configURL()) }
@@ -200,7 +192,7 @@ extension TyperApp {
         if cfg.disabledApps.contains(bundle) { cfg.disabledApps.remove(bundle) } else { cfg.disabledApps.insert(bundle) }
         writeConfig("disabled_apps", cfg.disabledApps.sorted().joined(separator: ","))
         if isAppDisabled() { clearSuggestion() }
-        rebuildMenu()
+        updateStatusTitle()
     }
 
     @objc func resetData() {
@@ -230,15 +222,15 @@ extension TyperApp {
     @objc func clearStyle() {
         styleMemory.clear()
         log("cleared learned style")
-        rebuildMenu()
+        updateStatusTitle()
     }
 
     // Restart typer-1's progressive rollout from the starting share (keeps the model,
     // forgets its accumulated accept/reject history and earned share).
     @objc func resetRollout() {
         router.reset()
-        log("reset typer-1 rollout")
-        rebuildMenu()
+        log("reset model race")
+        updateStatusTitle()
     }
 
     @objc func quit() { stats.save(); NSApp.terminate(nil) }
