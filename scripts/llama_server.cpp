@@ -337,17 +337,23 @@ public:
         if (!lexicon_biases.empty()) {
             llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)lexicon_biases.size(), lexicon_biases.data()));
         }
-        // Inline autocomplete wants the high-probability continuation, not a
-        // creative tangent. Mild repetition penalty, then a moderately tight nucleus:
-        // top-k + top-p, plus MIN-P (drop tokens far below the best token's
-        // probability) to avoid "random word" drift, with just enough temperature to
-        // adapt to conversational phrasing instead of collapsing into generic text.
+        // Inline autocomplete wants the single highest-probability continuation, not a
+        // creative tangent. A mild repetition penalty (anti-loop) then GREEDY (argmax):
+        // eval_compare.py showed the greedy/raw path beats the old tuned nucleus
+        // (temp 0.16 / top-p / min-p) on real typed content — the stochastic sampler was
+        // costing accuracy and type-through length, clamping a better-distilled model back
+        // to the weaker model's ceiling. TYPER_SAMPLER=nucleus restores the old sampler.
         llama_sampler_chain_add(chain, llama_sampler_init_penalties(96, 1.04f, 0.0f, 0.0f));
-        llama_sampler_chain_add(chain, llama_sampler_init_top_k(32));
-        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.88f, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.04f, 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.16f));
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(0xC07A));
+        const char *mode = std::getenv("TYPER_SAMPLER");
+        if (mode && std::string(mode) == "nucleus") {
+            llama_sampler_chain_add(chain, llama_sampler_init_top_k(32));
+            llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.88f, 1));
+            llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.04f, 1));
+            llama_sampler_chain_add(chain, llama_sampler_init_temp(0.16f));
+            llama_sampler_chain_add(chain, llama_sampler_init_dist(0xC07A));
+        } else {
+            llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+        }
         // Only the penalties sampler is stateful, with penalty_last_n = 96, so only the
         // last 96 prompt tokens can affect sampling. Replaying the whole prompt through
         // accept() every request is wasted work.
