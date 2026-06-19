@@ -1,139 +1,164 @@
 import Foundation
 
-// Progressive A/B rollout of our own "typer-1" model against the default (Gemma).
+// Two-model graded-reward bandit: race our own models against each other and lock the winner.
 //
-// The router owns one LlamaClient per model and, on each generation, sends a fraction of
-// requests — the *share* — to the candidate (typer-1) instead of the default. The share is
-// not fixed: it ratchets UP while the candidate's real accept rate keeps pace with the
-// default, and backs OFF (bringing the default back) when it regresses — the RLHF-style
-// loop the user asked for, where accept/reject feedback drives the policy (the share).
+// We ship two candidate models — "raw" (the base) and "distill" (Gemma-distilled) — and route
+// each generation to one of them at random, starting 50/50. Every resolved suggestion pays a
+// GRADED reward to the model that produced it:
 //
-// Bootstrap: with only the default model in Models/, `candidateAvailable` is false and the
-// app behaves exactly as before (100% default). Drop a `typer-1*.gguf` in and the router
-// starts routing at `typer1ShareStart`. The candidate helper process spawns lazily on its
-// first pick, so it costs no RAM until it's actually used.
+//     Tab / backtick accept          -> 1.0   (ideal: the user took it outright)
+//     type-through of N words        -> 0.25 * N, capped at 1.0  (loosely followed; the
+//                                        suggestion wasn't far off, the user typed some of it)
+//     shown but ignored              -> 0.0
+//
+// The share shifts toward whichever model earns the higher average reward. When one model's
+// share crosses the lock threshold (80%) it WINS: the router commits to it and stops exploring.
+// This is the RLHF-style preference loop the user asked for — real accept/type-through feedback
+// picks the model, and once preference is decisive we keep the preferred one.
+//
+// Bootstrap: with fewer than two candidate models in Models/, the router just serves whatever
+// single model is present (no race). Gemma is no longer an arm — the two 0.6B models both beat
+// it on the registers people actually type in, at a fraction of the latency and RAM.
 final class ModelRouter {
-    enum Pick: String, Codable { case fallback, candidate }
+    enum Pick: String, Codable { case a, b }
 
     private let cfg: TyperConfig
-    let fallbackClient: LlamaClient
-    let candidateClient: LlamaClient?   // nil when no typer-1 model is present / disabled
-    let fallbackName: String
-    let candidateName: String?
+    let clientA: LlamaClient
+    let clientB: LlamaClient?           // nil when only one candidate model is installed
+    let nameA: String
+    let nameB: String?
     private let mem: RouterMemory
 
     init(cfg: TyperConfig) {
         self.cfg = cfg
-        let (fb, cand) = ModelRouter.resolveModels(cfg)
-        fallbackName = fb.map { ($0 as NSString).lastPathComponent } ?? "unknown"
-        fallbackClient = LlamaClient(cfg: cfg, modelPath: fb)
-        if cfg.typer1Enabled, let candPath = cand {
-            candidateName = (candPath as NSString).lastPathComponent
-            candidateClient = LlamaClient(cfg: cfg, modelPath: candPath)
+        let (a, b) = ModelRouter.resolveModels(cfg)
+        nameA = a.map { ($0 as NSString).lastPathComponent } ?? "unknown"
+        clientA = LlamaClient(cfg: cfg, modelPath: a)
+        if cfg.typer1Enabled, let bPath = b {
+            nameB = (bPath as NSString).lastPathComponent
+            clientB = LlamaClient(cfg: cfg, modelPath: bPath)
         } else {
-            candidateName = nil
-            candidateClient = nil
+            nameB = nil
+            clientB = nil
         }
         mem = RouterMemory(cfg: cfg)
     }
 
-    var candidateAvailable: Bool { candidateClient != nil }
-    var currentShare: Double { candidateAvailable ? mem.share : 0 }
+    // Two arms present and enabled → an actual race is running.
+    var racing: Bool { clientB != nil }
+    // The model the menu should report as "current default" (the leading / locked arm).
+    var defaultName: String { mem.leader == .b ? (nameB ?? nameA) : nameA }
+    var currentShareA: Double { racing ? mem.shareA : 1.0 }
 
-    // Warm only the default at launch; the candidate spawns on its first pick so a
-    // low-share rollout doesn't pay its memory until it's actually serving.
-    func warmUp() { fallbackClient.warmUp() }
+    // Warm the leading arm at launch; the other spawns lazily on its first pick, so a
+    // low-share or already-locked loser never pays its memory until it actually serves.
+    func warmUp() { client(for: mem.leader).warmUp() }
 
-    // Decide which model serves this generation. The chosen model serves the whole
-    // generation (and its prefetch continuations) so a single suggestion is never a mix.
+    // Decide which model serves this generation. Once locked, always the winner; otherwise
+    // arm A with probability shareA, else arm B. The chosen model serves the whole
+    // generation (and its prefetch continuations) so one suggestion is never a mix.
     func pick() -> (client: LlamaClient, pick: Pick, name: String) {
-        if let c = candidateClient, Double.random(in: 0..<1) < mem.share {
-            return (c, .candidate, candidateName ?? fallbackName)
+        guard clientB != nil else { return (clientA, .a, nameA) }
+        if let locked = mem.lockedPick {
+            return (client(for: locked), locked, modelName(for: locked))
         }
-        return (fallbackClient, .fallback, fallbackName)
+        let p: Pick = Double.random(in: 0..<1) < mem.shareA ? .a : .b
+        return (client(for: p), p, modelName(for: p))
     }
 
     func client(for pick: Pick) -> LlamaClient {
-        (pick == .candidate ? candidateClient : nil) ?? fallbackClient
+        (pick == .b ? clientB : nil) ?? clientA
     }
 
     func modelName(for pick: Pick) -> String {
-        (pick == .candidate ? candidateName : nil) ?? fallbackName
+        (pick == .b ? nameB : nil) ?? nameA
     }
 
-    // Feed one resolved suggestion back into the ratchet. "good" counts only REAL gain —
-    // a Tab/backtick accept or a long (≥3-word) type-through — matching
-    // build_dataset.classify(), so the live rollout and the offline trainer agree on what
-    // a win is (a short type-through is a word the user would have typed anyway).
+    // Feed one resolved suggestion back into the bandit as a graded reward (see the table at
+    // the top). Tab/backtick is the ideal outcome; a type-through pays partial credit for the
+    // words the user actually followed; an ignored suggestion pays nothing.
     func record(pick: Pick, accepted: Bool, kind: String, words: Int) {
-        guard candidateAvailable else { return }
-        let good = accepted && (kind == "tab" || kind == "backtick" || words >= 3)
-        mem.record(candidate: pick == .candidate, good: good)
+        guard racing else { return }
+        let reward: Double
+        if accepted && (kind == "tab" || kind == "backtick") {
+            reward = 1.0
+        } else {
+            reward = min(1.0, RouterMemory.rewardPerWord * Double(max(0, words)))
+        }
+        mem.record(pick: pick, reward: reward)
     }
 
-    // One line for the status-bar menu, nil when there is no candidate to report on.
+    // One line for the status-bar menu, nil when there is no race to report on.
     func statusSummary() -> String? {
-        guard candidateAvailable else { return nil }
-        return mem.summary(candidateName: candidateName ?? "typer-1", fallbackName: fallbackName)
+        guard racing else { return nil }
+        return mem.summary(nameA: short(nameA), nameB: short(nameB ?? "b"))
     }
 
-    // Wipe the rollout state (share + windows) — also called by "Reset All Data".
+    private func short(_ n: String) -> String {
+        // "typer-1-distill.gguf" -> "distill"; fall back to the stem.
+        let stem = (n as NSString).deletingPathExtension
+        if let r = stem.range(of: "typer-1-") { return String(stem[r.upperBound...]) }
+        return stem
+    }
+
+    // Wipe the race state (share + reward windows + any lock) — also called by "Reset All Data".
     func reset() { mem.reset() }
 
-    // fallback = the default (Gemma) model; candidate = the first Models/ file whose name
-    // begins with typer1ModelGlob. candidate is nil unless it is distinct from the
-    // fallback (so a lone typer-1 install just serves directly, with no routing).
-    static func resolveModels(_ cfg: TyperConfig) -> (fallback: String?, candidate: String?) {
+    // The two arms: every Models/ file whose name begins with typer1ModelGlob (default
+    // "typer-1"), sorted, first two taken as A and B. Gemma and anything else is ignored.
+    // Fewer than two matches → fall back to the single configured/available model (no race).
+    static func resolveModels(_ cfg: TyperConfig) -> (a: String?, b: String?) {
         let fm = FileManager.default
         let dir = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/typer/Models")
         let names = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
             .filter { $0.hasSuffix(".gguf") }.sorted()
         let glob = cfg.typer1ModelGlob.lowercased()
-        let candidateName = glob.isEmpty ? nil : names.first { $0.lowercased().hasPrefix(glob) }
-        let candidatePath = candidateName.map { dir.appendingPathComponent($0).path }
+        let arms = glob.isEmpty ? [] : names.filter { $0.lowercased().hasPrefix(glob) }
+        func path(_ n: String) -> String { dir.appendingPathComponent(n).path }
 
-        var fallbackPath: String?
-        if !cfg.modelPath.isEmpty, fm.fileExists(atPath: cfg.modelPath), cfg.modelPath != candidatePath {
-            fallbackPath = cfg.modelPath
-        } else {
-            fallbackPath = names.first { $0 != candidateName }
-                .map { dir.appendingPathComponent($0).path }
-        }
-        // No distinct default → the candidate is the only model; serve it, don't route.
-        if fallbackPath == nil { return (candidatePath, nil) }
-        return (fallbackPath, candidatePath)
+        if arms.count >= 2 { return (path(arms[0]), path(arms[1])) }
+        // Not enough candidates to race: serve a single model (the configured default if it
+        // exists, else the lone candidate, else any installed gguf).
+        let single: String?
+        if arms.count == 1 { single = path(arms[0]) }
+        else if !cfg.modelPath.isEmpty, fm.fileExists(atPath: cfg.modelPath) { single = cfg.modelPath }
+        else { single = names.first.map(path) }
+        return (single, nil)
     }
 }
 
-// Persistent rollout state: the live share plus rolling accept/reject windows per model,
-// in ~/Library/Application Support/typer/router.json (0600, clearable). Same debounced,
-// main-thread-read / background-write shape as FeedbackMemory.
+// Persistent race state in ~/Library/Application Support/typer/router.json (0600, clearable):
+// the live share of arm A plus a rolling window of graded rewards per arm, and the lock once a
+// winner is decided. Same debounced, main-thread-read / background-write shape as FeedbackMemory.
 final class RouterMemory {
+    // Graded-reward constants. rewardPerWord credits a loose type-through ~0.25/word; lockHigh
+    // is the share at which a model wins outright (and lockLow = 1 - lockHigh for the other arm).
+    static let rewardPerWord = 0.25
+    private let lockHigh = 0.80
+    private var lockLow: Double { 1 - lockHigh }
+
     private struct Snapshot: Codable {
-        var share: Double
-        var candidate: [Bool]       // newest last; true = real accept
-        var fallback: [Bool]
+        var shareA: Double
+        var rewardsA: [Double]          // newest last; graded reward in [0, 1]
+        var rewardsB: [Double]
         var sinceLastAdjust: Int
+        var locked: String?             // nil, "a", or "b" once a winner is committed
     }
 
     private let url: URL
     private let queue = DispatchQueue(label: "typer.router", qos: .utility)
 
-    // Policy parameters (from config).
-    private let startShare, minShare, maxShare, step, regression: Double
-    private let minSamples: Int
-
-    // Tunables: the comparison window, the burst-of-rejects tripwire length, and the slack
-    // by which the candidate may trail the default and still earn more share.
+    private let step: Double            // share move per adjust
+    private let minSamples: Int         // per-arm samples + cooldown before moving the share
     private let window = 100
-    private let tripwireRun = 5
-    private let keepTolerance = 0.02
+    private let tolerance = 0.02        // reward gap below which we hold (avoid thrash on noise)
 
-    private var shareValue: Double
-    private var candidate: [Bool] = []
-    private var fallback: [Bool] = []
+    private var shareValue = 0.5        // start 50/50: both models are new, no prior
+    private var rewardsA: [Double] = []
+    private var rewardsB: [Double] = []
     private var sinceLastAdjust = 0
+    private var lockedValue: String?
     private var loaded = false
     private var saveScheduled = false
 
@@ -142,85 +167,87 @@ final class RouterMemory {
             .appendingPathComponent("Library/Application Support/typer")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("router.json")
-        startShare = cfg.typer1ShareStart
-        minShare = cfg.typer1ShareMin
-        maxShare = cfg.typer1ShareMax
         step = cfg.typer1RatchetStep
-        regression = cfg.typer1RegressionMargin
         minSamples = cfg.typer1RatchetMinSamples
-        shareValue = cfg.typer1ShareStart
     }
 
-    var share: Double { loadIfNeeded(); return shareValue }
+    var shareA: Double { loadIfNeeded(); return shareValue }
+    var lockedPick: ModelRouter.Pick? {
+        loadIfNeeded()
+        switch lockedValue { case "a": return .a; case "b": return .b; default: return nil }
+    }
+    // Which arm is currently ahead (for warm-up + the menu's "default" label).
+    var leader: ModelRouter.Pick {
+        loadIfNeeded()
+        if let l = lockedPick { return l }
+        return shareValue >= 0.5 ? .a : .b
+    }
 
     private func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
         guard let d = try? Data(contentsOf: url),
               let s = try? JSONDecoder().decode(Snapshot.self, from: d) else { return }
-        shareValue = min(maxShare, max(minShare, s.share))
-        candidate = s.candidate
-        fallback = s.fallback
+        shareValue = min(1, max(0, s.shareA))
+        rewardsA = s.rewardsA
+        rewardsB = s.rewardsB
         sinceLastAdjust = s.sinceLastAdjust
+        lockedValue = s.locked
     }
 
-    func record(candidate isCandidate: Bool, good: Bool) {
+    func record(pick: ModelRouter.Pick, reward: Double) {
         loadIfNeeded()
-        if isCandidate {
-            candidate.append(good)
-            if candidate.count > window { candidate.removeFirst(candidate.count - window) }
-            sinceLastAdjust += 1
-            ratchet()
+        guard lockedValue == nil else { return }       // race is over; nothing to learn
+        if pick == .a {
+            rewardsA.append(reward)
+            if rewardsA.count > window { rewardsA.removeFirst(rewardsA.count - window) }
         } else {
-            fallback.append(good)
-            if fallback.count > window { fallback.removeFirst(fallback.count - window) }
+            rewardsB.append(reward)
+            if rewardsB.count > window { rewardsB.removeFirst(rewardsB.count - window) }
         }
+        sinceLastAdjust += 1
+        adjust()
         scheduleSave()
     }
 
-    // The decision rule. Runs after every candidate resolution.
-    private func ratchet() {
-        // Hard tripwire: a short run of pure rejects on the candidate means it went bad
-        // fast — drop straight to the floor and make it re-qualify from an empty window.
-        if candidate.count >= tripwireRun, candidate.suffix(tripwireRun).allSatisfy({ !$0 }) {
-            shareValue = minShare
-            candidate.removeAll(keepingCapacity: true)
-            sinceLastAdjust = 0
-            return
-        }
-        // Otherwise wait for enough signal on both arms, plus a cooldown since the last
-        // move, so the share doesn't thrash.
-        guard candidate.count >= minSamples, fallback.count >= minSamples,
+    // Move the share toward the higher-reward arm once both arms have enough signal and a
+    // cooldown has passed, then lock the winner if its share crosses the threshold.
+    private func adjust() {
+        guard rewardsA.count >= minSamples, rewardsB.count >= minSamples,
               sinceLastAdjust >= minSamples else { return }
-        let ac = rate(candidate)
-        let af = rate(fallback)
-        if ac >= af - keepTolerance {
-            shareValue = min(maxShare, shareValue + step)          // keeping pace → more traffic
-        } else if ac < af - regression {
-            shareValue = max(minShare, shareValue * 0.5)           // regressing → bring default back
+        let mA = mean(rewardsA), mB = mean(rewardsB)
+        if mA > mB + tolerance {
+            shareValue = min(lockHigh, shareValue + step)
+        } else if mB > mA + tolerance {
+            shareValue = max(lockLow, shareValue - step)
         } else {
-            return                                                 // in-between → hold, keep cooldown
+            return                                     // too close to call → hold the cooldown
         }
         sinceLastAdjust = 0
+        if shareValue >= lockHigh { lockedValue = "a"; shareValue = 1.0 }
+        else if shareValue <= lockLow { lockedValue = "b"; shareValue = 0.0 }
     }
 
-    private func rate(_ xs: [Bool]) -> Double {
-        xs.isEmpty ? 0 : Double(xs.filter { $0 }.count) / Double(xs.count)
+    private func mean(_ xs: [Double]) -> Double {
+        xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count)
     }
 
-    func summary(candidateName: String, fallbackName: String) -> String {
+    func summary(nameA: String, nameB: String) -> String {
         loadIfNeeded()
+        if let l = lockedValue {
+            return "model: locked on \(l == "a" ? nameA : nameB) (race won)"
+        }
         let pct = Int((shareValue * 100).rounded())
-        let fbShort = (fallbackName as NSString).deletingPathExtension
-        func used(_ xs: [Bool]) -> String { xs.isEmpty ? "—" : "\(Int((rate(xs) * 100).rounded()))%" }
-        return "typer-1: \(pct)% share · used \(used(candidate)) vs \(fbShort) \(used(fallback))"
+        func avg(_ xs: [Double]) -> String { xs.isEmpty ? "—" : String(format: "%.2f", mean(xs)) }
+        return "model race: \(nameA) \(pct)% / \(nameB) \(100 - pct)% · reward \(avg(rewardsA)) vs \(avg(rewardsB))"
     }
 
     func reset() {
-        shareValue = startShare
-        candidate = []
-        fallback = []
+        shareValue = 0.5
+        rewardsA = []
+        rewardsB = []
         sinceLastAdjust = 0
+        lockedValue = nil
         loaded = true
         queue.async { try? FileManager.default.removeItem(at: self.url) }
     }
@@ -228,8 +255,8 @@ final class RouterMemory {
     private func scheduleSave() {
         guard !saveScheduled else { return }
         saveScheduled = true
-        let snap = Snapshot(share: shareValue, candidate: candidate,
-                            fallback: fallback, sinceLastAdjust: sinceLastAdjust)
+        let snap = Snapshot(shareA: shareValue, rewardsA: rewardsA, rewardsB: rewardsB,
+                            sinceLastAdjust: sinceLastAdjust, locked: lockedValue)
         queue.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.async { self.saveScheduled = false }

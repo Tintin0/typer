@@ -60,19 +60,23 @@ struct TyperConfig {
     var disabledApps: Set<String> = []  // bundle IDs where Typer stays silent
     var disableInTerminals = false      // skip terminal apps entirely
 
-    // typer-1 progressive rollout (ModelRouter). When a candidate model whose filename
-    // begins with `typer1ModelGlob` is present in Models/, the router serves a growing
-    // share of suggestions from it instead of the default (Gemma) model, ratcheting that
-    // share up while the candidate's accept rate keeps pace and backing off — bringing the
-    // default back — when it regresses. No-op (100% default) until such a file exists.
+    // Two-model race (ModelRouter). When two models whose filenames begin with
+    // `typer1ModelGlob` sit in Models/ (e.g. typer-1-raw.gguf + typer-1-distill.gguf), the
+    // router sends each suggestion to one of them — starting 50/50 — and shifts share toward
+    // whichever earns the higher graded reward (Tab/backtick = 1.0, type-through = 0.25/word,
+    // ignored = 0), locking the winner once it reaches 80%. Fewer than two such files → it
+    // just serves the single model. `typer1RatchetStep` is the per-adjust share move and
+    // `typer1RatchetMinSamples` the per-arm samples + cooldown before each move.
     var typer1Enabled = true
-    var typer1ModelGlob = "typer-1"     // filename prefix that marks the candidate model
-    var typer1ShareStart = 0.10         // candidate's traffic share when it first appears
-    var typer1ShareMin = 0.05           // floor the backoff/tripwire can drop the share to
-    var typer1ShareMax = 0.95           // cap the ratchet can raise the share to
-    var typer1RatchetStep = 0.05        // additive share increase per qualifying review
-    var typer1RatchetMinSamples = 40    // min candidate+default resolutions before adjusting
-    var typer1RegressionMargin = 0.08   // candidate must trail default by this to back off
+    var typer1ModelGlob = "typer-1"     // filename prefix marking the racing models
+    var typer1RatchetStep = 0.05        // share moved toward the leading model per adjust
+    var typer1RatchetMinSamples = 40    // per-arm resolutions + cooldown before each adjust
+    // Legacy single-candidate-rollout knobs, still parsed for old configs but unused by the
+    // race (start is fixed at 50/50, the lock threshold at 80%).
+    var typer1ShareStart = 0.10
+    var typer1ShareMin = 0.05
+    var typer1ShareMax = 0.95
+    var typer1RegressionMargin = 0.08
 
     static func load() -> TyperConfig {
         var cfg = TyperConfig()

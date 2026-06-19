@@ -12,7 +12,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var router: ModelRouter!
     // Which model served the in-flight generation, so the training record and the
     // ratchet attribute the eventual accept/reject to the model that produced it.
-    var routedModel: ModelRouter.Pick = .fallback
+    var routedModel: ModelRouter.Pick = .a
     var routedModelName = ""
     var statusItem: NSStatusItem!
     let statusMenu = NSMenu()
@@ -131,7 +131,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activeAppKey = currentAppKey()
         log("initial app=\(activeAppKey)")
         router = ModelRouter(cfg: cfg)
-        routedModelName = router.fallbackName
+        routedModelName = router.defaultName
         promptAccessibility()
         if (cfg.screenContextEnabled || cfg.topicMemoryEnabled), !CGPreflightScreenCaptureAccess() {
             // Triggers the one-time Screen Recording permission prompt. OCR/topic capture

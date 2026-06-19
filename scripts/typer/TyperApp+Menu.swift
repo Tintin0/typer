@@ -101,8 +101,8 @@ extension TyperApp {
         if cfg.trainingLogEnabled, trainingLog.count() > 0 {
             menu.addItem(NSMenuItem(title: "Inspect training data…", action: #selector(openTrainingData), keyEquivalent: ""))
         }
-        if router?.candidateAvailable == true {
-            menu.addItem(NSMenuItem(title: "Reset typer-1 rollout", action: #selector(resetRollout), keyEquivalent: ""))
+        if router?.racing == true {
+            menu.addItem(NSMenuItem(title: "Reset model race", action: #selector(resetRollout), keyEquivalent: ""))
         }
         menu.addItem(NSMenuItem(title: "Clear Learned Style", action: #selector(clearStyle), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reset All Data…", action: #selector(resetData), keyEquivalent: ""))
