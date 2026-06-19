@@ -6,11 +6,12 @@ requires-python = ">=3.10"
 # Core: dataset/eval/calibration scripts are stdlib-only and need nothing here. These
 # deps are for the actual training + tokenizer pre-flight + GGUF conversion stages.
 dependencies = [
-    "mlx-lm>=0.21.0",        # on-device LoRA SFT + fuse (Apple Silicon)
-    "transformers>=4.44.0",  # tokenizer pre-flight; HF model/tokenizer loading
+    "mlx-lm>=0.21.0", # on-device LoRA SFT + fuse (Apple Silicon)
+    "transformers>=4.44.0", # tokenizer pre-flight; HF model/tokenizer loading
     "huggingface-hub>=0.24.0",
-    "sentencepiece>=0.2.0",  # some base tokenizers need it
-    "datasets>=2.20.0",      # optional: pulling public corpora
+    "sentencepiece>=0.2.0", # some base tokenizers need it
+    "datasets>=2.20.0", # optional: pulling public corpora
+    "anthropic>=0.111.0",
 ]
 
 [project.optional-dependencies]
