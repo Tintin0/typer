@@ -95,7 +95,11 @@ struct MenuRootView: View {
         }
         .frame(width: kWidth)
         .padding(.vertical, 8)
-        .fixedSize(horizontal: false, vertical: true)
+        // No .fixedSize here: combined with the host's sizingOptions = [.preferredContentSize]
+        // it forms an infinite layout-invalidation loop (fitting-size query re-pins the ideal
+        // size, which invalidates layout, which re-queries…) that beachballs the app the moment
+        // the popover opens. preferredContentSize already sizes the panel from the fixed width
+        // and the VStack's ideal height, and resizes it as the collapsible sections expand.
     }
 
     private var divider: some View { Divider().opacity(0.4).padding(.horizontal, 12).padding(.vertical, 6) }
