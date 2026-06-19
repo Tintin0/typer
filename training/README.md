@@ -46,8 +46,37 @@ all depend on it. `tokenizer_preflight.py` enforces this before you adopt any ba
 | `synth_negatives.py` | stdlib | cold-start preference data: corrupts SFT positives (echo, over-length, special-token, mid-word, generic, repeat, truncated) → `kto_synth/dpo_synth.jsonl`. No model/users needed. |
 | `tokenizer_preflight.py` | transformers | hard word-boundary + BOS contract check for a candidate base. |
 | `calibrate_gate.py` | stdlib | re-fit `min_confidence` from `calib.jsonl`; reports good/junk **separation (AUC)** — escalate the base if it collapses. |
-| `eval.py` | stdlib | drive the real `typer-llama-server`; report first-word acc, matched-words, show-rate, latency/ttfp. The go/no-go meter vs Gemma. |
+| `eval.py` | stdlib | drive the real `typer-llama-server`; report first-word acc, matched-words, show-rate, latency/ttfp. The single-model go/no-go meter. |
+| `build_typed_eval.py` | stdlib | build the **realistic typed-content** eval set (`data/typed_eval.jsonl`): curated multi-register examples + slices of the on-disk non-prose corpora (chat, code), cut mid-utterance. Not corpus prose. |
+| `eval_compare.py` | stdlib (+`anthropic` for Claude) | the **diagnostic** eval: score TYPER harness vs raw model (same weights) to see if the harness helps or hurts, and rank candidate **teachers** (Gemma, Claude Haiku/Sonnet, local GGUFs) on real typed content. |
 | `train.sh` | mlx-lm, llama.cpp | stage runner: `corpus ▸ data ▸ synth ▸ preflight ▸ prepare ▸ quantize ▸ sft ▸ fuse ▸ gguf ▸ eval ▸ calibrate`, plus `cold-start` (one command). |
+
+## Diagnosing the harness + picking a teacher (`eval_compare.py`)
+
+`eval.py` measures one model end-to-end. When you suspect TYPER underperforms its model — or
+want to know if a **better teacher** exists to distill from — use the comparative eval against a
+realistic typed-content set (chat, email, code, commit messages, search, notes), not prose.
+
+```bash
+# build the realistic eval set (curated only: --n-chat 0 --n-code 0; corpora make it bigger)
+uv run training/build_typed_eval.py --out training/data/typed_eval.jsonl
+
+# compare sources. The same GGUF runs through the full harness AND raw (greedy, no harness
+# logic) so the delta isolates the harness. Teachers are ranked by next-word match.
+cd training
+ANTHROPIC_API_KEY=sk-... uv run eval_compare.py \
+    --data data/typed_eval.jsonl \
+    --harness "$HOME/Library/Application Support/typer/Models/typer-1-distill.gguf" \
+    --teacher "gemma:$HOME/Library/Application Support/typer/Models/gemma-4-E2B-i1-Q4_K_M.gguf" \
+    --claude claude-haiku-4-5 --claude claude-sonnet-4-6 \
+    --out data/eval_compare_report.json
+```
+
+The report prints a **HARNESS vs RAW** verdict (does the harness's sampler/shaping/gate earn its
+keep, including how many genuinely-useful suggestions the confidence gate suppresses) and a
+**TEACHER RANKING** (the best next-word match on real typed content is the teacher worth
+distilling). Raw mode is served by `typer-llama-server` itself (`"mode":"raw"`): same llama.cpp
+backend, greedy decode, none of TYPER's logic. Run `eval_compare.py -h` for all flags.
 
 ## Cold start — one command
 

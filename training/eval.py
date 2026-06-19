@@ -60,10 +60,16 @@ class Server:
             bufsize=1, text=True,
         )
 
-    def request(self, context: str, max_words: int, timeout: float = 15.0):
-        """Send one completion request; return (final_text, conf, latency_ms, ttfp_ms)."""
-        req = json.dumps({"task": "complete", "context": context,
-                          "max_words": max_words, "lexicon": ""})
+    def request(self, context: str, max_words: int, timeout: float = 15.0, mode: str | None = None):
+        """Send one completion request; return (final_text, conf, latency_ms, ttfp_ms).
+
+        mode="raw" hits the server's harness-free greedy path (eval_compare.py's baseline);
+        the default (None) is the full TYPER harness the app uses.
+        """
+        payload = {"task": "complete", "context": context, "max_words": max_words, "lexicon": ""}
+        if mode:
+            payload["mode"] = mode
+        req = json.dumps(payload)
         assert self.proc.stdin and self.proc.stdout
         t0 = time.monotonic()
         self.proc.stdin.write(req + "\n")

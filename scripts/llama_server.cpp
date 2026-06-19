@@ -483,6 +483,48 @@ public:
         }
         return out;
     }
+
+    // Raw, harness-free decode: the SAME llama.cpp backend and BOS handling as generate(),
+    // but greedy (argmax) with none of TYPER's value-add — no tuned nucleus sampler, no
+    // lexicon bias, no streaming word-shaping/echo-removal/word-limit/quality gate. Used by
+    // eval_compare.py as the "raw model" baseline, so the harness-vs-raw delta isolates how
+    // much the harness itself helps (or hurts). Control/special tokens are still banned (that
+    // is table-stakes for any sane integration, not harness cleverness).
+    std::string generate_raw(const std::string &prompt, int max_tokens) {
+        auto toks = tokenize(prompt, llama_vocab_get_add_bos(vocab));
+        int over = (int)toks.size() + max_tokens + 8 - n_ctx;
+        if (over > 0) {
+            int drop = std::min(over, (int)toks.size() - 1);
+            if (drop > 0) toks.erase(toks.begin(), toks.begin() + drop);
+            last_prompt_tokens.clear();
+        }
+        prepare_prompt(toks);
+
+        auto params = llama_sampler_chain_default_params();
+        params.no_perf = true;
+        llama_sampler *chain = llama_sampler_chain_init(params);
+        if (!special_biases.empty()) {
+            llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), (int32_t)special_biases.size(), special_biases.data()));
+        }
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+        std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> smpl(chain, &llama_sampler_free);
+
+        std::string out;
+        double prob_sum = 0.0;
+        int prob_n = 0;
+        last_avg_prob = 0.0;
+        for (int i = 0; i < max_tokens; ++i) {
+            llama_token id = llama_sampler_sample(smpl.get(), ctx, -1);
+            prob_sum += token_prob(id);
+            prob_n++;
+            last_avg_prob = prob_sum / prob_n;
+            llama_sampler_accept(smpl.get(), id);
+            if (llama_vocab_is_eog(vocab, id)) break;
+            out += detok(id);
+            decode_one(id);
+        }
+        return out;
+    }
 };
 
 // Tail window with a STABLE start, mirroring the Swift side. A plain "last N bytes"
@@ -546,6 +588,20 @@ int main(int argc, char **argv) {
                 std::string context = json_get_string(line, "context");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
                 if (context.size() > 2200) context = stable_tail(context, 2200);
+
+                // Raw baseline path (eval_compare.py): greedy decode, harness logic stripped,
+                // only first-line + trim cleanup so the comparison reflects the model itself.
+                if (json_get_string(line, "mode") == "raw") {
+                    int raw_tokens = std::max(8, std::min(28, max_words + 12));
+                    std::string raw = engine.generate_raw(prompt_complete(context), raw_tokens);
+                    size_t nl = raw.find('\n'); if (nl != std::string::npos) raw.resize(nl);
+                    std::string out = trim(raw);
+                    char cbuf[16]; snprintf(cbuf, sizeof(cbuf), "%.3f", engine.last_avg_prob);
+                    if (out.empty()) std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
+                    else std::cout << "{\"ok\":true,\"suggestion\":{\"kind\":\"completion\",\"text\":\""
+                                   << json_escape(out) << "\",\"conf\":" << cbuf << "}}\n" << std::flush;
+                    continue;
+                }
                 engine.set_lexicon(json_get_string(line, "lexicon"));
 
                 int max_tokens = std::max(8, std::min(18, max_words + 7));
