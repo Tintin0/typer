@@ -234,7 +234,14 @@ extension TyperApp {
         // word is actually misspelled, so correctly-spelled type-along is untouched.
         if cfg.typoEnabled, text.unicodeScalars.allSatisfy({ isWordSeparator($0) }),
            let word = lastWordFromBuffer(), let fix = correction(for: word) {
-            if completion != nil { completion = nil; prefetched = nil; prefetchKey = ""; overlay.orderOut(nil) }
+            // Resolve the on-screen completion's outcome before dropping it for the typo fix,
+            // the same way the divergence path below does — otherwise its accept/reject signal
+            // never reaches the model race, adaptive feedback, or training log, and its pending
+            // training example is silently overwritten by the next suggestion (issue #3).
+            if let comp = completion {
+                resolveCompletionOutcome(comp, via: comp.consumed > 0 ? "typethrough" : "none")
+                completion = nil; prefetched = nil; prefetchKey = ""; overlay.orderOut(nil)
+            }
             presentTypo(word: word, fix: fix)
             return
         }
