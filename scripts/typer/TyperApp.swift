@@ -33,7 +33,7 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var debounce: Timer?
     // The accept tap is enabled exactly while a suggestion is on screen, so Typer is
     // out of the keystroke-consuming path the rest of the time.
-    var active: HelperSuggestion? { didSet { refreshAcceptTap() } }      // typo diff
+    var active: Correction? { didSet { refreshAcceptTap() } }            // typo/grammar diff
     var completion: ActiveCompletion? { didSet { refreshAcceptTap() } } // inline completion
     var lastCaretPoint: NSPoint?
     var lastCaretHeight: CGFloat = 18   // caret line height, to match the app's font
@@ -161,6 +161,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupEventTap()
         updateAXObserver()
         startTopicTimer()
+        // Seed the spell checker with the user's already-learned vocabulary so their
+        // jargon isn't flagged from the first keystroke (off the hot path).
+        DispatchQueue.global(qos: .utility).async { [weak self] in self?.syncLexiconToSpellChecker() }
         // Only spin up the model if inline completion is actually on (typo correction
         // is local-only). If it's off, the helper stays unspawned until it's enabled.
         if cfg.enabled, cfg.completionEnabled {
@@ -227,6 +230,9 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard buffer.count > learned else { return }
         lexicon.learn(from: String(buffer.dropFirst(learned)))
         lexiconWatermark[activeAppKey] = buffer.count
+        // Teach the spell checker the user's vocabulary so their jargon/names stop being
+        // flagged as typos. Unconditional — it only reduces false positives.
+        syncLexiconToSpellChecker()
     }
 
     // True when Typer should stay silent in the current app (per-app disable or a
