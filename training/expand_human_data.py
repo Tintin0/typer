@@ -21,7 +21,44 @@ import sys
 import time
 from pathlib import Path
 
-from collect_human_data import VARIATION_SYS, norm_completion, parse_json_array, append
+from collect_human_data import norm_completion, parse_json_array, append
+
+# Variation instructions tuned for the bulk training set: short, in-register, human, no slop.
+# (collect_human_data.py keeps its own lighter prompt for the live preview; this is the one that
+# shapes the data we actually train on.)
+EXPAND_VARIATION_SYS = (
+    "A real person typed a short continuation in their own voice while mid-sentence in an app. "
+    "Write alternative continuations the SAME person might type on another day. Hard rules:\n"
+    "- SHORT: about the same length as the original, never more than ~2 words longer. Inline "
+    "autocomplete, not a sentence rewrite.\n"
+    "- Same register, exactly: casual stays casual, lowercase stays lowercase, slang and "
+    "abbreviations stay, no added punctuation or capitalization.\n"
+    "- Sound like a person mid-thought, NOT an assistant. Never add pleasantries, hedges, or "
+    "filler — no 'I'd be happy to', 'let me', 'sure', 'of course', 'feel free', 'happy to help', "
+    "'great', and don't pad with 'just'/'actually'/'basically' unless the original had them.\n"
+    "- Don't make it more formal, more correct, more complete, or more enthusiastic. Add no new "
+    "information and no explanation.\n"
+    "- Each item is ONLY the continuation text (what comes right after the context)."
+)
+
+# Assistant-y / marketing openers and phrases that mark a non-human variation.
+SLOP_OPENERS = ("i'd be happy", "i would be happy", "let me ", "sure,", "sure!", "of course",
+                "certainly", "absolutely", "here's ", "here is ", "no problem", "i can help",
+                "i'll help", "i hope")
+SLOP_ANYWHERE = ("as an ai", "happy to help", "feel free", "i hope this helps", "please note",
+                 "let me know if", "don't hesitate")
+
+
+def looks_human(text: str, base_words: int) -> bool:
+    t = text.strip()
+    if not t or not any(c.isalnum() for c in t):
+        return False
+    low = t.lower()
+    if any(low.startswith(s) for s in SLOP_OPENERS) or any(s in low for s in SLOP_ANYWHERE):
+        return False
+    wc = len(t.split())
+    # No unnecessary length: at most ~2 words past what the human actually wrote, hard cap 14.
+    return wc <= max(base_words + 2, 5) and wc <= 14
 
 
 def custom_id(prompt: str, completion: str) -> str:
@@ -83,7 +120,7 @@ def main() -> int:
                 print("still processing — re-run to collect (or pass --wait).", file=sys.stderr); return 0
             time.sleep(args.poll)
         gmap = state["map"]
-        kept = 0
+        kept = dropped = 0
         for entry in cli.messages.batches.results(state["batch_id"]):
             g = gmap.get(entry.custom_id)
             if g is None or entry.result.type != "succeeded":
@@ -91,18 +128,24 @@ def main() -> int:
             text = "".join(getattr(x, "text", "") for x in entry.result.message.content
                            if getattr(x, "type", "") == "text")
             _, context = context_of(g["prompt"])
-            base = g["completion"].strip().lower()
-            seen = {base}
+            base_comp = g["completion"].strip()
+            base_words = len(base_comp.split())
+            seen = {base_comp.lower()}                 # drop exact echoes of the human's own turn
             for s in parse_json_array(text):
-                v = norm_completion(context, str(s))
-                if v and v.strip().lower() not in seen:
-                    seen.add(v.strip().lower())
-                    append(args.out, {"prompt": g["prompt"], "completion": v,
-                                      "register": g.get("register", "other"), "src": "human-var",
-                                      "base": g["completion"]})
-                    kept += 1
+                raw = str(s).strip().strip('"')
+                if not looks_human(raw, base_words):   # slop / length filter
+                    dropped += 1
+                    continue
+                if raw.lower() in seen:
+                    continue
+                seen.add(raw.lower())
+                append(args.out, {"prompt": g["prompt"], "completion": norm_completion(context, raw),
+                                  "register": g.get("register", "other"), "src": "human-var",
+                                  "base": base_comp})
+                kept += 1
         state_path.unlink()
-        print(f"expanded into {kept} variation pairs -> {args.out}", file=sys.stderr)
+        print(f"expanded into {kept} variation pairs (dropped {dropped} as slop/too-long) -> {args.out}",
+              file=sys.stderr)
         return 0
 
     # SUBMIT: build one request per gold.
@@ -116,14 +159,17 @@ def main() -> int:
         app, context = context_of(g["prompt"])
         cid = custom_id(g["prompt"], g["completion"])
         gmap[cid] = g
+        base_words = len(g["completion"].split())
         requests.append({
             "custom_id": cid,
             "params": {
                 "model": args.model, "max_tokens": max_tokens, "temperature": 1.0,
-                "system": VARIATION_SYS,
+                "system": EXPAND_VARIATION_SYS,
                 "messages": [{"role": "user", "content":
                               f"[typing in {app}]\nContext: {context!r}\nTheir continuation: {g['completion'].strip()!r}\n\n"
-                              f"Write {args.per_gold} variations as a JSON array of strings."}],
+                              f"That continuation is {base_words} word(s). Write {args.per_gold} variations of it, "
+                              f"each roughly {base_words} words (never more than {base_words + 2}). "
+                              f"Return ONLY a JSON array of strings."}],
             },
         })
     batch = cli.messages.batches.create(requests=requests)
