@@ -43,7 +43,7 @@ jobs:
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_KEY }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: web
           # 4.x required: this is an assets-only Worker (no `main` script), which the action's
