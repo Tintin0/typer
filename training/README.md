@@ -110,6 +110,27 @@ if it ever crosses the cap:
 MEM_CAP_MB=1900 ./mem_guard.sh ./train.sh sft     # hard 2 GB ceiling; re-run to resume
 ```
 
+## Human-grounded data (the anti-slop pipeline)
+
+AI-written continuations don't match how a specific person actually types, which caps a
+distilled model. These two scripts ground the data in **your** writing, then scale it cheaply:
+
+```bash
+# 1) collect — interactive: "how would you write this?" with quick A/B/C options or type your own
+ANTHROPIC_API_KEY=sk-... uv run collect_human_data.py
+#    1/2/3 pick a candidate · type your own + Enter · :s skip · :q quit
+#    your accepted turns -> data/human_golds.jsonl  (+ a few live variations -> data/human_grounded.jsonl)
+
+# 2) expand — multiply each gold into hundreds of close, same-voice variations via the Batch API (50% off)
+ANTHROPIC_API_KEY=sk-... uv run expand_human_data.py --per-gold 150 --wait
+#    appends to data/human_grounded.jsonl: a few hundred golds × 150 ≈ tens of thousands of realistic pairs
+```
+
+The teacher only ever *varies* your real continuation (same register, length, informality — e.g.
+"staging environment right now" → "staging rn", "staging env at the moment"), never invents
+prose, so the set stays close to human writing. Fold `data/human_grounded.jsonl` into
+`build_distill_sft.py` for a much better-grounded FT run.
+
 ## Cold start — one command
 
 ```bash
