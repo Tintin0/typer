@@ -1,0 +1,49 @@
+name: Deploy web
+
+# The site bakes ANNOUNCEMENTS.md into the bundle at build time (web/src/announcements.ts
+# imports ../../ANNOUNCEMENTS.md?raw). It also fetches the file live from GitHub at runtime,
+# so a push usually shows up without a redeploy — but the baked fallback (offline / GitHub
+# down / rate-limited) only updates when the site is rebuilt and deployed. This workflow does
+# that automatically whenever ANNOUNCEMENTS.md or the site sources change on main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ANNOUNCEMENTS.md"
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        working-directory: web
+        run: bun run build
+
+      # Deploys the Worker + ./dist static assets per web/wrangler.jsonc (`wrangler deploy`).
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: deploy
