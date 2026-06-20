@@ -130,7 +130,10 @@ def main() -> int:
             _, context = context_of(g["prompt"])
             base_comp = g["completion"].strip()
             base_words = len(base_comp.split())
-            seen = {base_comp.lower()}                 # drop exact echoes of the human's own turn
+            # Keep provenance so the later ablation can weigh synth-style vs synth-genz vs human.
+            base_src = g.get("src")
+            var_src = (str(base_src) + "-var") if (base_src and str(base_src).startswith("synth")) else "human-var"
+            seen = {base_comp.lower()}                 # drop exact echoes of the base turn
             for s in parse_json_array(text):
                 raw = str(s).strip().strip('"')
                 if not looks_human(raw, base_words):   # slop / length filter
@@ -140,8 +143,8 @@ def main() -> int:
                     continue
                 seen.add(raw.lower())
                 append(args.out, {"prompt": g["prompt"], "completion": norm_completion(context, raw),
-                                  "register": g.get("register", "other"), "src": "human-var",
-                                  "base": base_comp})
+                                  "register": g.get("register", "other"), "src": var_src,
+                                  "base": base_comp, "base_src": base_src or "human"})
                 kept += 1
         state_path.unlink()
         print(f"expanded into {kept} variation pairs (dropped {dropped} as slop/too-long) -> {args.out}",
