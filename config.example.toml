@@ -73,9 +73,15 @@ disabled_apps = ""
 # = 0) and locking the winner at 80%. The live share + per-model reward windows are
 # persisted in router.json. With fewer than two such files Typer just serves the one model.
 typer1_enabled = true
-typer1_model_glob = "typer-1"      # filename prefix marking the racing models
+typer1_model_glob = "typer-1-"     # filename prefix for the small racing models
+                                   # (trailing "-" so the large "typer-1l.gguf" is excluded)
 typer1_ratchet_step = 0.05         # share moved toward the leading model per adjust
 typer1_ratchet_min_samples = 40    # per-arm resolutions + cooldown before each adjust
+
+# Model size. "small" = the on-device typer-1 race above; "large" = the higher-quality
+# typer-1l.gguf (downloaded on demand, best on 16GB+ RAM). Switch live from the menu /
+# onboarding — this just records the choice.
+model_variant = "small"            # "small" | "large"
 # Legacy single-candidate-rollout knobs — still parsed for old configs, unused by the race
 # (start is fixed 50/50, lock threshold 80%).
 typer1_share_start = 0.10

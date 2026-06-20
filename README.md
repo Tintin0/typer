@@ -1,62 +1,39 @@
 # Typer
 
-**Local, on-device autocomplete for macOS.** Typer watches what you type in any
-text field and shows a faint inline suggestion right at your cursor. Keep typing
-to follow it, press <kbd>Tab</kbd> to take a word, or <kbd>`</kbd> to take the
-whole thing. Everything runs locally with [llama.cpp](https://github.com/ggml-org/llama.cpp)
-and a small GGUF model — no cloud, no account, no Apple Developer Program.
+**Local, on-device autocomplete for macOS.** Typer shows a faint inline suggestion right
+at your cursor in (almost) any text field — keep typing to follow it, press <kbd>Tab</kbd>
+to take a word, or <kbd>`</kbd> to take the whole thing. Everything runs on your Mac with
+[llama.cpp](https://github.com/ggml-org/llama.cpp) and a small GGUF model — no cloud, no
+account, no Apple Developer Program.
 
-🌐 **[typr.frgmt.xyz](https://typr.frgmt.xyz)** · 📓 [Changelog](CHANGELOG.md)
+🌐 **[typr.frgmt.xyz](https://typr.frgmt.xyz)** · 📓 [Changelog](CHANGELOG.md) · 🛠 [Contributing](CONTRIBUTING.md)
 
-> **Status: alpha.** It feels good in native and Electron/WebKit apps now;
-> terminals and custom-drawn editors still have approximate caret placement, and
-> quality depends on your model. Feedback and PRs welcome.
-
----
+> **Status: alpha.** Feels good in native and Electron/WebKit apps; terminals and
+> custom-drawn editors still have approximate caret placement. Feedback and PRs welcome.
 
 ## What it does
 
-- **Inline ghost-text completions** (5–7 words) at your caret, in (almost) any app.
-- **Type-into-the-suggestion**: as long as you type what it predicted, the ghost
-  just shrinks — it doesn't regenerate. It only re-thinks when you diverge.
-- **Streaming**: the ghost appears word-by-word as the model generates, so the
-  first word shows in well under ~100ms instead of waiting for the whole phrase.
-- **Typo correction** via the macOS spell checker, shown as a strikethrough diff
-  (<kbd>Tab</kbd> to accept). *Off by default in this build* — enable it in the
-  menu or config.
-- **Per-app sessions**: each app keeps its own typing context, so switching apps
-  starts fresh instead of bleeding context between a chat and your code.
-- **Learns your voice**: keeps a small local record of what you actually write
-  (sent messages, text you type, completions you keep) and primes the model with it
-  so suggestions drift toward how *you* write. It also tracks how often you accept
-  vs. type past suggestions (shown in the menu). All on-device; clearable any time.
-- **Context-aware**: pulls in the surrounding text of the focused window and your
-  recently copied text. (An optional screenshot-OCR context source exists but is
-  **off by default** — it tended to be noisy.)
-- **Topic memory** (opt-in): every few minutes Typer can OCR the focused window (Apple
-  Vision, on-device), distill the **salient topics** — named entities + key nouns +
-  a short snippet — and store them locally. Later, when you type about one of those
-  things, the snippet is folded in so it can help you recall it (read a product page,
-  then mention it to a friend and the details resurface). It only injects when a
-  distinctive keyword you read appears in what you're typing — never raw screen text.
-  Off by default; needs Screen Recording; clearable; skips terminals/secure input.
-
-### Keys
+- **Inline ghost-text completions** at your caret, streaming word-by-word (first word in
+  well under ~100ms).
+- **Type-into-the-suggestion** — as long as you type what it predicted the ghost just
+  shrinks; it only re-thinks when you diverge.
+- **Learns your voice** locally — it primes the model with how *you* actually write.
+  Nothing leaves your Mac; clear it any time.
+- **Per-app context**, plus opt-in window-text, clipboard, and topic memory (all on-device).
+- **Typo correction** via the macOS spell checker (off by default).
 
 | Key | Action |
 |-----|--------|
-| <kbd>Tab</kbd> | Accept the next word (the rest stays) |
-| <kbd>`</kbd> (backtick) | Accept the entire suggestion |
-| <kbd>Esc</kbd> | Dismiss the suggestion |
-| *(just keep typing)* | Follow along — matching keystrokes consume the ghost |
-
----
+| <kbd>Tab</kbd> | Accept the next word |
+| <kbd>`</kbd> (backtick) | Accept the whole suggestion |
+| <kbd>Esc</kbd> | Dismiss |
+| *(keep typing)* | Follow along — matching keystrokes consume the ghost |
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later, Apple Silicon recommended.
+- macOS 14 (Sonoma) or later — Apple Silicon recommended
 - [Xcode Command Line Tools](https://developer.apple.com/) — `xcode-select --install`
-- [Homebrew](https://brew.sh) (used to install llama.cpp)
+- [Homebrew](https://brew.sh)
 
 ## Install
 
@@ -66,231 +43,80 @@ cd typer
 ./install.sh
 ```
 
-`install.sh` will:
-1. `brew install llama.cpp`
-2. download a GGUF model into `~/Library/Application Support/typer/Models/`
-3. write a default config to `~/Library/Application Support/typer/config.toml`
-4. build and install `~/Applications/Typer.app`
-
-Then grant permissions and launch (see below).
-
-### Updating
-
-Because Typer builds from source (there's no pre-signed app to download), updates
-mean pulling the latest commits and rebuilding. Either run the updater from the
-checkout:
-
-```bash
-./update.sh            # fast-forward to the latest commits, rebuild, relaunch
-./update.sh --check    # just print how many commits behind you are
-```
-
-…or use the menu bar: click the ⌨︎ icon, then the **↻** button in the footer
-(next to the installed build, e.g. `#13f2827`). It fetches, tells you how many
-commits behind you are, and on confirmation rebuilds and restarts Typer in the
-background. The button only appears for source builds (those that know their
-checkout path). Update progress is logged to `~/Library/Logs/Typer-update.log`.
-
-`update.sh` only fast-forwards: if your checkout has local commits of its own it
-stops and asks you to reconcile by hand, so your changes are never overwritten.
-
-### Permissions (System Settings → Privacy & Security)
-
-- **Accessibility → enable Typer** — *required.* This is how Typer reads your
-  keystrokes and text context and inserts accepted suggestions.
-- **Screen Recording → enable Typer** — *optional.* Only needed for caret placement
-  in apps that expose no cursor at all (terminals, custom editors) and for the
-  off-by-default screen-OCR context. Native and Electron/WebKit apps don't need it.
+`install.sh` installs llama.cpp, downloads a model, writes a default config, and builds
+`~/Applications/Typer.app`. Then launch it:
 
 ```bash
 open ~/Applications/Typer.app
-tail -f ~/Library/Logs/Typer.log   # watch what it's doing
 ```
 
-A ⌨︎ icon appears in your menu bar. Click it to toggle features live (Enabled,
-Completions, Typo, context sources), see the model, accept-rate stats, and learned
-style count, clear learned style, open the config/log, or check for updates — no
-file editing needed.
+On first launch, **onboarding** walks you through permissions and picking a model size.
 
-### Stable signing (recommended)
+### Permissions (System Settings → Privacy & Security)
 
-By default the app is ad-hoc signed, so macOS resets its Accessibility grant on
-every rebuild. To keep the grant across rebuilds, create a one-time self-signed
-certificate (no Apple Developer Program needed):
+- **Accessibility** — *required.* How Typer reads what you type and inserts suggestions.
+- **Screen Recording** — *optional.* Only for caret placement in terminals + on-screen context.
+
+Onboarding links you straight to the right pane. After a rebuild you may need to re-grant
+Accessibility — see [stable signing](CONTRIBUTING.md#stable-signing) to make the grant stick.
+
+## Using it
+
+Click the **⌨︎ menu-bar icon** for everything: toggle features live, switch model size, see
+accept-rate stats, clear your learned style, open the config/log, or check for updates.
+
+- **Model size** — pick **Small** (fast, runs on any Mac) or **Large** (higher-quality
+  suggestions, best on 16 GB+ of RAM). Large downloads once, on demand, and switches live —
+  no restart. Change it from the menu dropdown or during onboarding.
+
+## Updating
+
+Typer builds from source, so updating means pulling the latest and rebuilding. Either:
 
 ```bash
-./scripts/make_signing_cert.sh   # approve the macOS dialog + enter your login password
-./scripts/build.sh
+./update.sh        # fast-forward to the latest, rebuild, relaunch
 ```
 
-After this, `./scripts/build.sh` re-signs with the same identity and the grant sticks.
-
----
-
-## Model
-
-Typer uses any GGUF the runtime can load; it auto-picks the first `.gguf` in the
-Models directory. The default download is set in `install.sh`:
-
-```bash
-TYPER_MODEL_REPO="unsloth/gemma-4-E2B-it-GGUF"
-TYPER_MODEL_FILE="gemma-4-E2B-it-Q4_K_M.gguf"
-```
-
-To use a different model, either drop a `.gguf` into
-`~/Library/Application Support/typer/Models/` (and set `model_path` in the config),
-or re-run the installer with an override:
-
-```bash
-TYPER_MODEL_URL='https://huggingface.co/<repo>/resolve/main/<file>.gguf' ./install.sh
-```
-
-**Tip:** completion is raw text *continuation*, so a **base / pretrained**
-(`-pt`/`-base`) model often feels more natural for autocomplete than an
-instruction-tuned (`-it`) one. Smaller models (0.5–2B) are faster; larger ones are
-more coherent. Experiment.
-
----
-
-## Configuration & tinkering
-
-Edit `~/Library/Application Support/typer/config.toml` and restart Typer
-(`pkill -f Typer.app/Contents/MacOS/Typer; open ~/Applications/Typer.app`).
-See [`config.example.toml`](config.example.toml) for all options, including:
-
-- `completion_enabled`, `typo_correction_enabled`
-- `max_completion_words`, `debounce_ms`, `min_context_chars`
-- the context toggles: `window_context_enabled`, `style_memory_enabled`,
-  `clipboard_context_enabled`, `screen_context_enabled`, `topic_memory_enabled`
-  (+ `topic_capture_seconds`)
-
-### Sampling / prompt
-
-Generation lives in [`scripts/llama_server.cpp`](scripts/llama_server.cpp) — a tiny
-JSONL stdin/stdout helper around llama.cpp. Temperature, top-k/p, repetition
-penalty, the `<bos>` handling, mid-word suppression, and spacing rules are all
-there. After editing, rebuild with `./scripts/build.sh`.
-
-### Frontend
-
-The menu-bar app is split by topic across [`scripts/typer/`](scripts/typer):
-the core class and its stored state live in `TyperApp.swift`, with one
-`extension TyperApp` per concern — `TyperApp+EventTap.swift` (event taps and
-the type-along loop), `TyperApp+Completion.swift` (generation, prefetch,
-ghost placement), `TyperApp+Typo.swift` (spell-check correction),
-`TyperApp+Caret.swift` (AX/screenshot caret placement),
-`TyperApp+Context.swift` (window text, OCR, clipboard, topic memory),
-`TyperApp+Menu.swift`, `TyperApp+Input.swift`, and `TyperApp+Stats.swift`.
-Supporting types each get their own file (`LlamaClient.swift`,
-`SuggestionOverlay.swift`, `GhostView.swift`, `StyleMemory.swift`,
-`TopicMemory.swift`, `TyperConfig.swift`, …). `main.swift` is the entry point.
-
----
-
-## How it works
-
-```
-  keystrokes ─▶ Swift app (CGEvent tap, Accessibility)
-                  │  builds context: text before cursor + window text +
-                  │  clipboard + your style sample
-                  ▼
-            typer-llama-server  (C++ / llama.cpp, persistent JSONL process)
-                  │  <bos> + context  ──▶  streams next-word continuation
-                  ▼
-            ghost overlay at the caret;  Tab / ` / type-through to accept
-```
-
-- **Why `<bos>`:** Gemma is trained with a leading begin-of-sequence token; without
-  it the model produces repetitive garbage. The helper always prepends it.
-- **Speed feel:** completions **stream** in word-by-word, and the model runs ~once
-  per 5–7-word chunk (not per keystroke) — while you type *along* a suggestion
-  nothing is regenerated, and the next chunk is prefetched in the background.
-- **Caret placement:** Accessibility `AXBoundsForRange` in native AppKit apps; the
-  `AXTextMarker` API in Chromium/WebKit apps (Discord, Slack, VS Code, Chrome,
-  Safari); and a screenshot + OCR locator as a last resort for apps that expose no
-  cursor at all (terminals, custom editors).
-
----
-
-## Personalization
-
-Typer learns your writing **locally** and uses it to prime the model:
-
-- It records substantive things you write — sent messages, text you type, and
-  completions you keep — to `~/Library/Application Support/typer/style.txt`, and
-  feeds a recent sample into each prompt so suggestions sound more like you.
-- It tracks **shown / accepted / ignored** suggestion stats (menu bar → the ⌨︎
-  icon). "Ignored" means a suggestion was shown but you typed something else.
-- **Menu → Clear Learned Style** wipes the corpus. Disable entirely with
-  `style_memory_enabled = false`.
-
-It never fine-tunes or uploads anything — personalization is purely the local
-style sample plus your per-app session text.
-
-### Train your own model (opt-in)
-
-Typer can build the dataset to **train its own small autocomplete model** and move off
-the big default Gemma. Enable *"Record my typing to train a local model"* in the menu
-and Typer saves `(context → suggestion, did you accept it)` examples to
-`~/Library/Application Support/typer/training.jsonl` — entirely on-device, `0600`,
-secret-screened, and wiped by "Reset All Data." The pipeline that turns that into a
-sub-1B GGUF (SFT → preference RL → quantize, all runnable on Apple Silicon) lives in
-[`training/`](training/), and the full plan — base-model choice, the RL recipe, and the
-privacy architecture — is in [`docs/autocomplete-model.md`](docs/autocomplete-model.md).
+…or click the **↻** button in the menu-bar popover — it fetches, tells you how many commits
+behind you are, then rebuilds and restarts in the background (progress in
+`~/Library/Logs/Typer-update.log`). It only fast-forwards, so local changes are never
+overwritten.
 
 ## Privacy
 
-Everything is local. The model runs on your machine; nothing is sent anywhere.
+Everything is local — the model runs on your machine and nothing is sent anywhere.
 
-- **Secure input is never captured.** While macOS secure input is active — password
-  fields, the login window, `sudo` prompts, password managers — Typer captures
-  nothing: no buffering, no learning, no logging, no AX reads, no generation.
-- **The log is not a keylogger.** By default the log records no typed text or
-  text snippets (only counts/events), and is created `0600`. Set
-  `debug_logging = true` to include snippets for troubleshooting.
-- **Local files are private.** `style.txt` (learned writing) and `stats.json` live
-  under `~/Library/Application Support/typer/` (mode `0600`) — delete them any time
-  (Menu → Clear Learned Style wipes the style corpus).
-- **Clipboard context skips secrets.** Content password managers mark concealed /
-  transient is never read into the prompt.
-- Window-text reads and the (off-by-default) screen OCR stay on-device and are only
-  used to build the local prompt.
+- **Secure input is never captured** — password fields, the login window, `sudo`, password
+  managers: no buffering, learning, logging, or generation.
+- **The log is not a keylogger** — by default it records no typed text (only counts/events).
+- **Your files are yours** — `style.txt` and `stats.json` live under
+  `~/Library/Application Support/typer/` (mode `0600`); wipe them any time
+  (Menu → *Clear Learned Style* / *Reset All Data*).
 
----
+## Get your AI coding agent up to speed
 
-## Limitations (alpha)
+Hacking on Typer with Claude Code, Cursor, or similar? Paste this to orient your agent fast:
 
-- Caret placement in terminals / custom-drawn editors is approximate and needs
-  Screen Recording (native + Electron/WebKit apps are exact).
-- The model streams, but full warm generation is still ~0.4s; very fast typists may
-  see brief flicker as suggestions update.
-- Mid-word completions are suppressed (the small base model isn't reliable at them).
-- Quality depends heavily on the model you choose.
+> You're contributing to **Typer**, a local on-device autocomplete app for macOS (Swift/AppKit +
+> SwiftUI front end, a C++ llama.cpp helper, and a Python training pipeline). Get oriented before
+> we change anything:
+> 1. Read `README.md` and `CONTRIBUTING.md`.
+> 2. Map the architecture: the menu-bar app in `scripts/typer/` — start at `TyperApp.swift` (the
+>    core `TyperApp` class) and its `extension TyperApp` files split by concern (`+EventTap`,
+>    `+Completion`, `+Caret`, `+Context`, `+Menu`, `+Model`); the generation helper
+>    `scripts/llama_server.cpp` (llama.cpp over a JSONL stdin/stdout protocol); and the model
+>    work in `training/` (read `training/README.md`).
+> 3. Note the flow: `scripts/build.sh` compiles the Swift app + C++ server, signs, and installs
+>    to `~/Applications/Typer.app`; `./update.sh` pulls + rebuilds.
+>
+> Then give me a short summary of (a) how a keystroke becomes ghost-text at the caret, (b) how the
+> model is selected and loaded (Small vs Large), and (c) where completion quality is tuned. Ask
+> before editing anything.
 
-## Battery
+## Contributing
 
-The model runs on the GPU, so battery use scales with how often it generates. Typer
-keeps this in check:
-
-- It generates on a **pause**, not on every keystroke (`debounce_ms`, default 110).
-- **Battery saver** (on by default) stretches the debounce and disables speculative
-  prefetch while on battery or in Low Power Mode — toggle in the menu (it shows
-  "throttling now" when active), or tune `battery_saver` / `battery_debounce_ms` /
-  `prefetch_enabled` in the config.
-- For maximum battery life, use a **smaller model** (the single biggest lever) and/or
-  raise `debounce_ms`.
-
-## Troubleshooting
-
-- **No suggestions / `AX trusted=false` in the log** → grant Accessibility to
-  Typer, then relaunch. After a rebuild, re-grant unless you set up stable signing.
-- **Battery draining fast** → it's the model's GPU use. Make sure Battery saver is on
-  (menu), raise `debounce_ms`, or switch to a smaller GGUF. See **Battery** above.
-- **Suggestions appear at the bottom of the screen** → that app exposes no caret to
-  Accessibility (often a terminal); enable Screen Recording for the OCR-based locator.
-- **Garbage completions** → try a different / base model; the sampling temperature
-  is already conservative in the helper.
-- **Watch the log:** `tail -f ~/Library/Logs/Typer.log`
+PRs welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for the build/run flow, project layout,
+architecture, configuration, and the model-training pipeline.
 
 ## License
 
