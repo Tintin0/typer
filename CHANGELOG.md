@@ -3,6 +3,83 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## A typed-content eval, a greedy harness, and a Claude-distilled typer-1
+
+We were grading typer-1 on prose and serving a sampler tuned for a model we no longer ship. Both
+are fixed. A new eval measures the model on the registers people actually type in; a diagnostic
+separated the model from its harness and found the harness was the bottleneck; and the small model
+now distills from Claude instead of Gemma. The Claude-distilled student is live and taking ~60% of
+traffic from the Gemma-distilled arm in the race.
+
+- **Typed-content eval (`training/build_typed_eval.py`, `eval_compare.py`).** 180 mid-utterance
+  examples across chat, email, code, commits, search, and notes, scored on first-word accuracy and
+  type-through length (matched leading words). Replaces the encyclopedic held-out set that didn't
+  predict in-product behavior. `eval_compare.py` scores any number of sources side by side and
+  ranks candidate distillation teachers.
+- **Harness-vs-raw isolation + greedy default (`scripts/llama_server.cpp`).** A new `mode:"raw"`
+  decode path (same weights, greedy, none of the harness logic) lets the model be measured apart
+  from its sampler/shaping/gate. The diagnostic showed the tuned nucleus sampler was *costing*
+  accuracy on real typing, so the completion sampler now defaults to **greedy** (the anti-loop
+  penalty is retained); `TYPER_SAMPLER=nucleus` restores the old one. +1 first-word / +0.04 matched
+  on the new model, neutral on the old.
+- **Claude-distilled typer-1 (`training/distill_teacher_batch.py`).** Teachers measured directly on
+  the typed eval: Gemma 31% first-word, Claude Haiku 37%, Sonnet 43%. The distillation contexts were
+  relabeled with Claude over the Message Batches API (50% off, resumable; assistant-register outputs
+  filtered out) and the student retrained at matched capacity — raw first-word 28% → 31%, matched
+  0.47 → 0.53. A community full fine-tune (`typer-1 v1`, HuggingFace-hosted) reaches 35% / 0.61, the
+  strongest on-device result, two points behind the Haiku teacher.
+- **Human-grounded data pipeline (`training/collect_human_data.py`, `expand_human_data.py`,
+  `mine_capture.py`, `merge_synth.py`).** Grounds the training set in real human writing instead of
+  model prose: interactive elicitation of your own continuations, privacy-filtered mining of accepted
+  local capture, teacher-assisted expansion that preserves your register/length/slang, and provenance
+  tags so each source can be ablated. Wired to the Batch API for scale, capped under a memory guard.
+- **Research writeup.** A full methodology paper at [typr.frgmt.xyz/research](https://typr.frgmt.xyz/research)
+  (`web/research/`): the eval design, the harness finding, the teacher comparison, and the honest
+  limitations. The site now auto-deploys on push via a GitHub Action.
+
+## Model size choice, first-run onboarding, and in-app updates
+
+- **Small / Large model choice (`TyperApp+Model.swift`, `ModelDownloader.swift`, `ModelRouter.swift`).**
+  `Small` is the on-device typer-1 0.6B race (default); `Large` is `typer-1l.gguf` (~1.2 GB, best on
+  16 GB+ of RAM), served as a single model and downloaded on demand from HuggingFace with a progress
+  bar, then switched live with no restart. Choose it from the menu dropdown or onboarding;
+  `model_variant` records the choice. The small-race glob tightened to `typer-1-` so the large file
+  isn't pulled into the race.
+- **First-run onboarding (`OnboardingWindow.swift`).** A multi-step window on first launch: welcome,
+  permissions (live Accessibility + Screen Recording status), model choice, and how-to. Gated by
+  `onboarding_complete`.
+- **In-app updates (`update.sh`, menu ↻).** `build.sh` stamps the source checkout path + built
+  commit into the bundle; `update.sh` fast-forwards to the latest, rebuilds, and relaunches; the
+  menu's ↻ button reports how many commits behind you are and runs it in the background
+  (`~/Library/Logs/Typer-update.log`). Fast-forward only, so local changes are never overwritten.
+- **Docs split.** The README is slimmed to getting-started + updating; build, architecture,
+  configuration, and the training pipeline moved to a new `CONTRIBUTING.md`.
+
+## Typo correction grows a foundation, and a round of fixes
+
+Typo correction gained a proper abstraction and the start of grammar support (both still off by
+default), and a few review-found bugs are fixed.
+
+- **`Correction` abstraction + grammar foundation (`Correction.swift`, `TyperApp+Typo.swift`).**
+  Spelling was refactored onto a `Correction` value type (kind / replacement / message / AX span)
+  with no behavior change, and on-device grammar checking (`NSSpellChecker.requestChecking`,
+  advisory-only, run off the main thread with staleness guards) drops in behind `grammar_enabled`
+  (off by default). New opt-in quality knobs — guess ranking by edit distance / QWERTY adjacency /
+  your vocabulary, a confidence gate, case-only fixes, and learn-from-rejections — all default to
+  the previous behavior.
+- **Typo path no longer drops a completion's outcome (#3).** Finishing a misspelled word over a live
+  completion now resolves its accept/reject signal (race, feedback, training log) before showing the
+  fix, instead of dropping it and overwriting the pending training example.
+- **Debounced saves persist the latest state (#2).** `FeedbackMemory` and `RouterMemory` re-read
+  state at fire time instead of encoding a snapshot captured when the save was scheduled, and a new
+  `applicationWillTerminate` flushes the learning + training stores on quit so a ⌘Q can't roll back
+  the last few seconds.
+- **`stats.json` written `0600`, atomically (#4).** Matches every other store and the documented
+  privacy guarantee.
+- **Menu no longer beachballs.** Removed a `.fixedSize` on the popover root that, combined with the
+  hosting controller's `preferredContentSize` sizing, formed an infinite layout loop the moment the
+  popover opened.
+
 ## typer-1 is now Qwen3-0.6B, and two variants race for the slot
 
 The SmolLM2-360M `typer-1` hit a capacity ceiling — on a clean held-out set drawn from the
