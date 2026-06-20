@@ -47,7 +47,15 @@ def main() -> int:
                     o = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # Some agents literally embedded the <context>/<continuation> placeholder tags
+                # from the prompt — strip those artifacts before anything downstream.
+                for k in ("prompt", "completion"):
+                    if isinstance(o.get(k), str):
+                        for tag in ("<context>", "</context>", "<continuation>", "</continuation>"):
+                            o[k] = o[k].replace(tag, "")
                 p, c = o.get("prompt"), o.get("completion")
+                if isinstance(c, str) and c and not c[0].isspace():
+                    c = o["completion"] = " " + c        # re-assert the leading-space convention
                 if not p or not c or not ok(c, args.max_words):
                     dropped_bad += 1
                     continue
