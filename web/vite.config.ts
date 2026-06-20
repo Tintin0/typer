@@ -3,9 +3,18 @@ import { defineConfig, type Plugin } from "vite";
 
 // In production, Cloudflare's asset serving maps /announcements -> announcements.html
 // automatically. This mirrors that for `vite dev` and `vite preview`.
+//
+// /research          -> research.html      (the index, served directly by CF)
+// /research/<slug>   -> research.html       in dev; in production CF has no matching
+//                       static file for the nested path and falls back to the SPA
+//                       handler (index.html), which detects the /research/ prefix and
+//                       hands rendering to the same research entry script. The research
+//                       module reads location.pathname, so a single entry serves both.
 function cleanUrls(): Plugin {
   const middleware = (req: any, _res: any, next: () => void) => {
-    if (/^\/announcements(\?|$)/.test(req.url ?? "")) req.url = "/announcements.html";
+    const url = req.url ?? "";
+    if (/^\/announcements(\?|$)/.test(url)) req.url = "/announcements.html";
+    else if (/^\/research(\/|\?|$)/.test(url)) req.url = "/research.html";
     next();
   };
   return {
@@ -31,6 +40,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         announcements: resolve(__dirname, "announcements.html"),
+        research: resolve(__dirname, "research.html"),
       },
     },
   },

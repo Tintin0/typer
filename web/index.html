@@ -95,11 +95,25 @@
 </style>
 </head>
 <body>
+<!--
+  SPA fallback for nested research routes. In production Cloudflare has no static file
+  for /research/<slug>, so it serves this index.html. We detect that prefix before the
+  page paints and hand off to research.html (which CF DOES serve, at /research),
+  carrying the slug as a query param the research entry knows how to read. This keeps
+  the canonical deep-link URL clean while resolving it through the one route CF serves.
+-->
+<script>
+  (function () {
+    var m = location.pathname.match(/^\/research\/([^/?#]+)\/?$/);
+    if (m) location.replace("/research?p=" + encodeURIComponent(m[1]));
+  })();
+</script>
 <div class="col">
   <header class="top">
     <a class="brand" href="/">typr<span class="g">_</span></a>
     <nav class="topnav">
       <a class="gh" href="/announcements">announcements</a>
+      <a class="gh" href="/research">research</a>
       <a class="gh" href="https://github.com/frgmt0/typer">github ↗</a>
     </nav>
   </header>
@@ -145,7 +159,7 @@
 
   <footer>
     <span>typr — local autocomplete for macOS</span>
-    <span><a href="/announcements">announcements</a> · <a href="https://github.com/frgmt0/typer">source</a> · <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a> · MIT</span>
+    <span><a href="/announcements">announcements</a> · <a href="/research">research</a> · <a href="https://github.com/frgmt0/typer">source</a> · <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a> · MIT</span>
   </footer>
 </div>
 

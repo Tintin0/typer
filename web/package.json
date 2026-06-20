@@ -9,7 +9,12 @@
     "deploy": "vite build && wrangler deploy"
   },
   "devDependencies": {
+    "@types/katex": "^0.16.8",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "katex": "^0.17.0",
+    "marked": "^18.0.5"
   }
 }
