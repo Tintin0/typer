@@ -2,7 +2,9 @@
 data/
 corpus/
 adapters/
+adapters_*/
 fused_model/
+fused_*/
 base-q*/
 *.gguf
 .venv/
