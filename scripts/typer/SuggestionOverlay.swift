@@ -33,16 +33,26 @@ final class SuggestionOverlay: NSPanel {
         place(attr, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: animate)
     }
 
-    func showTypo(original: String, replacement: String, at point: NSPoint, lineHeight: CGFloat) {
+    // Inline diff for a pending correction. Spelling, and grammar with a fix, render the
+    // red-strike original → green replacement. Advisory-only grammar (no replacement)
+    // shows just its message in amber — Tab passes through, there's nothing to apply.
+    func show(correction c: Correction, at point: NSPoint, lineHeight: CGFloat) {
         let fs = fontSize(for: lineHeight)
         let s = NSMutableAttributedString()
-        s.append(NSAttributedString(string: original, attributes: [
-            .font: NSFont.systemFont(ofSize: fs),
-            .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)]))
-        s.append(NSAttributedString(string: " → " + replacement, attributes: [
-            .font: NSFont.systemFont(ofSize: fs, weight: .semibold),
-            .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)]))
+        if let replacement = c.replacement {
+            s.append(NSAttributedString(string: c.displayOriginal, attributes: [
+                .font: NSFont.systemFont(ofSize: fs),
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)]))
+            s.append(NSAttributedString(string: " → " + replacement, attributes: [
+                .font: NSFont.systemFont(ofSize: fs, weight: .semibold),
+                .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)]))
+        } else {
+            // Advisory-only grammar note: amber, no green replacement glyph.
+            s.append(NSAttributedString(string: c.message ?? c.displayOriginal, attributes: [
+                .font: NSFont.systemFont(ofSize: fs, weight: .medium),
+                .foregroundColor: NSColor.systemOrange.withAlphaComponent(0.95)]))
+        }
         place(s, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
     }
 

@@ -63,39 +63,127 @@ extension TyperApp {
         let full = NSRange(location: 0, length: (word as NSString).length)
         // Autocorrect first: correction() returns nil for correct words (so no
         // false positives on "hello"/"NASA") but still catches common typos that
-        // checkSpelling does not flag, e.g. "teh" -> "the".
-        if let c = checker.correction(forWordRange: full, in: word, language: lang, inSpellDocumentWithTag: spellTag),
-           c.lowercased() != word.lowercased() { return c }
+        // checkSpelling does not flag, e.g. "teh" -> "the". This is the highest-trust
+        // source; when casing fixes are enabled it may differ only by case (i -> I).
+        if let c = checker.correction(forWordRange: full, in: word, language: lang, inSpellDocumentWithTag: spellTag) {
+            if c.lowercased() != word.lowercased() { return c }
+            // Case-only fix (i -> I, proper nouns): trust it only from this autocorrect
+            // pass, and only when explicitly enabled — guesses are too noisy for case.
+            if cfg.typoCasingFix, c != word { return c }
+        }
         // Otherwise only offer a guess when the word is genuinely flagged.
         let mis = checker.checkSpelling(of: word, startingAt: 0)
         guard mis.location != NSNotFound, mis.length > 0 else { return nil }
-        if let g = checker.guesses(forWordRange: full, in: word, language: lang, inSpellDocumentWithTag: spellTag)?.first,
-           g.lowercased() != word.lowercased() { return g }
-        return nil
+        guard let raw = checker.guesses(forWordRange: full, in: word, language: lang, inSpellDocumentWithTag: spellTag),
+              !raw.isEmpty else { return nil }
+        let candidates = raw.filter { $0.lowercased() != word.lowercased() }
+        guard !candidates.isEmpty else { return nil }
+        // Pick the best guess, not blindly the first. Ranking + a confidence gate are
+        // both opt-in; with both off this stays byte-for-byte the old `.first` behavior.
+        let best = cfg.typoRankingEnabled ? rankGuesses(candidates, for: word) : candidates[0]
+        if cfg.typoMinConfidence > 0 {
+            let norm = Double(editDistance(word.lowercased(), best.lowercased())) / Double(max(word.count, best.count, 1))
+            // A larger normalized edit distance means a less-confident guess; reject
+            // those (suppresses low-confidence leaps like "rcv" -> "receive").
+            if norm > (1 - cfg.typoMinConfidence) { return nil }
+        }
+        return best
     }
 
-    @discardableResult
-    func showTypoIfMisspelled() -> Bool {
-        guard let word = lastWordFromBuffer(), let fix = correction(for: word) else { return false }
-        presentTypo(word: word, fix: fix)
-        return true
+    // Order spell-checker guesses by how plausibly they're the word the user meant:
+    // smaller edit distance first, then a bonus when a single substitution is a QWERTY
+    // neighbor (a fat-finger), then the user's own frequency as the tie-breaker — a
+    // word they actually type wins over an equidistant one they don't.
+    func rankGuesses(_ guesses: [String], for word: String) -> String {
+        let w = word.lowercased()
+        let topList = cfg.lexiconEnabled ? Set(lexicon.topWords().split(separator: " ").map(String.init)) : []
+        func score(_ g: String) -> Double {
+            let lg = g.lowercased()
+            var s = Double(editDistance(w, lg))                 // lower is better
+            if lg.count == w.count, isSingleQwertySub(w, lg) { s -= 0.5 }
+            if topList.contains(lg) { s -= 0.25 }               // user types this word
+            return s
+        }
+        return guesses.min { score($0) < score($1) } ?? guesses[0]
     }
 
-    // Show the red-strikethrough/green-replacement diff for a known misspelling.
+    // True when two equal-length strings differ in exactly one position and that pair
+    // of letters are physically adjacent on a QWERTY keyboard (a likely fat-finger typo).
+    func isSingleQwertySub(_ a: String, _ b: String) -> Bool {
+        let ca = Array(a), cb = Array(b)
+        guard ca.count == cb.count else { return false }
+        var diffIdx = -1
+        for i in ca.indices where ca[i] != cb[i] {
+            if diffIdx >= 0 { return false }     // more than one difference
+            diffIdx = i
+        }
+        guard diffIdx >= 0 else { return false }
+        return TyperApp.qwertyNeighbors[ca[diffIdx]]?.contains(cb[diffIdx]) ?? false
+    }
+
+    static let qwertyNeighbors: [Character: Set<Character>] = {
+        let rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+        var map: [Character: Set<Character>] = [:]
+        let grid = rows.map { Array($0) }
+        for (r, row) in grid.enumerated() {
+            for (c, ch) in row.enumerated() {
+                var n = Set<Character>()
+                if c > 0 { n.insert(row[c - 1]) }
+                if c + 1 < row.count { n.insert(row[c + 1]) }
+                if r > 0, c < grid[r - 1].count { n.insert(grid[r - 1][c]) }
+                if r + 1 < grid.count, c < grid[r + 1].count { n.insert(grid[r + 1][c]) }
+                map[ch] = n
+            }
+        }
+        return map
+    }()
+
+    // Plain Levenshtein distance (insert/delete/substitute = 1). Small inputs (words),
+    // so the simple two-row DP is plenty.
+    func editDistance(_ a: String, _ b: String) -> Int {
+        let s = Array(a), t = Array(b)
+        if s.isEmpty { return t.count }
+        if t.isEmpty { return s.count }
+        var prev = Array(0...t.count)
+        var cur = [Int](repeating: 0, count: t.count + 1)
+        for i in 1...s.count {
+            cur[0] = i
+            for j in 1...t.count {
+                let cost = s[i - 1] == t[j - 1] ? 0 : 1
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            swap(&prev, &cur)
+        }
+        return prev[t.count]
+    }
+
+    // Show the inline correction diff. Builds a `.spelling` Correction for a known
+    // misspelling; the general present(_:) drives the overlay (grammar uses it too).
     func presentTypo(word: String, fix: String) {
-        active = HelperSuggestion(kind: "typo", text: nil, original: word, replacement: fix, conf: nil)
-        stats.shown += 1; statsTouched()
-        // Inline at the caret line, same as completions.
-        let point = currentCaretPoint()
-        overlay.showTypo(original: word, replacement: fix, at: point, lineHeight: lastCaretHeight)
-        dlog("[\(activeAppKey)] typo '\(word)' -> '\(fix)' at=\(point)")
+        present(Correction(kind: .spelling, displayOriginal: word, replacement: fix, message: nil, axRange: nil))
     }
 
-    // Replace `original` with `text`. Prefers AX (exact range, preserves the
-    // trailing separator); falls back to keystroke selection for apps without AX
-    // write support. The big AXValue read happens here, only on accept.
-    func replaceTypo(original: String, with text: String) {
-        if let r = typoRangeViaAX(word: original) {
+    // Present any pending correction inline at the caret line, same as completions.
+    func present(_ c: Correction) {
+        active = c
+        stats.shown += 1; statsTouched()
+        let point = currentCaretPoint()
+        overlay.show(correction: c, at: point, lineHeight: lastCaretHeight)
+        dlog("[\(activeAppKey)] \(c.kind) '\(c.displayOriginal)' -> '\(c.replacement ?? c.message ?? "")' at=\(point)")
+    }
+
+    // Apply a correction in place. Prefers AX (exact range, preserves the trailing
+    // separator); falls back to keystroke selection for apps without AX write support.
+    // Spelling resolves its span lazily (word scan before the caret); grammar already
+    // carries an absolute axRange, so it skips the scan. The big AXValue read happens
+    // here, only on accept.
+    func apply(_ c: Correction) {
+        guard let text = c.replacement else { return }   // advisory-only: nothing to apply
+        let original = c.displayOriginal
+        // Grammar: span already known. Spelling: locate the word before the caret.
+        let resolved: (element: AXUIElement, range: CFRange, trailing: Int)? =
+            c.axRange != nil ? axRangeForSpan(c.axRange!) : typoRangeViaAX(word: original)
+        if let r = resolved {
             // Electron/WebKit contenteditables often claim AX selection writes worked
             // but then insert at the live caret instead of replacing the selected word
             // (e.g. "this" -> "ththeis"). If the element has TextMarker caret APIs,
@@ -105,18 +193,26 @@ extension TyperApp {
             if !webLike,
                setAXText(element: r.element, range: r.range, text: text, trailing: r.trailing, original: original) {
                 replaceLastWordInBuffer(original: original, with: text)
-                log("typo replaced via AX")
+                log("\(c.kind) replaced via AX")
                 return
             }
             _ = setAXCaret(element: r.element, location: r.range.location + r.range.length + r.trailing)
             replaceWordBeforeSeparatorViaKeys(original: original, with: text, trailing: r.trailing)
             replaceLastWordInBuffer(original: original, with: text)
-            log("typo replaced via keystrokes")
+            log("\(c.kind) replaced via keystrokes")
         } else {
             replaceWordBeforeSeparatorViaKeys(original: original, with: text)
             replaceLastWordInBuffer(original: original, with: text)
-            log("typo replaced via keystrokes")
+            log("\(c.kind) replaced via keystrokes")
         }
+    }
+
+    // Resolve a known absolute UTF-16 span in the focused element (grammar already
+    // computed it), without the backward word scan typoRangeViaAX does for spelling.
+    // trailing is 0: a grammar span is the exact flagged text, no trailing separator.
+    func axRangeForSpan(_ range: CFRange) -> (element: AXUIElement, range: CFRange, trailing: Int)? {
+        guard let element = focusedElement() else { return nil }
+        return (element, range, 0)
     }
 
     // Replace `range` with `text` and leave the caret after the trailing separator.
@@ -205,15 +301,100 @@ extension TyperApp {
         }
     }
 
-    // Tab/backtick for the typo diff (completions are handled separately by
-    // acceptCompletionWord / acceptCompletionAll).
+    // Tab/backtick for the correction diff (completions are handled separately by
+    // acceptCompletionWord / acceptCompletionAll). Advisory-only corrections (grammar
+    // with no fix) are not applicable, so Tab falls through to the host app — there is
+    // nothing to insert.
     func acceptOneWord() -> Bool {
-        guard let active, active.kind == "typo",
-              let replacement = active.replacement, let original = active.original else { return false }
-        replaceTypo(original: original, with: replacement)
+        guard let active, active.applicable else { return false }
+        apply(active)
         stats.accepted += 1; statsTouched()
         clearSuggestion()
         return true
+    }
+
+    // Explicit rejection of a spelling suggestion (Esc / dismissed): teach the spell
+    // checker to stop re-suggesting it this session, and count it as ignored. No-op
+    // unless learning-from-rejections is enabled. Grammar isn't fed back (range-based,
+    // not word-based). Returns whether a spelling suggestion was actually rejected.
+    @discardableResult
+    func rejectActiveTypo() -> Bool {
+        guard let active, active.kind == .spelling else { return false }
+        stats.ignored += 1; statsTouched()
+        if cfg.typoLearnFromRejections {
+            NSSpellChecker.shared.ignoreWord(active.displayOriginal, inSpellDocumentWithTag: spellTag)
+            dlog("[\(activeAppKey)] typo rejected, ignoring '\(active.displayOriginal)'")
+        }
+        return true
+    }
+
+    // Teach the spell checker the user's own vocabulary so their jargon/names stop being
+    // flagged. Unconditional: it only REDUCES false positives. Called on lexicon updates.
+    func syncLexiconToSpellChecker() {
+        let words = lexicon.topWords(500).split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return }
+        NSSpellChecker.shared.setIgnoredWords(words, inSpellDocumentWithTag: spellTag)
+    }
+
+    // The trailing sentence of `text`: everything after the last sentence boundary
+    // (. ! ? or newline) that precedes the end. Used to scope grammar checking to the
+    // sentence the user just finished and to compute its UTF-16 offset in the field.
+    func lastSentence(in text: String) -> String {
+        let units = Array(text.utf16)
+        guard !units.isEmpty else { return "" }
+        var start = 0   // no earlier boundary ⇒ the whole text is one sentence
+        // Skip the trailing terminator(s) the user just typed, then walk back to the
+        // boundary before them; the sentence begins just after it.
+        var i = units.count - 1
+        while i >= 0, let sc = Unicode.Scalar(units[i]), ".!?\n\r".unicodeScalars.contains(sc) { i -= 1 }
+        while i >= 0 {
+            if let sc = Unicode.Scalar(units[i]), ".!?\n\r".unicodeScalars.contains(sc) { start = i + 1; break }
+            i -= 1
+        }
+        let slice = Array(units[start...])
+        return String(utf16CodeUnits: slice, count: slice.count)
+    }
+
+    // MARK: - Grammar (NSSpellChecker text checking) — OFF by default behind cfg.grammarEnabled.
+
+    // Detect grammar issues in `sentence` and present the first as a Correction. The
+    // checking is async (requestChecking's completion handler), so presentation is
+    // dispatched back to the main actor. `sentenceStartUTF16` is the UTF-16 offset of
+    // the sentence within the focused field, used to build absolute AX spans for apply.
+    // Grammar typically yields range + message with NO machine-applicable fix, so the
+    // Correction is advisory-only (replacement == nil) — we never synthesize a fake fix.
+    func grammarCorrections(in sentence: String, sentenceStartUTF16: Int) {
+        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 8 else { return }
+        let checker = NSSpellChecker.shared
+        let ns = sentence as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let serial = generationSerial
+        let appKey = activeAppKey
+        checker.requestChecking(
+            of: sentence, range: range,
+            types: NSTextCheckingResult.CheckingType.grammar.rawValue,
+            options: nil, inSpellDocumentWithTag: spellTag
+        ) { [weak self] _, results, _, _ in
+            // Build the first grammar correction off the main thread, then present it on
+            // the main actor only if nothing changed underneath us (no new typing).
+            guard let result = results.first(where: { $0.resultType == .grammar }) else { return }
+            let flagged = ns.substring(with: result.range)
+            // grammarDetails carries a per-issue message (NSGrammarUserDescription) and a
+            // sub-range relative to the sentence; offset it into an absolute field span.
+            let detail = result.grammarDetails?.first
+            let message = detail?[NSGrammarUserDescription] as? String
+            var subRange = result.range
+            if let r = detail?[NSGrammarRange] as? NSValue { subRange = r.rangeValue }     // relative to sentence
+            let absoluteLocation = sentenceStartUTF16 + subRange.location
+            let axRange = CFRange(location: absoluteLocation, length: subRange.length)
+            DispatchQueue.main.async {
+                guard let self, appKey == self.activeAppKey, self.generationSerial == serial else { return }
+                guard self.active == nil, self.completion == nil else { return }   // don't stomp a live suggestion
+                self.present(Correction(kind: .grammar, displayOriginal: flagged,
+                                        replacement: nil, message: message, axRange: axRange))
+            }
+        }
     }
 
     func acceptAll() -> Bool {

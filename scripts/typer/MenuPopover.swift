@@ -20,6 +20,7 @@ struct MenuSnapshot {
     var enabled = true
     var completionEnabled = true
     var typoEnabled = false
+    var grammarEnabled = false
 
     var hasCurrentApp = false
     var currentAppName = ""
@@ -96,6 +97,7 @@ struct MenuRootView: View {
             divider
             SwitchRow(title: "Completions", isOn: model.bind("completion_enabled", \.completionEnabled))
             SwitchRow(title: "Typo correction", isOn: model.bind("typo_correction_enabled", \.typoEnabled))
+            SwitchRow(title: "Grammar", subtitle: "experimental", isOn: model.bind("grammar_enabled", \.grammarEnabled))
             divider
             sections
             divider

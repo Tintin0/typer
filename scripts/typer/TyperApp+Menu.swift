@@ -69,6 +69,7 @@ extension TyperApp {
         s.enabled = cfg.enabled
         s.completionEnabled = cfg.completionEnabled
         s.typoEnabled = cfg.typoEnabled
+        s.grammarEnabled = cfg.grammarEnabled
 
         let (curBundle, curName) = popoverTargetBundleAndName()
         if !curBundle.isEmpty, curBundle != "no.bundle" {
@@ -127,6 +128,10 @@ extension TyperApp {
         case "enabled": cfg.enabled = v; if !v { clearSuggestion() }
         case "completion_enabled": cfg.completionEnabled = v
         case "typo_correction_enabled": cfg.typoEnabled = v
+        case "grammar_enabled": cfg.grammarEnabled = v
+        // The popover binds this row but it previously had no case here, so it fell to
+        // `default: return` and was a silent no-op. Wire it through like the others.
+        case "disable_in_terminals": cfg.disableInTerminals = v; if isAppDisabled() { clearSuggestion() }
         case "window_context_enabled": cfg.windowContextEnabled = v
         case "clipboard_context_enabled": cfg.clipboardContextEnabled = v
         case "screen_context_enabled": cfg.screenContextEnabled = v

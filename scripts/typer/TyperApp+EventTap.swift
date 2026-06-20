@@ -149,6 +149,7 @@ extension TyperApp {
         if code == CGKeyCode(kVK_Escape) {
             // Esc with a suggestion showing is an explicit rejection — feed it back.
             if let comp = completion { resolveCompletionOutcome(comp, via: "none") }
+            rejectActiveTypo()      // a dismissed spelling fix: count it, optionally stop re-suggesting
             clearSuggestion(); return
         }
         if code == CGKeyCode(kVK_Delete) {
@@ -244,6 +245,28 @@ extension TyperApp {
             }
             presentTypo(word: word, fix: fix)
             return
+        }
+        // Grammar runs on sentence-terminating separators only (. ! ? newline), parallel
+        // to the typo branch but lower priority (spelling fired first above). OFF by
+        // default. The flagged span's exact AX range is resolved from the sentence's
+        // UTF-16 offset, so apply() needs no backward word scan.
+        if cfg.grammarEnabled, text.unicodeScalars.allSatisfy({ ".!?\n\r".unicodeScalars.contains($0) }) {
+            if let ax = textAroundCursor(limit: 500), !ax.before.isEmpty {
+                let before = ax.before as NSString
+                // The sentence just completed: from the last sentence boundary to the caret.
+                let sentence = lastSentence(in: ax.before)
+                let startUTF16 = before.length - (sentence as NSString).length
+                // Resolve the live completion's outcome before tearing it down for grammar,
+                // exactly as the typo branch above does (issue #3): its accept/reject signal
+                // must reach the race / feedback / training log, not be silently dropped.
+                if let comp = completion {
+                    resolveCompletionOutcome(comp, via: comp.consumed > 0 ? "typethrough" : "none")
+                    completion = nil; prefetched = nil; prefetchKey = ""; overlay.orderOut(nil)
+                }
+                grammarCorrections(in: sentence, sentenceStartUTF16: startUTF16)
+                // Detection is async; it presents only if nothing is showing. Fall through
+                // so a completion can still be scheduled if grammar finds nothing.
+            }
         }
         if let comp = completion {
             if followAlong(text) { return }   // typed exactly what we predicted — keep it

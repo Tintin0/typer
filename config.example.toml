@@ -5,6 +5,19 @@ enabled = true
 completion_enabled = true
 typo_correction_enabled = false   # off by default — focus is on autocomplete
 
+# Grammar checking (on-device NSSpellChecker). OFF by default and experimental. When a
+# grammar issue has no machine-applicable fix, the note is advisory-only (Tab passes
+# through — there's nothing to insert).
+grammar_enabled = false
+
+# Typo-correction quality. Conservative defaults: with ranking off the chosen guess is
+# the spell checker's first guess (unchanged behavior); the confidence gate only trims
+# clearly low-confidence guesses; case-only fixes and rejection learning are opt-in.
+typo_ranking_enabled = false       # rank guesses by edit distance / QWERTY adjacency / your vocabulary
+typo_min_confidence = 0.5          # reject guesses whose normalized edit distance is too large (0 = no gate)
+typo_casing_fix = false            # allow case-only fixes (i -> I) from the high-trust autocorrect pass
+typo_learn_from_rejections = false # dismissed typos (Esc) aren't re-suggested this session
+
 # Leave empty to auto-pick the first .gguf in the Models directory.
 model_path = ""
 

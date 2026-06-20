@@ -11,6 +11,16 @@ struct TyperConfig {
     var enabled = true
     var completionEnabled = true
     var typoEnabled = false
+    // Grammar checking (NSSpellChecker text checking). OFF by default; advisory-only
+    // when macOS offers a message but no machine-applicable fix (Tab passes through).
+    var grammarEnabled = false
+    // Typo-correction quality knobs. All conservative defaults: with ranking off the
+    // best-guess pick stays the spell checker's first guess (old behavior); the gate is
+    // active by default but only trims clearly low-confidence guesses.
+    var typoRankingEnabled = false      // rank guesses by edit distance / QWERTY / frequency
+    var typoMinConfidence = 0.5         // reject guesses whose normalized edit distance is too large (0 = no gate)
+    var typoCasingFix = false           // allow case-only fixes (i -> I) from the autocorrect pass
+    var typoLearnFromRejections = false // remember dismissed typos so they aren't re-suggested
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
     var minContextChars = 6
@@ -100,6 +110,11 @@ struct TyperConfig {
             case "enabled": cfg.enabled = value == "true"
             case "completion_enabled": cfg.completionEnabled = value == "true"
             case "typo_correction_enabled": cfg.typoEnabled = value == "true"
+            case "grammar_enabled": cfg.grammarEnabled = value == "true"
+            case "typo_ranking_enabled": cfg.typoRankingEnabled = value == "true"
+            case "typo_min_confidence": cfg.typoMinConfidence = Double(value) ?? cfg.typoMinConfidence
+            case "typo_casing_fix": cfg.typoCasingFix = value == "true"
+            case "typo_learn_from_rejections": cfg.typoLearnFromRejections = value == "true"
             case "model_path": cfg.modelPath = (value as NSString).expandingTildeInPath
             case "max_completion_words": cfg.maxCompletionWords = Int(value) ?? cfg.maxCompletionWords
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
