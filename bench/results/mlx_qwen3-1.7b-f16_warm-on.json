@@ -1,0 +1,62 @@
+{
+  "schema": "typer-bench/1",
+  "backend": "mlx",
+  "timestamp": "2026-06-20T22:47:45",
+  "host": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "mlx_lm_version": "0.31.3",
+    "mlx_version": "0.31.2"
+  },
+  "model": {
+    "path": "/Users/jason/Code/typer/training/bench_models/qwen3-1.7b-mlx-f16",
+    "name": "qwen3-1.7b-mlx-f16",
+    "size_bytes": null,
+    "weight_quant": "fp16",
+    "kv_quant": "f16"
+  },
+  "config": {
+    "scenario": "warm-on",
+    "mode": "harness",
+    "max_words": 7,
+    "max_tokens_clamp": 14,
+    "n": 20,
+    "warmup": 2,
+    "step_tokens": 3,
+    "kv_bits": null,
+    "kv_group_size": 64,
+    "wired_limit_mb": 0,
+    "warmup_dummy": false,
+    "data": "/Users/jason/Code/typer/training/data/typed_eval.jsonl"
+  },
+  "levers": {
+    "prefix_reuse": "harness-implemented: common_prefix_len + trim_prompt_cache (rank 1)",
+    "kv_bits": "runtime (--kv-bits; rank 6 KV-quant sub-axis, winning weight quant only)",
+    "wired_limit_mb": "runtime (mx.set_wired_limit; keep weights resident, avoid paging)",
+    "weight_quant": "convert-time only (mlx_lm.convert -q --q-bits); pass a converted dir",
+    "n_ctx": "soft (autocomplete prompts are well under; cache is unbounded KVCache)",
+    "graph_compile": "MLX compiles the Metal graph on first decode (~0.5-2s); --warmup-dummy absorbs it"
+  },
+  "engine_notes": [
+    "model_load_ms=860.2"
+  ],
+  "peak_memory_mb": 3316.7,
+  "metrics": {
+    "n": 20,
+    "ttft_ms_p50": 129.41,
+    "ttft_ms_p95": 131.4,
+    "e2e_ms_p50": 400.43,
+    "e2e_ms_p95": 403.66,
+    "decode_ms_p50": 271.1,
+    "decode_tps_p50": 51.67,
+    "out_words_avg": 10.2,
+    "conf_avg": 0.0,
+    "conf_p50": 0.0,
+    "effective_prefill_tok_avg": 2.65,
+    "tokens_skipped_avg": 4.95,
+    "prefix_reuse_hit_rate": 0.1,
+    "prefix_reuse_frac_p50": 0.6667,
+    "reuse_counter_source": "exact(mlx-tokenized)"
+  }
+}

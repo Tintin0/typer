@@ -1,0 +1,62 @@
+{
+  "schema": "typer-bench/1",
+  "backend": "mlx",
+  "timestamp": "2026-06-20T20:15:43",
+  "host": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "mlx_lm_version": "0.31.3",
+    "mlx_version": "0.31.2"
+  },
+  "model": {
+    "path": "Qwen/Qwen3-0.6B-Base",
+    "name": "Qwen3-0.6B-Base",
+    "size_bytes": null,
+    "weight_quant": "q8",
+    "kv_quant": "f16"
+  },
+  "config": {
+    "scenario": "warm-on",
+    "mode": "harness",
+    "max_words": 7,
+    "max_tokens_clamp": 14,
+    "n": 5,
+    "warmup": 2,
+    "step_tokens": 3,
+    "kv_bits": null,
+    "kv_group_size": 64,
+    "wired_limit_mb": 0,
+    "warmup_dummy": false,
+    "data": "/Users/jason/Code/typer/training/data/typed_eval.jsonl"
+  },
+  "levers": {
+    "prefix_reuse": "harness-implemented: common_prefix_len + trim_prompt_cache (rank 1)",
+    "kv_bits": "runtime (--kv-bits; rank 6 KV-quant sub-axis, winning weight quant only)",
+    "wired_limit_mb": "runtime (mx.set_wired_limit; keep weights resident, avoid paging)",
+    "weight_quant": "convert-time only (mlx_lm.convert -q --q-bits); pass a converted dir",
+    "n_ctx": "soft (autocomplete prompts are well under; cache is unbounded KVCache)",
+    "graph_compile": "MLX compiles the Metal graph on first decode (~0.5-2s); --warmup-dummy absorbs it"
+  },
+  "engine_notes": [
+    "model_load_ms=1600.0"
+  ],
+  "peak_memory_mb": 1169.9,
+  "metrics": {
+    "n": 5,
+    "ttft_ms_p50": 97.79,
+    "ttft_ms_p95": 107.58,
+    "e2e_ms_p50": 211.24,
+    "e2e_ms_p95": 222.86,
+    "decode_ms_p50": 113.63,
+    "decode_tps_p50": 123.21,
+    "out_words_avg": 5,
+    "conf_avg": 0.0,
+    "conf_p50": 0.0,
+    "effective_prefill_tok_avg": 2.6,
+    "tokens_skipped_avg": 4.2,
+    "prefix_reuse_hit_rate": 0.0,
+    "prefix_reuse_frac_p50": 0.5,
+    "reuse_counter_source": "exact(mlx-tokenized)"
+  }
+}

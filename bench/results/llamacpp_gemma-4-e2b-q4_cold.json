@@ -1,0 +1,61 @@
+{
+  "schema": "typer-bench/1",
+  "backend": "llama.cpp",
+  "timestamp": "2026-06-20T22:45:53",
+  "host": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10
+  },
+  "model": {
+    "path": "/Users/jason/Library/Application Support/typer/Models/gemma-4-E2B-i1-Q4_K_M.gguf",
+    "name": "gemma-4-E2B-i1-Q4_K_M.gguf",
+    "size_bytes": 3467429152,
+    "gguf": {
+      "architecture": "gemma4",
+      "name": "Gemma 4 E2B",
+      "size_label": "4.6B",
+      "file_type": 15,
+      "block_count": 35
+    }
+  },
+  "config": {
+    "scenario": "cold",
+    "mode": "harness",
+    "max_words": 7,
+    "max_tokens_clamp": 14,
+    "n": 6,
+    "warmup": 2,
+    "step_tokens": 3,
+    "data": "/Users/jason/Code/typer/training/data/typed_eval.jsonl",
+    "extra_env": {}
+  },
+  "levers": {
+    "GGML_METAL_RESIDENCY_KEEP_ALIVE_S": "env  (rank 2: set 3600 to avoid >180s idle eviction)",
+    "n_ctx": "compiled (llama_server.cpp:225, currently 1536; rank 4 -> 1024)",
+    "n_ubatch": "compiled (llama_server.cpp:251, currently 512; rank 8 -> 128)",
+    "n_batch": "compiled (llama_server.cpp:250, currently 512)",
+    "flash_attn": "compiled (llama_server.cpp:254, AUTO; rank 7 -> ENABLED)",
+    "n_gpu_layers": "compiled (llama_server.cpp:242, 999 = full offload)",
+    "kv_type_k": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "kv_type_v": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "n_threads": "compiled (llama_server.cpp:252, hw/2; rank 9 -> P-cores only)"
+  },
+  "binary_check": {
+    "latency_ms": 293,
+    "chat_template": "(null)",
+    "ttft_ms": "UNVERIFIED (binary --check does not emit ttft_ms yet)"
+  },
+  "metrics": {
+    "n": 6,
+    "ttft_ms_p50": 596.03,
+    "ttft_ms_p95": 599.13,
+    "e2e_ms_p50": 696.69,
+    "e2e_ms_p95": 811.72,
+    "decode_ms_p50": 99.12,
+    "decode_tps_p50": 60.53,
+    "out_words_avg": 4,
+    "conf_avg": 0.3948,
+    "conf_p50": 0.331
+  }
+}

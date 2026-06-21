@@ -1,0 +1,61 @@
+{
+  "schema": "typer-bench/1",
+  "backend": "llama.cpp",
+  "timestamp": "2026-06-20T22:45:26",
+  "host": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10
+  },
+  "model": {
+    "path": "/Users/jason/Code/typer/training/bench_models/qwen3-4b-q8_0.gguf",
+    "name": "qwen3-4b-q8_0.gguf",
+    "size_bytes": 4280404800,
+    "gguf": {
+      "architecture": "qwen3",
+      "name": "906bfd4b4dc7f14ee4320094d8b41684abff8539",
+      "size_label": "4.0B",
+      "file_type": 7,
+      "block_count": 36
+    }
+  },
+  "config": {
+    "scenario": "warm-off",
+    "mode": "harness",
+    "max_words": 7,
+    "max_tokens_clamp": 14,
+    "n": 20,
+    "warmup": 2,
+    "step_tokens": 3,
+    "data": "/Users/jason/Code/typer/training/data/typed_eval.jsonl",
+    "extra_env": {}
+  },
+  "levers": {
+    "GGML_METAL_RESIDENCY_KEEP_ALIVE_S": "env  (rank 2: set 3600 to avoid >180s idle eviction)",
+    "n_ctx": "compiled (llama_server.cpp:225, currently 1536; rank 4 -> 1024)",
+    "n_ubatch": "compiled (llama_server.cpp:251, currently 512; rank 8 -> 128)",
+    "n_batch": "compiled (llama_server.cpp:250, currently 512)",
+    "flash_attn": "compiled (llama_server.cpp:254, AUTO; rank 7 -> ENABLED)",
+    "n_gpu_layers": "compiled (llama_server.cpp:242, 999 = full offload)",
+    "kv_type_k": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "kv_type_v": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "n_threads": "compiled (llama_server.cpp:252, hw/2; rank 9 -> P-cores only)"
+  },
+  "binary_check": {
+    "latency_ms": 435,
+    "chat_template": "{%- if tools %}",
+    "ttft_ms": "UNVERIFIED (binary --check does not emit ttft_ms yet)"
+  },
+  "metrics": {
+    "n": 20,
+    "ttft_ms_p50": 99.48,
+    "ttft_ms_p95": 100.51,
+    "e2e_ms_p50": 272.44,
+    "e2e_ms_p95": 447.18,
+    "decode_ms_p50": 187.01,
+    "decode_tps_p50": 37.35,
+    "out_words_avg": 4.75,
+    "conf_avg": 0.4328,
+    "conf_p50": 0.434
+  }
+}

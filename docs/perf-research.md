@@ -1,5 +1,15 @@
 # Typer Inference Performance Research Log
 
+> **MEASURED (2026-06-20).** The full TTFT/TPS suite has now run on this M2 Pro across
+> Qwen3 0.6B/1.7B/4B + Gemma-4-E2B, llama.cpp vs MLX, q8/f16, cold/warm-off/warm-on.
+> Headline: warm TTFT is governed by KV prefix reuse (already implemented; now verified
+> firing at ~0.67 reuse). **Qwen3-1.7B q8 on llama.cpp serves a warm first token in 27 ms**
+> (vs 87 ms on MLX), well inside the 100 ms budget; even 4B clears it (57 ms). q8 beats f16
+> on speed and size. Decision: ship 1.7B q8 on llama.cpp, do not migrate to MLX. Full
+> writeup with charts: `web/research/posts/2026-06-20-the-latency-budget-of-on-device-autocomplete.md`
+> (live at typr.frgmt.xyz/research). Raw cells: `bench/results/*.json`; rerun: `bench/run_suite.sh`.
+> The estimates below are superseded by those measurements where they conflict.
+
 Status: **research log, not yet benchmark-confirmed.** Scope: maximize decode throughput
 (TPS) and minimize time-to-first-token (TTFT) for the on-device autocomplete model behind
 `scripts/llama_server.cpp`. TTFT is the binding product constraint; TPS is secondary.

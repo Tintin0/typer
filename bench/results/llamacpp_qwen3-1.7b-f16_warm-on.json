@@ -1,0 +1,70 @@
+{
+  "schema": "typer-bench/1",
+  "backend": "llama.cpp",
+  "timestamp": "2026-06-20T22:45:01",
+  "host": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10
+  },
+  "model": {
+    "path": "/Users/jason/Code/typer/training/bench_models/qwen3-1.7b-f16.gguf",
+    "name": "qwen3-1.7b-f16.gguf",
+    "size_bytes": 3447348896,
+    "gguf": {
+      "architecture": "qwen3",
+      "name": "Ea980Cb0A6C2Ae4B936E82123Acc929F1Cec04C1",
+      "size_label": "1.7B",
+      "file_type": 1,
+      "block_count": 28
+    }
+  },
+  "config": {
+    "scenario": "warm-on",
+    "mode": "harness",
+    "max_words": 7,
+    "max_tokens_clamp": 14,
+    "n": 20,
+    "warmup": 2,
+    "step_tokens": 3,
+    "data": "/Users/jason/Code/typer/training/data/typed_eval.jsonl",
+    "extra_env": {}
+  },
+  "levers": {
+    "GGML_METAL_RESIDENCY_KEEP_ALIVE_S": "env  (rank 2: set 3600 to avoid >180s idle eviction)",
+    "n_ctx": "compiled (llama_server.cpp:225, currently 1536; rank 4 -> 1024)",
+    "n_ubatch": "compiled (llama_server.cpp:251, currently 512; rank 8 -> 128)",
+    "n_batch": "compiled (llama_server.cpp:250, currently 512)",
+    "flash_attn": "compiled (llama_server.cpp:254, AUTO; rank 7 -> ENABLED)",
+    "n_gpu_layers": "compiled (llama_server.cpp:242, 999 = full offload)",
+    "kv_type_k": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "kv_type_v": "compiled (default F16; rank 6 -> Q8_0, needs FA ENABLED)",
+    "n_threads": "compiled (llama_server.cpp:252, hw/2; rank 9 -> P-cores only)"
+  },
+  "binary_check": {
+    "latency_ms": 322,
+    "chat_template": "{%- if tools %}",
+    "ttft_ms": "UNVERIFIED (binary --check does not emit ttft_ms yet)"
+  },
+  "metrics": {
+    "n": 20,
+    "ttft_ms_p50": 42.57,
+    "ttft_ms_p95": 44.55,
+    "e2e_ms_p50": 191.13,
+    "e2e_ms_p95": 321.12,
+    "decode_ms_p50": 149.03,
+    "decode_tps_p50": 40.9,
+    "out_words_avg": 4.35,
+    "conf_avg": 0.2947,
+    "conf_p50": 0.296,
+    "prefix_reuse_hit_rate": 0.1,
+    "prefix_reuse_frac_p50": 0.6667,
+    "reuse_counter_source": "binary",
+    "reuse_counter_last": {
+      "common": 7,
+      "len": 10,
+      "samples": 31,
+      "measured_hit_rate": 0.032
+    }
+  }
+}
