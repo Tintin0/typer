@@ -81,10 +81,11 @@ struct TyperConfig {
     var typer1ModelGlob = "typer-1-"    // filename prefix marking the small racing models
                                         // (trailing "-" so the large "typer-1l.gguf" is excluded)
 
-    // Model size the user has chosen. "small" = the on-device 0.6B (typer-1, the race above);
-    // "large" = the higher-quality ~1.2GB model (typer-1l.gguf), for machines with RAM to spare.
-    // Large is served as a single model (no race). Switched live from the menu / onboarding.
-    var modelVariant = "small"          // "small" | "large"
+    // Model tier the user has chosen, recommended from their RAM at onboarding:
+    //   "s" = on-device 0.6B (typer-1s, the race above) — ships locally, any Mac.
+    //   "m" = typer-1m (1.7B), 16 GB Macs;  "l" = typer-1l (4B), 32 GB+ Macs.
+    // m/l are single models (no race), downloaded on demand. Switched live from menu/onboarding.
+    var modelVariant = "s"              // "s" | "m" | "l"
     // First-launch onboarding (permissions + model choice + intro) is shown until completed.
     var onboardingComplete = false
     var typer1RatchetStep = 0.05        // share moved toward the leading model per adjust
@@ -139,7 +140,11 @@ struct TyperConfig {
             case "disable_in_terminals": cfg.disableInTerminals = value == "true"
             case "typer1_enabled": cfg.typer1Enabled = value == "true"
             case "typer1_model_glob": cfg.typer1ModelGlob = value
-            case "model_variant": cfg.modelVariant = (value == "large") ? "large" : "small"
+            // Accept new tier ids; migrate legacy values. Old "large" was only a 0.6B variant,
+            // so map both legacy names to "s" rather than auto-downloading a multi-GB model.
+            case "model_variant":
+                let v = value.lowercased()
+                cfg.modelVariant = ["s", "m", "l"].contains(v) ? v : "s"
             case "onboarding_complete": cfg.onboardingComplete = value == "true"
             case "typer1_share_start": cfg.typer1ShareStart = Double(value) ?? cfg.typer1ShareStart
             case "typer1_share_min": cfg.typer1ShareMin = Double(value) ?? cfg.typer1ShareMin

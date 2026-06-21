@@ -14,7 +14,7 @@ final class OnboardingModel: ObservableObject {
     @Published var step = 0
     @Published var axTrusted = false
     @Published var screenGranted = false
-    @Published var modelVariant = "small"
+    @Published var modelVariant = "s"
     var onFinish: (() -> Void)?
 
     private var timer: Timer?
@@ -22,7 +22,7 @@ final class OnboardingModel: ObservableObject {
 
     func start() {
         refreshPerms()
-        modelVariant = app?.effectiveVariant() ?? "small"
+        modelVariant = app?.effectiveVariant() ?? "s"
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshPerms() }
     }
     func stop() { timer?.invalidate(); timer = nil }
@@ -51,7 +51,7 @@ final class OnboardingModel: ObservableObject {
 
     func pickModel(_ v: String) {
         modelVariant = v
-        app?.setModelVariant(v)         // triggers the on-demand download for "large"
+        app?.setModelVariant(v)         // triggers the on-demand download for "m" / "l"
     }
 
     func finish() { stop(); onFinish?() }
@@ -156,27 +156,31 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 2 — model choice
+    // Step 2 — model choice. The tier matching the machine's RAM is flagged Recommended.
     private var modelChoice: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let rec = TyperApp.recommendedVariant()
+        let ramGB = Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0).rounded())
+        return VStack(alignment: .leading, spacing: 14) {
             Text("Choose your model").font(.system(size: 22, weight: .bold))
-            Text("You can change this any time from the menu-bar icon.")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            modelOption(v: "small", title: "Small — typer-1 (0.6B)",
-                        desc: "Fast and light, runs on any Mac. The default. ~0.6 GB.")
-            modelOption(v: "large", title: "Large — typer-1l (1.2 GB)",
-                        desc: "Higher-quality suggestions for Macs with RAM to spare (16 GB+). Downloads once when selected.")
+            Text("Your Mac has \(ramGB) GB of memory. We recommend the highlighted tier; you can change it any time from the menu-bar icon.")
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            modelOption(v: "s", rec: rec, title: "Small — typer-1s (0.6B)",
+                        desc: "Fast and light, runs on any Mac. First word in ~14 ms, about 0.6 GB. Ships with the app.")
+            modelOption(v: "m", rec: rec, title: "Medium — typer-1m (1.7B)",
+                        desc: "Better suggestions for 16 GB Macs. First word in ~27 ms, about 1.8 GB. Downloads once when selected.")
+            modelOption(v: "l", rec: rec, title: "Large — typer-1l (4B)",
+                        desc: "Longest correct runs, for 32 GB+ Macs. First word in ~57 ms, about 4.3 GB. Downloads once when selected.")
             if case let .downloading(frac) = downloader.state {
                 VStack(alignment: .leading, spacing: 5) {
                     ProgressView(value: frac >= 0 ? frac : nil, total: 1).tint(.accentColor)
-                    Text(frac >= 0 ? "Downloading typer-1l… \(Int(frac * 100))%  (~1.2 GB)" : "Downloading typer-1l…")
+                    Text(frac >= 0 ? "Downloading model… \(Int(frac * 100))%" : "Downloading model…")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }.padding(.top, 2)
             } else if case let .failed(msg) = downloader.state {
                 Text("Download failed — \(msg). You can retry from the menu.")
                     .font(.system(size: 11)).foregroundStyle(.red)
-            } else if model.modelVariant == "large", ModelRouter.largeModelInstalled() {
-                Text("Large model ready.").font(.system(size: 11)).foregroundStyle(.green)
+            } else if let t = ModelRouter.tier(model.modelVariant), ModelRouter.tierInstalled(t.id) {
+                Text("\(t.label) ready.").font(.system(size: 11)).foregroundStyle(.green)
             }
         }
     }
@@ -249,14 +253,23 @@ struct OnboardingView: View {
         }
     }
 
-    private func modelOption(v: String, title: String, desc: String) -> some View {
+    private func modelOption(v: String, rec: String, title: String, desc: String) -> some View {
         let active = model.modelVariant == v
+        let recommended = (v == rec)
         return Button(action: { model.pickModel(v) }) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: active ? "largecircle.fill.circle" : "circle")
                     .font(.system(size: 16)).foregroundStyle(active ? Color.accentColor : Color.secondary).padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                    HStack(spacing: 6) {
+                        Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                        if recommended {
+                            Text("Recommended").font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
                     Text(desc).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()

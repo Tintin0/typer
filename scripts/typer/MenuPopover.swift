@@ -57,8 +57,7 @@ struct MenuSnapshot {
     var version = ""              // short git commit this build was made from ("" if unknown)
     var canUpdate = false         // true only for source builds that know their checkout path
 
-    var modelVariant = "small"    // "small" | "large" — the size currently being served
-    var largeInstalled = false    // whether typer-1l.gguf is already downloaded
+    var modelVariant = "s"        // "s" | "m" | "l" — the tier currently being served
 }
 
 enum MenuAction {
@@ -154,19 +153,22 @@ struct MenuRootView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ProgressView(value: frac >= 0 ? frac : nil, total: 1)
                         .progressViewStyle(.linear).tint(.accentColor)
-                    Text(frac >= 0 ? "Downloading typer-1l… \(Int(frac * 100))%" : "Downloading typer-1l…")
+                    Text(frac >= 0 ? "Downloading model… \(Int(frac * 100))%" : "Downloading model…")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }.padding(.horizontal, kInset)
             } else if case let .failed(msg) = downloader.state {
                 Text("Download failed — \(msg)").font(.system(size: 10)).foregroundStyle(.red)
                     .padding(.horizontal, kInset)
-            } else if s.modelVariant == "large" {
-                Text("Large model active · best on 16 GB+ of RAM")
+            } else if s.modelVariant == "m" {
+                Text("typer-1m active · 1.7B · best on 16 GB+")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, kInset)
+            } else if s.modelVariant == "l" {
+                Text("typer-1l active · 4B · best on 32 GB+")
                     .font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, kInset)
             }
 
-            // Small variant: surface the live raw-vs-distill race when two arms are running.
-            if s.modelVariant == "small" {
+            // Small tier: surface the live raw-vs-distill race when two arms are running.
+            if s.modelVariant == "s" {
                 if s.racing { modelCard } else if !s.singleModel.isEmpty { caption("Model", s.singleModel) }
             }
         }
@@ -346,8 +348,9 @@ private struct ModelSizePicker: View {
     let onPick: (String) -> Void
     var body: some View {
         HStack(spacing: 0) {
-            seg("Small", "small")
-            seg("Large", "large")
+            seg("S", "s")
+            seg("M", "m")
+            seg("L", "l")
         }
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08)))
         .opacity(downloading ? 0.5 : 1)
@@ -356,7 +359,7 @@ private struct ModelSizePicker: View {
         let active = variant == v
         return Button(action: { if !downloading { onPick(v) } }) {
             Text(label).font(.system(size: 11, weight: .medium))
-                .frame(width: 46, height: 20)
+                .frame(width: 34, height: 20)
                 .foregroundStyle(active ? Color.white : Color.secondary)
                 .background(RoundedRectangle(cornerRadius: 6).fill(active ? Color.accentColor : Color.clear))
                 .contentShape(Rectangle())

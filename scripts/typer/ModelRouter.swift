@@ -29,29 +29,47 @@ final class ModelRouter {
     let nameB: String?
     private let mem: RouterMemory
 
-    // The large model the user can opt into: a single higher-quality ~1.2GB model served
-    // straight (no race), for machines with the RAM. Lives at Models/typer-1l.gguf and is
-    // fetched on demand (ModelDownloader). HF source for that download:
-    static let largeModelFile = "typer-1l.gguf"
-    static let largeModelURL = "https://huggingface.co/milosa/typer-1-v1/resolve/main/typer1-f16.gguf"
+    // Device-tiered model lineup. "s" is the local 0.6B two-model race that ships with the app.
+    // "m" (1.7B) and "l" (4B) are single higher-quality models served straight (no race), each
+    // fetched on demand the first time it's chosen and cached in Models/. Hosted on Hugging Face
+    // (typer-org/typer-1). The tier the user picks is recommended from their RAM at onboarding.
+    struct ModelTier {
+        let id: String        // "m" | "l"
+        let file: String      // filename under Models/
+        let url: String       // HF download URL
+        let label: String     // human label
+        let approxMB: Int     // download-size hint for the UI
+    }
+    static let downloadTiers: [ModelTier] = [
+        ModelTier(id: "m", file: "typer-1m.gguf",
+                  url: "https://huggingface.co/typer-org/typer-1/resolve/main/typer-1m.gguf",
+                  label: "typer-1m (1.7B)", approxMB: 1834),
+        ModelTier(id: "l", file: "typer-1l.gguf",
+                  url: "https://huggingface.co/typer-org/typer-1/resolve/main/typer-1l.gguf",
+                  label: "typer-1l (4B)", approxMB: 4366),
+    ]
+    static func tier(_ id: String) -> ModelTier? { downloadTiers.first { $0.id == id } }
     static var modelsDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/typer/Models")
     }
-    static var largeModelPath: String { modelsDir.appendingPathComponent(largeModelFile).path }
-    static func largeModelInstalled() -> Bool { FileManager.default.fileExists(atPath: largeModelPath) }
+    static func tierPath(_ t: ModelTier) -> String { modelsDir.appendingPathComponent(t.file).path }
+    static func tierInstalled(_ id: String) -> Bool {
+        guard let t = tier(id) else { return false }
+        return FileManager.default.fileExists(atPath: tierPath(t))
+    }
 
-    // True for this router instance when it's serving the large model (single model, no race).
+    // True for this router instance when it's serving a single downloaded tier (no race).
     let isLarge: Bool
 
     init(cfg: TyperConfig) {
         self.cfg = cfg
-        // Large variant: serve the single big model directly, no A/B race — but only if the
-        // user picked it AND it's actually downloaded; otherwise fall back to the small race.
-        if cfg.modelVariant == "large", ModelRouter.largeModelInstalled() {
+        // Medium/Large tier: serve the single downloaded model directly, no A/B race — but only
+        // if the user picked it AND it's actually downloaded; otherwise fall back to the small race.
+        if let t = ModelRouter.tier(cfg.modelVariant), ModelRouter.tierInstalled(t.id) {
             isLarge = true
-            nameA = ModelRouter.largeModelFile
-            clientA = LlamaClient(cfg: cfg, modelPath: ModelRouter.largeModelPath)
+            nameA = t.file
+            clientA = LlamaClient(cfg: cfg, modelPath: ModelRouter.tierPath(t))
             nameB = nil
             clientB = nil
             mem = RouterMemory(cfg: cfg)

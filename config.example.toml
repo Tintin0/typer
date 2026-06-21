@@ -91,10 +91,11 @@ typer1_model_glob = "typer-1-"     # filename prefix for the small racing models
 typer1_ratchet_step = 0.05         # share moved toward the leading model per adjust
 typer1_ratchet_min_samples = 40    # per-arm resolutions + cooldown before each adjust
 
-# Model size. "small" = the on-device typer-1 race above; "large" = the higher-quality
-# typer-1l.gguf (downloaded on demand, best on 16GB+ RAM). Switch live from the menu /
-# onboarding — this just records the choice.
-model_variant = "small"            # "small" | "large"
+# Model tier (recommended from your Mac's RAM at onboarding). "s" = on-device typer-1s 0.6B
+# race above (ships locally, any Mac). "m" = typer-1m 1.7B (~1.8GB, 16GB Macs). "l" = typer-1l
+# 4B (~4.3GB, 32GB+ Macs). m/l are single models (no race), downloaded on demand from
+# huggingface.co/typer-org/typer-1. Switch live from the menu / onboarding.
+model_variant = "s"                # "s" | "m" | "l"
 # Legacy single-candidate-rollout knobs — still parsed for old configs, unused by the race
 # (start is fixed 50/50, lock threshold 80%).
 typer1_share_start = 0.10

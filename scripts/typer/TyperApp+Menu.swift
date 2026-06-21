@@ -117,7 +117,6 @@ extension TyperApp {
         }
 
         s.modelVariant = effectiveVariant()
-        s.largeInstalled = ModelRouter.largeModelInstalled()
         return s
     }
 
