@@ -365,16 +365,17 @@ async function circle(target: HTMLElement) {
   await sleep(450);
   const r = target.getBoundingClientRect();
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  const rx = r.width / 2 + 26, ry = r.height / 2 + 20;
+  const rx = r.width / 2 + 54, ry = r.height / 2 + 40;
   lasso.classList.add("on"); fcursor.classList.add("on");
-  const steps = 92, laps = 1.16;
+  const steps = 104, laps = 1.22;
   let d = "";
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     const th = -Math.PI / 2 + t * 2 * Math.PI * laps;
-    const wob = 1 + 0.16 * Math.sin(th * 5 + 0.6) + 0.08 * Math.sin(th * 8 + 1.3);
-    const x = cx + rx * wob * Math.cos(th);
-    const y = cy + ry * wob * Math.sin(th);
+    // low-frequency wobble + a slow drift of the center for a loose, unhurried loop
+    const wob = 1 + 0.13 * Math.sin(th * 2 + 0.6) + 0.08 * Math.sin(th * 3 + 1.3);
+    const x = cx + rx * wob * Math.cos(th) + 14 * Math.sin(th * 1.3 + 0.4);
+    const y = cy + ry * wob * Math.sin(th) + 10 * Math.cos(th * 1.7);
     d += (i ? " L" : "M") + x.toFixed(1) + " " + y.toFixed(1);
     lassopath.setAttribute("d", d);
     fcursor.style.transform = `translate(${x}px, ${y}px)`;
