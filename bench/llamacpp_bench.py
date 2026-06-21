@@ -71,7 +71,9 @@ import os
 import platform
 import shutil
 import statistics
+import queue
 import subprocess
+import threading
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -195,12 +197,36 @@ class Helper:
         if extra_env:
             env.update({k: str(v) for k, v in extra_env.items()})
         # stderr is kept (not DEVNULL like eval.py) so we can scrape the prefix-reuse
-        # counter once scripts/llama_server.cpp emits it (see read_reuse_counter()).
+        # counter (REUSE common=.. len=..). BOTH pipes MUST be drained continuously by
+        # background threads: the helper emits a REUSE line per request plus Metal init
+        # logs to stderr, and if that pipe is never read it fills (~64KB) and the helper
+        # blocks on write -> deadlock. We also drain stdout into a queue so request()
+        # can enforce a REAL timeout (a bare readline() blocks and can't be interrupted
+        # by a wall-clock deadline, which is the classic "bench hangs forever" bug).
         self.proc = subprocess.Popen(
             [str(server), "--model-path", str(model)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=1, text=True, encoding="utf-8", errors="replace", env=env,
         )
+        self._stdout_q: "queue.Queue[str | None]" = queue.Queue()
+        self._reuse: list[dict] = []
+        threading.Thread(target=self._pump_stdout, daemon=True).start()
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
+
+    def _pump_stdout(self):
+        for line in self.proc.stdout:           # type: ignore[union-attr]
+            self._stdout_q.put(line)
+        self._stdout_q.put(None)                # EOF sentinel
+
+    def _pump_stderr(self):
+        for line in self.proc.stderr:           # type: ignore[union-attr]
+            if "REUSE" in line and "common=" in line:
+                try:
+                    parts = dict(p.split("=") for p in line.split() if "=" in p)
+                    self._reuse.append({"common": int(parts.get("common", 0)),
+                                        "len": int(parts.get("len", 0))})
+                except Exception:
+                    pass
 
     def request(self, context: str, max_words: int, mode: str | None = None,
                 timeout: float = 30.0) -> dict:
@@ -220,9 +246,15 @@ class Helper:
         conf = 0.0
         n_partials = 0          # streamed-partial count (lower bound on emitted tokens)
         deadline = t0 + timeout
-        while time.monotonic() < deadline:
-            line = self.proc.stdout.readline()
-            if not line:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break                                  # REAL timeout (queue-backed)
+            try:
+                line = self._stdout_q.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if line is None:                           # helper EOF
                 break
             try:
                 obj = json.loads(line)
@@ -258,36 +290,21 @@ class Helper:
                 "text": final_text, "timeout": True}
 
     def read_reuse_counter(self) -> dict | None:
-        """Drain stderr and parse a prefix-reuse line IF the binary emits one.
+        """Real prefix-reuse ground truth from the binary's REUSE stderr lines.
 
-        GROUND TRUTH for rank-1 lives in prepare_prompt() (scripts/llama_server.cpp:412)
-        which currently emits NOTHING. The one-line instrumentation to add there is:
-
+        scripts/llama_server.cpp prepare_prompt() emits, when TYPER_REUSE_LOG is set:
             fprintf(stderr, "REUSE common=%d len=%zu\\n", common, toks.size());
-
-        Once present, this scrapes the last such line. Until then returns None and the
-        harness falls back to the EXPECTED (self-constructed) hit rate. Non-blocking-ish:
-        only called at teardown so we don't deadlock on the pipe.
-        """
-        if not self.proc.stderr:
+        The stderr pump thread collects every such line live. This returns an aggregate
+        over the whole run: the last line, plus the measured hit rate (common/len > 0.8),
+        so the reported reuse is MEASURED, not synthesized. Returns None if the binary
+        emitted nothing (TYPER_REUSE_LOG unset / older binary)."""
+        if not self._reuse:
             return None
-        common = length = None
-        try:
-            # process already closing; read whatever is buffered
-            for line in self.proc.stderr:
-                if "REUSE" in line and "common=" in line:
-                    try:
-                        parts = dict(
-                            p.split("=") for p in line.split() if "=" in p)
-                        common = int(parts.get("common", common or 0))
-                        length = int(parts.get("len", length or 0))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        if common is None:
-            return None
-        return {"common": common, "len": length or 0}
+        hits = sum(1 for r in self._reuse if r["len"] and r["common"] / r["len"] > 0.8)
+        last = self._reuse[-1]
+        return {"common": last["common"], "len": last["len"],
+                "samples": len(self._reuse),
+                "measured_hit_rate": round(hits / len(self._reuse), 3)}
 
     def close(self):
         try:

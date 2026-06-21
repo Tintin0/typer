@@ -418,6 +418,12 @@ public:
         // while keeping as much reusable KV prefix as possible.
         if (!last_prompt_tokens.empty() && common > 0 && !toks.empty()) common = std::min<int>(common, (int)toks.size() - 1);
 
+        // Rank-1 TTFT lever instrumentation: how many leading tokens we reuse from the
+        // previous prompt's KV vs how many we re-decode. The bench harness scrapes this
+        // exact format; gated by env so production stderr stays quiet (off by default).
+        if (std::getenv("TYPER_REUSE_LOG"))
+            fprintf(stderr, "REUSE common=%d len=%zu\n", common, (size_t)toks.size());
+
         if (common <= 0) {
             llama_memory_clear(llama_get_memory(ctx), true);
             pos = 0;
