@@ -1,14 +1,14 @@
 /**
  * The homepage writes itself.
  *
- * The whole page is a single locked screen that types its own content the way a
- * person using typr would: ghost suggestions accepted with TAB / `, a typo caught
+ * The whole page is one plain monospace document that types its own content the way
+ * a person using typr would: ghost suggestions accepted with TAB / `, a typo caught
  * and corrected (red strikethrough, green suggestion above the word), uneven rhythm,
- * and one block highlighted and moved. The last frame is the finished page.
+ * a block highlighted and moved, and the demo video dragged in and nudged into place.
+ * The view stays locked and follows the caret; the last frame is the finished page,
+ * which you can then scroll to re-read.
  *
- * Everything here is a small interpreter over a script of `Step`s (see SCRIPT at the
- * bottom). The engine owns a caret, a ghost span, a key-hint chip, and a correction
- * popover; the script just says what to type and which gesture to perform.
+ * Everything is a small interpreter over a script of `Step`s (see SCRIPT, bottom).
  */
 
 const doc = document.getElementById("doc")!;
@@ -18,23 +18,18 @@ const chip = document.getElementById("chip")!;
 const keyTab = document.getElementById("key-tab")!;
 const keyAll = document.getElementById("key-all")!;
 const fixpop = document.getElementById("fixpop")!;
-const corner = document.getElementById("corner")!;
 const skipBtn = document.getElementById("skip") as HTMLButtonElement;
 const replayBtn = document.getElementById("replay") as HTMLButtonElement;
 
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** Active block being typed into, and its committed-text container. */
 let active: { el: HTMLElement; done: HTMLElement } | null = null;
-/** Set when the user hits skip; aborts the run and jumps to the final frame. */
 class SkipSignal {}
 let skipping = false;
+const pendingTimers: ReturnType<typeof setTimeout>[] = [];
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K) {
-  return document.createElement(tag);
-}
+function el<K extends keyof HTMLElementTagNameMap>(tag: K) { return document.createElement(tag); }
 
-/** A cancellable sleep. Resolves early (and flags the abort) once skipping. */
 function sleep(ms: number): Promise<void> {
   if (skipping) return Promise.reject(new SkipSignal());
   return new Promise((res, rej) => {
@@ -42,23 +37,32 @@ function sleep(ms: number): Promise<void> {
     pendingTimers.push(t);
   });
 }
-const pendingTimers: ReturnType<typeof setTimeout>[] = [];
+
+// keep the caret comfortably in view as the document grows
+function follow() {
+  const r = caret.getBoundingClientRect();
+  const target = innerHeight * 0.62;
+  const dy = r.top - target;
+  if (Math.abs(dy) > 24) scrollTo({ top: scrollY + dy, behavior: reduce ? "auto" : "smooth" });
+}
 
 // ---- rhythm: typing never lands on a metronome ----
-let burst = 0; // remaining chars in a fast run
+let burst = 0;
+let fast = false;
 function charDelay(ch: string): number {
-  if (burst > 0) { burst--; return 16 + Math.random() * 14; }
-  if (Math.random() < 0.06) burst = 3 + Math.floor(Math.random() * 5); // occasional fast run
-  let d = 34 + Math.random() * 46;
-  if (".,!?".includes(ch)) d += 220 + Math.random() * 180;             // think after punctuation
-  else if (ch === " ") d += Math.random() < 0.25 ? 120 : 18;
-  if (Math.random() < 0.04) d += 240;                                  // a small hesitation
+  const k = fast ? 0.42 : 1;
+  if (burst > 0) { burst--; return (15 + Math.random() * 12) * k; }
+  if (Math.random() < 0.06) burst = 3 + Math.floor(Math.random() * 5);
+  let d = (33 + Math.random() * 44) * k;
+  if (".,!?".includes(ch)) d += (200 + Math.random() * 170) * k;
+  else if (ch === " ") d += Math.random() < 0.25 ? 110 : 16;
+  if (Math.random() < 0.04) d += 220;
   return d;
 }
 
 // ---- block scaffolding ----
 const TAGS: Record<string, keyof HTMLElementTagNameMap> = {
-  brand: "div", h1: "h1", p: "p", code: "pre", foot: "div",
+  brand: "div", h1: "h1", p: "p", h2: "div", cap: "div", code: "pre", list: "pre", foot: "div",
 };
 
 function openBlock(kind: keyof typeof TAGS, html = ""): HTMLElement {
@@ -67,26 +71,30 @@ function openBlock(kind: keyof typeof TAGS, html = ""): HTMLElement {
   const done = el("span"); done.className = "done"; done.innerHTML = html;
   block.append(done, caret, ghost);
   ghost.textContent = "";
+  caret.classList.remove("hide");
   doc.append(block);
   active = { el: block, done };
   return block;
 }
 
-/** Append one character into a target (committed text or a sub-span). */
 function put(target: HTMLElement, ch: string) {
   if (ch === "\n") target.append(el("br"));
   else target.append(ch);
 }
-
 async function typeInto(target: HTMLElement, text: string) {
-  for (const ch of text) { put(target, ch); await sleep(charDelay(ch)); }
+  for (const ch of text) {
+    put(target, ch);
+    if (ch === "\n") follow();
+    await sleep(charDelay(ch));
+  }
+  follow();
 }
 
-// ---- key-hint chip, positioned at the caret ----
+// ---- key-hint chip, placed just below the caret line ----
 function placeChip() {
   const r = caret.getBoundingClientRect();
-  chip.style.left = `${r.right + 8}px`;
-  chip.style.top = `${r.top + r.height / 2 - 11}px`;
+  chip.style.left = `${r.left}px`;
+  chip.style.top = `${r.bottom + 6}px`;
 }
 function showChip(which: "tab" | "all" | "both") {
   keyTab.style.display = which === "all" ? "none" : "";
@@ -100,10 +108,12 @@ function hideChip() { chip.classList.remove("show"); keyTab.classList.remove("fi
 type Step =
   | { t: "block"; kind: keyof typeof TAGS; html?: string }
   | { t: "type"; text: string }
-  | { t: "ghost"; text: string; take: "tab" | "all" }   // suggestion -> accept
+  | { t: "ghost"; text: string; take: "tab" | "all" }
   | { t: "typo"; bad: string; good: string; tail?: string }
-  | { t: "mark"; id: string; text: string }             // type into a referenceable span
-  | { t: "moveEnd"; id: string; as: string }            // cut that span, drop text at block end
+  | { t: "mark"; id: string; text: string }
+  | { t: "moveEnd"; id: string; as: string }
+  | { t: "video" }
+  | { t: "fast"; on: boolean }
   | { t: "pause"; ms: number };
 
 const marks = new Map<string, HTMLElement>();
@@ -111,41 +121,40 @@ const marks = new Map<string, HTMLElement>();
 async function ghostStep(text: string, take: "tab" | "all") {
   if (!active) return;
   ghost.textContent = "";
-  // stream the suggestion in word by word
-  for (const part of text.split(/(\s+)/)) { ghost.textContent += part; await sleep(48); }
+  for (const part of text.split(/(\s+)/)) { ghost.textContent += part; await sleep(46); }
+  follow();
   showChip(take === "all" ? "all" : "both");
-  await sleep(820);
+  await sleep(800);
   (take === "all" ? keyAll : keyTab).classList.add("fire");
-  await sleep(260);
+  await sleep(250);
   if (take === "all") {
-    await typeInto(active.done, text);            // commit the whole suggestion
+    await typeInto(active.done, text);
   } else {
-    const m = text.match(/^\s*\S+/);              // commit the first word only
-    await typeInto(active.done, (m ? m[0] : text));
+    const m = text.match(/^\s*\S+/);
+    await typeInto(active.done, m ? m[0] : text);
   }
   ghost.textContent = "";
   hideChip();
-  await sleep(160);
+  await sleep(150);
 }
 
 async function typoStep(bad: string, good: string, tail = "") {
   if (!active) return;
   const span = el("span"); span.className = "wp"; active.done.append(span);
   await typeInto(span, bad);
-  await sleep(360);
-  span.classList.add("bad");                       // red strikethrough
-  // green suggestion floats above the word
+  await sleep(340);
+  span.classList.add("bad");
   const r = span.getBoundingClientRect();
-  fixpop.innerHTML = `<span class="chk">✓</span>${good}`;
+  fixpop.innerHTML = `✓ ${good}`;
   fixpop.style.left = `${r.left + r.width / 2}px`;
-  fixpop.style.top = `${r.top - 6}px`;
+  fixpop.style.top = `${r.top - 4}px`;
   fixpop.classList.add("show");
-  await sleep(700);
+  await sleep(680);
   span.classList.remove("bad"); span.classList.add("fixed");
-  span.textContent = good;                         // accept the correction
+  span.textContent = good;
   fixpop.classList.remove("show");
-  await sleep(420);
-  span.classList.remove("fixed"); span.className = "";  // settle to normal text
+  await sleep(400);
+  span.classList.remove("fixed"); span.className = "";
   if (tail) await typeInto(active.done, tail);
 }
 
@@ -153,15 +162,40 @@ async function moveEndStep(id: string, as: string) {
   if (!active) return;
   const span = marks.get(id);
   if (!span) return;
-  span.classList.add("sel");                        // highlight the block
-  await sleep(620);
-  span.classList.add("lift");                       // lift it out
-  await sleep(340);
-  span.remove();                                    // the gap closes (reflow)
-  await sleep(220);
+  span.classList.add("sel");
+  await sleep(600);
+  span.classList.add("lift");
+  await sleep(320);
+  span.remove();
+  await sleep(200);
   const dropped = el("span"); dropped.className = "drop"; dropped.textContent = as;
-  active.done.append(dropped);                      // it lands at the end
-  await sleep(480);
+  active.done.append(dropped);
+  follow();
+  await sleep(460);
+}
+
+// drag the demo recording in, fiddle with placement, then drop it into the flow
+async function videoStep() {
+  caret.classList.add("hide");
+  const fig = el("figure"); fig.className = "blk demo fly grab";
+  fig.innerHTML =
+    `<video src="/demo/typer-demo-dark.mp4" poster="/demo/poster-dark.png" autoplay muted loop playsinline preload="metadata"></video>`;
+  // start it offset, as if held by the cursor mid-drag
+  fig.style.transform = "translate(120px, -34px) rotate(-2.5deg) scale(0.96)";
+  fig.style.opacity = "0.9";
+  doc.append(fig);
+  active = null;
+  fig.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+  await sleep(420);
+  fig.style.transform = "translate(-90px, 14px) rotate(1.5deg) scale(0.97)"; // fiddle
+  await sleep(560);
+  fig.style.transform = "translate(48px, -6px) rotate(-1deg) scale(0.985)";  // fiddle again
+  await sleep(520);
+  fig.style.opacity = "1";
+  fig.style.transform = "none";                                             // settle into place
+  await sleep(260);
+  fig.classList.remove("grab");
+  await sleep(360);
 }
 
 async function run(step: Step) {
@@ -177,6 +211,8 @@ async function run(step: Step) {
       break;
     }
     case "moveEnd": await moveEndStep(step.id, step.as); break;
+    case "video": await videoStep(); break;
+    case "fast":  fast = step.on; break;
     case "pause": await sleep(step.ms); break;
   }
 }
@@ -186,16 +222,15 @@ async function run(step: Step) {
 // =====================================================================
 const SCRIPT: Step[] = [
   { t: "block", kind: "brand", html: `typr<span class="pulse">_</span>` },
-  { t: "pause", ms: 500 },
+  { t: "pause", ms: 450 },
 
   // headline, finished with the tool itself
   { t: "block", kind: "h1" },
   { t: "type",  text: "you type the first " },
   { t: "ghost", text: "half,", take: "tab" },
-  { t: "type",  text: "\n" },
-  { t: "type",  text: "it shows you the " },
+  { t: "type",  text: " it shows you the " },
   { t: "ghost", text: "rest.", take: "all" },
-  { t: "pause", ms: 500 },
+  { t: "pause", ms: 450 },
 
   // value paragraph: a typo correction, a tab-accept, and a block move
   { t: "block", kind: "p" },
@@ -205,20 +240,44 @@ const SCRIPT: Step[] = [
   { t: "type",  text: "a dim suggestion appears at your " },
   { t: "ghost", text: "caret", take: "tab" },
   { t: "type",  text: " in almost any app" },
-  { t: "pause", ms: 360 },
+  { t: "pause", ms: 320 },
   { t: "moveEnd", id: "loc", as: ", on your Mac and nowhere else." },
-  { t: "pause", ms: 500 },
+  { t: "pause", ms: 360 },
 
-  // the install line, completed in one keystroke
+  // drag the demo in, fiddle with it, drop it
+  { t: "video" },
+  { t: "block", kind: "cap" },
+  { t: "type",  text: "a real screen recording. the whole interaction model." },
+  { t: "pause", ms: 360 },
+
+  // how you use it (typed faster, like reference notes)
+  { t: "block", kind: "h2" }, { t: "type", text: "how you use it" },
+  { t: "fast",  on: true },
+  { t: "block", kind: "list", html: "" },
+  { t: "type",  text: "  tab   take one word\n  `     take the whole suggestion\n  esc   dismiss\n  …     keep typing, the ghost shrinks" },
+
+  // it picks a model for your Mac
+  { t: "block", kind: "h2" }, { t: "type", text: "it picks a model for your Mac" },
+  { t: "block", kind: "list" },
+  { t: "type",  text: "  typer-1s   0.6B   8GB +\n  typer-1m   1.7B   16GB    first word on screen in 27ms\n  typer-1l   4B     32GB +  longer accurate runs\n  typer-writer, for rewriting and drafting, lands in Alpha 2." },
+  { t: "fast",  on: false },
+  { t: "pause", ms: 300 },
+
+  // install, completed in one keystroke
+  { t: "block", kind: "h2" }, { t: "type", text: "install" },
   { t: "block", kind: "code", html: `<span class="pr">$ </span>` },
   { t: "type",  text: "git clone " },
   { t: "ghost", text: "https://github.com/frgmt0/typer.git && ./install.sh", take: "all" },
-  { t: "pause", ms: 420 },
+  { t: "pause", ms: 360 },
 
   // footer
-  { t: "block", kind: "foot" },
-  { t: "type",  text: "free, forever · MIT · runs on llama.cpp · macOS 14+" },
+  { t: "block", kind: "foot", html:
+    `free, forever · MIT · runs on llama.cpp · macOS 14+<br><br>` },
 ];
+
+// the finished footer links, as real anchors (typed look, real targets)
+const FOOTER_LINKS =
+  `<a href="/announcements">announcements</a>   <a href="/research">research</a>   <a href="https://github.com/frgmt0/typer">github ↗</a>`;
 
 // ---- final frame (skip / reduced motion): build the page instantly ----
 function renderFinal() {
@@ -227,16 +286,27 @@ function renderFinal() {
   marks.clear();
   doc.innerHTML = `
     <div class="blk brand">typr<span class="pulse">_</span></div>
-    <h1 class="blk h1">you type the first half,<br>it shows you the rest.</h1>
+    <h1 class="blk h1">you type the first half, it shows you the rest.</h1>
     <p class="blk p">local autocomplete for macOS. a dim suggestion appears at your caret in almost any app, on your Mac and nowhere else.</p>
+    <figure class="blk demo"><video src="/demo/typer-demo-dark.mp4" poster="/demo/poster-dark.png" ${reduce ? "controls" : "autoplay muted loop"} playsinline preload="metadata"></video></figure>
+    <div class="blk cap">a real screen recording. the whole interaction model.</div>
+    <div class="blk h2">how you use it</div>
+    <pre class="blk list">  tab   take one word
+  \`     take the whole suggestion
+  esc   dismiss
+  …     keep typing, the ghost shrinks</pre>
+    <div class="blk h2">it picks a model for your Mac</div>
+    <pre class="blk list">  typer-1s   0.6B   8GB +
+  typer-1m   1.7B   16GB    first word on screen in 27ms
+  typer-1l   4B     32GB +  longer accurate runs
+  typer-writer, for rewriting and drafting, lands in Alpha 2.</pre>
+    <div class="blk h2">install</div>
     <pre class="blk code"><span class="pr">$ </span>git clone https://github.com/frgmt0/typer.git && ./install.sh</pre>
-    <div class="blk foot">free, forever · MIT · runs on llama.cpp · macOS 14+</div>`;
+    <div class="blk foot">free, forever · MIT · runs on llama.cpp · macOS 14+<br><br>${FOOTER_LINKS}</div>`;
   finish();
 }
 
 function finish() {
-  corner.classList.add("show");
-  corner.removeAttribute("aria-hidden");
   skipBtn.hidden = true;
   replayBtn.hidden = false;
 }
@@ -244,13 +314,13 @@ function finish() {
 async function play() {
   doc.innerHTML = "";
   marks.clear();
-  skipping = false;
-  replayBtn.hidden = true;
-  skipBtn.hidden = false;
-  corner.classList.remove("show");
+  skipping = false; fast = false;
+  scrollTo({ top: 0 });
+  replayBtn.hidden = true; skipBtn.hidden = false;
   try {
     for (const step of SCRIPT) await run(step);
-    // leave the caret resting at the end of the footer for a beat
+    // append the real footer links, then rest the caret at the end
+    if (active) active.done.insertAdjacentHTML("beforeend", FOOTER_LINKS);
     await sleep(600);
     caret.remove();
     finish();
@@ -261,7 +331,7 @@ async function play() {
 }
 
 function doSkip() {
-  if (replayBtn.hidden === false) return;
+  if (!replayBtn.hidden) return;
   skipping = true;
   pendingTimers.forEach(clearTimeout);
   pendingTimers.length = 0;
@@ -269,9 +339,9 @@ function doSkip() {
 }
 
 skipBtn.addEventListener("click", doSkip);
-replayBtn.addEventListener("click", () => play());
+replayBtn.addEventListener("click", () => { caret.classList.remove("hide"); play(); });
 addEventListener("keydown", (e) => {
-  if ((e.key === "Escape" || e.key === " ") && skipBtn.hidden === false) { e.preventDefault(); doSkip(); }
+  if ((e.key === "Escape" || e.key === " ") && !skipBtn.hidden) { e.preventDefault(); doSkip(); }
 });
 addEventListener("resize", () => { if (chip.classList.contains("show")) placeChip(); });
 
