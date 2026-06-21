@@ -306,8 +306,14 @@ function cDelay(ch: string): number {
 }
 
 const CTAGS: Record<string, keyof HTMLElementTagNameMap> = {
-  brand: "div", h1: "h1", sub: "div", p: "p", h2: "div", list: "pre", foot: "div",
+  brand: "div", h1: "h1", sub: "div", p: "p", h2: "div", list: "pre", cap: "div", foot: "div",
 };
+
+// gesture-demo elements
+const lasso = document.getElementById("lasso")!;
+const lassopath = document.getElementById("lassopath")!;
+const fcursor = document.getElementById("fcursor")!;
+const wmodal = document.getElementById("wmodal")!;
 
 function cOpen(kind: keyof typeof CTAGS, html = ""): HTMLElement {
   const b = el(CTAGS[kind]); b.className = `blk ${kind}`;
@@ -331,17 +337,111 @@ async function cGhost(text: string, take: "tab" | "all") {
   ckeyTab.style.display = take === "all" ? "none" : "";
   ckeyAll.style.display = take === "tab" ? "none" : "";
   placeCkey(); ckey.classList.add("show");
-  await sleep(750);
+  await sleep(720);
   (take === "all" ? ckeyAll : ckeyTab).classList.add("fire");
-  await sleep(240);
+  await sleep(210);
+  // accept: snap the suggestion in at once, with a brief highlight
   const commit = take === "all" ? text : (text.match(/^\s*\S+/)?.[0] ?? text);
-  await cType(cActive.done, commit);
   cghost.textContent = "";
+  cCommitFlash(cActive.done, commit);
   ckey.classList.remove("show"); ckeyTab.classList.remove("fire"); ckeyAll.classList.remove("fire");
-  await sleep(140);
+  await sleep(260);
+}
+
+function cCommitFlash(doneEl: HTMLElement, str: string) {
+  const sp = el("span"); sp.className = "accepted"; sp.textContent = str;
+  doneEl.append(sp);
+  requestAnimationFrame(() => sp.classList.add("settle"));
+  setTimeout(() => sp.classList.remove("accepted", "settle"), 650);
+}
+
+// ---- the typer-writer gesture: hold ⌥, circle the words, prompt, rewrite ----
+
+const esc = (c: string) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c);
+
+// move a cursor in an irregular, hand-drawn loop around an element, drawing a lasso
+async function circle(target: HTMLElement) {
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  await sleep(450);
+  const r = target.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const rx = r.width / 2 + 26, ry = r.height / 2 + 20;
+  lasso.classList.add("on"); fcursor.classList.add("on");
+  const steps = 92, laps = 1.16;
+  let d = "";
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const th = -Math.PI / 2 + t * 2 * Math.PI * laps;
+    const wob = 1 + 0.16 * Math.sin(th * 5 + 0.6) + 0.08 * Math.sin(th * 8 + 1.3);
+    const x = cx + rx * wob * Math.cos(th);
+    const y = cy + ry * wob * Math.sin(th);
+    d += (i ? " L" : "M") + x.toFixed(1) + " " + y.toFixed(1);
+    lassopath.setAttribute("d", d);
+    fcursor.style.transform = `translate(${x}px, ${y}px)`;
+    await sleep(11);
+  }
+  lassopath.setAttribute("d", d + " Z");
+  target.classList.add("selected");
+  await sleep(280);
+  fcursor.classList.remove("on");
+}
+
+// the modal you'd get on release: type a prompt, then "send" it
+async function promptWriter(target: HTMLElement, promptText: string) {
+  wmodal.innerHTML =
+    `<div class="wm-head"><span class="d">⌥</span> typer-writer</div>` +
+    `<div class="wm-row"><span class="pr">&rsaquo;</span><span class="wm-in"></span><span class="wm-cur"></span></div>` +
+    `<div class="wm-hint">enter to rewrite &middot; esc to cancel</div>`;
+  wmodal.style.left = "0px"; wmodal.style.top = "0px"; wmodal.classList.add("on");
+  const r = target.getBoundingClientRect();
+  const mw = wmodal.offsetWidth, mh = wmodal.offsetHeight;
+  let left = r.left, top = r.bottom + 12;
+  if (left + mw > innerWidth - 12) left = innerWidth - mw - 12;
+  if (top + mh > innerHeight - 12) top = r.top - mh - 12;
+  if (left < 12) left = 12;
+  wmodal.style.left = `${left}px`; wmodal.style.top = `${top}px`;
+  const inEl = wmodal.querySelector(".wm-in")!;
+  await sleep(380);
+  for (const ch of promptText) { inEl.textContent += ch; await sleep(cDelay(ch)); }
+  await sleep(460);
+  wmodal.classList.add("fire");          // enter
+  await sleep(430);
+  wmodal.classList.remove("on", "fire");
+  await sleep(220);
+}
+
+// diffusion-style rewrite: the selection scrambles, then denoises into the result
+function diffuse(target: HTMLElement, finalText: string): Promise<void> {
+  return new Promise((resolve) => {
+    target.classList.add("diff");
+    const L = finalText.length;
+    const thr = new Float64Array(L);
+    for (let i = 0; i < L; i++) thr[i] = Math.random() * 0.8 + (i / L) * 0.14;  // staggered, slight L->R
+    const noise = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#%*+=?/.:";
+    const dur = 1700;
+    let start = -1;
+    function step(now: number) {
+      if (start < 0) start = now;
+      const p = Math.min(1, (now - start) / dur);
+      let html = "";
+      for (let i = 0; i < L; i++) {
+        const fc = finalText[i];
+        if (fc === " ") { html += " "; continue; }
+        if (p >= thr[i]) html += esc(fc);
+        else html += `<span class="noise">${esc(noise[(Math.random() * noise.length) | 0])}</span>`;
+      }
+      target.innerHTML = html;
+      if (p < 1) requestAnimationFrame(step);
+      else { target.textContent = finalText; target.classList.remove("diff"); resolve(); }
+    }
+    requestAnimationFrame(step);
+  });
 }
 
 const LINKS = `arrives in <b style="color:var(--accent);font-weight:400">Typer Alpha 2</b>    <a href="/">back to typr</a>    <a href="/announcements">announcements</a>`;
+
+const DRAFT = "ok so typer-writer is basically the thing you call up when you actually wanna fix some writing, and it just does it, right on your mac, no cloud or waiting around.";
+const POLISHED = "Typer-writer is a local model you summon to rewrite and refine your words. It runs entirely on your Mac, with nothing sent to the cloud.";
 
 async function writeContent() {
   content.classList.add("on");
@@ -352,18 +452,32 @@ async function writeContent() {
   await sleep(350);
   cOpen("h1"); await cType(cActive!.done, "typer-writer");
   cOpen("sub"); await cType(cActive!.done, "the one you call on purpose.");
-  await sleep(250);
+  await sleep(220);
 
   cOpen("p");
-  await cType(cActive!.done, "the ambient autocomplete stays out of your way. sometimes you want the opposite: something you summon, hand a paragraph, and ask to make ");
-  await cGhost("it better.", "all");
+  await cType(cActive!.done, "ambient autocomplete finishes your line. typer-writer does the other half: you hold ⌥, circle the words you mean, and tell it ");
+  await cGhost("what to do.", "all");
+  await sleep(300);
 
-  cOpen("h2"); await cType(cActive!.done, "what it is");
-  cOpen("p");
-  await cType(cActive!.done, "a local model for rewriting and drafting, 4 to 8B. because you call it on purpose, it is allowed to take a second. ");
-  await cType(cActive!.done, "ambient autocomplete it is not.");
+  // the demo: write a rough draft of the pitch, then rewrite it in front of you
+  cOpen("h2"); await cType(cActive!.done, "watch");
+  const draftP = cOpen("p"); draftP.classList.add("demo-draft");
+  await cType(cActive!.done, DRAFT);
+  ccaret.classList.add("hide");
+  await sleep(550);
 
-  cOpen("h2"); await cType(cActive!.done, "how it differs");
+  await circle(draftP);
+  await promptWriter(draftP, "make it more professional");
+  await diffuse(draftP.querySelector(".done")!, POLISHED);
+
+  draftP.classList.add("sel-fade"); draftP.classList.remove("selected");
+  lasso.classList.remove("on");
+  await sleep(450);
+
+  cOpen("cap"); ccaret.classList.remove("hide");
+  await cType(cActive!.done, "hold ⌥, circle, prompt. the rewrite runs on your Mac, in a beat.");
+
+  cOpen("h2"); await cType(cActive!.done, "ambient vs invoked");
   cOpen("list");
   await cType(cActive!.done,
     "  ambient   typer-1      finishes your line     under 100ms   always on\n" +
@@ -384,14 +498,16 @@ async function writeContent() {
 function renderContentFinal() {
   content.classList.add("on");
   ckey.classList.remove("show");
+  lasso.classList.remove("on"); fcursor.classList.remove("on"); wmodal.classList.remove("on");
   content.innerHTML = `
     <div class="blk brand">typr<span class="g">_</span> <span class="a2">/ alpha 2</span></div>
     <h1 class="blk h1">typer-writer</h1>
     <div class="blk sub">the one you call on purpose.</div>
-    <p class="blk p">the ambient autocomplete stays out of your way. sometimes you want the opposite: something you summon, hand a paragraph, and ask to make it better.</p>
-    <div class="blk h2">what it is</div>
-    <p class="blk p">a local model for rewriting and drafting, 4 to 8B. because you call it on purpose, it is allowed to take a second. ambient autocomplete it is not.</p>
-    <div class="blk h2">how it differs</div>
+    <p class="blk p">ambient autocomplete finishes your line. typer-writer does the other half: you hold ⌥, circle the words you mean, and tell it what to do.</p>
+    <div class="blk h2">watch</div>
+    <p class="blk p demo-draft">${POLISHED}</p>
+    <div class="blk cap">hold ⌥, circle, prompt. the rewrite runs on your Mac, in a beat.</div>
+    <div class="blk h2">ambient vs invoked</div>
     <pre class="blk list">  ambient   typer-1      finishes your line     under 100ms   always on
   invoked   typer-writer rewrites a paragraph   takes a beat  summoned, 4-8B</pre>
     <div class="blk h2">what you can ask</div>

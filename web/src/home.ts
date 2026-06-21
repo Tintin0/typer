@@ -126,16 +126,22 @@ async function ghostStep(text: string, take: "tab" | "all") {
   showChip(take === "all" ? "all" : "both");
   await sleep(800);
   (take === "all" ? keyAll : keyTab).classList.add("fire");
-  await sleep(250);
-  if (take === "all") {
-    await typeInto(active.done, text);
-  } else {
-    const m = text.match(/^\s*\S+/);
-    await typeInto(active.done, m ? m[0] : text);
-  }
+  await sleep(210);
+  // accept: the whole suggestion (or just its first word, for tab) snaps in at
+  // once on the keystroke — not retyped — with a brief highlight so you see it land.
+  const commit = take === "all" ? text : (text.match(/^\s*\S+/)?.[0] ?? text);
   ghost.textContent = "";
+  commitFlash(active.done, commit);
+  follow();
   hideChip();
-  await sleep(150);
+  await sleep(280);
+}
+
+function commitFlash(doneEl: HTMLElement, str: string) {
+  const sp = el("span"); sp.className = "accepted"; sp.textContent = str;
+  doneEl.append(sp);
+  requestAnimationFrame(() => sp.classList.add("settle"));
+  setTimeout(() => sp.classList.remove("accepted", "settle"), 650);
 }
 
 async function typoStep(bad: string, good: string, tail = "") {

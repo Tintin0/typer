@@ -54,6 +54,9 @@
   .done { color: inherit; }
   .ghost { color: var(--ghost); }
   pre.code .ghost { color: #5c7a52; }
+  /* a suggestion snapping in on accept */
+  .accepted { background: rgba(110,168,255,0.24); border-radius: 2px; }
+  .accepted.settle { background: transparent; transition: background 0.5s ease; }
 
   /* caret */
   #caret { display: inline-block; width: 2px; height: 1.05em; background: var(--accent); vertical-align: -0.16em; margin: 0 1px; animation: blink 1.05s steps(1) infinite; }
