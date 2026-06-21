@@ -39,6 +39,24 @@ Voice
   - lowercase, like the rest of the site. titles under ~60 chars.
 -->
 
+## 2026-06-20 — a typer for every mac, and how fast a big one can be
+
+This week was mostly a stopwatch. We wanted one answer: how large a model can typer run before it stops feeling instant? The answer turned out to be larger than we assumed, so we are turning it into a lineup you pick by your machine.
+
+The thing that matters for autocomplete is time-to-first-token. Ghost text has to land in about 100 milliseconds or you have already typed past it. We measured that properly across model sizes on an M2 Pro, and the surprise is the headroom: a 1.7B model puts its first word on screen in 27 ms, and even a 4B does it in 57 ms, both comfortably under budget. The trick is a cache reuse we had already built but never actually verified was firing, which skips re-reading the part of your sentence that has not changed since the last keystroke. With that on, size costs far less at the front of a suggestion than we feared.
+
+We also settled the backend argument for ourselves. We raced llama.cpp against Apple's MLX on the exact same models, and llama.cpp won the number that counts by a wide margin, 27 ms against 87 ms at 1.7B, because its reuse and per-call overhead are simply lower. MLX is faster once it gets going, but getting going is the whole game here, so we are staying on llama.cpp. One smaller finding that saves everyone memory: q8 is faster than full precision as well as half the size, so there is no reason to ship fp16.
+
+On quality, against our gold test of real typing, the honest result is that first-word accuracy barely moves with size. It sits around 31 to 33% whether the model is 0.6B or 4B, because that is where this test caps out. What does improve with size is how far you can ride a suggestion before it diverges, from about half a word at 0.6B to noticeably longer at 4B. Bigger does not mean right more often. It means right for longer.
+
+So the lineup. typer-1s is the 0.6B that ships today, the only safe always-on choice on an 8GB machine like the MacBook Neo, where the system already wants most of your memory. typer-1m is the 1.7B, the sweet spot for 16GB. typer-1l is the 4B, for 32GB and up, where the longer runs are worth the roughly 4GB it keeps resident. Onboarding will detect your machine, recommend the one that fits, and download it on demand rather than making you guess.
+
+There is also an experimental fourth thing we want to be upfront is not here yet. typer-writer is a different animal, a 4 to 8B model for rewriting and drafting rather than ambient autocomplete, summoned on purpose so it is allowed to take a second. it is coming in Typer Alpha 2, not this release.
+
+The rough edges, stated plainly. These are still base models served through our harness, not yet fully fine-tuned per size, so the first-word number is flat across the lineup until we close that. The confidence gate still needs recalibrating for each size. And the bigger models cost real memory that stays resident the whole time typer is on, which is exactly why the recommendation is tied to your machine rather than left to vibes.
+
+Still alpha, still entirely on your Mac. The [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering, and the full timing tables with every number live at [typr.frgmt.xyz/research](https://typr.frgmt.xyz/research).
+
 ## 2026-06-19 — a better model, and the data problem behind it
 
 Most of this update happened in the lab rather than the app. We rebuilt how we measure the model, found we had been grading it on the wrong kind of text, and used the corrected picture to train a better one. The model improved, but the harder problem is the training data, and closing that gap is most of what we are building now.
