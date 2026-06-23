@@ -54,6 +54,19 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var shotCaretHeight: CGFloat = 18
     var shotCaretApp = ""
     var shotCaretComputing = false
+    // Click-to-anchor caret seed: a left-click places the caret where you clicked. We
+    // record that screen point (AppKit coords) and extrapolate horizontally by typed
+    // width, so AX-hostile fields (Electron/web) get accurate placement with no capture.
+    var clickCaretPoint: NSPoint?       // the click point (line center, AppKit coords)
+    var clickCaretAt = Date.distantPast
+    var clickCaretApp = ""
+    var clickCaretBufferLen = 0
+    // Set by recordClickCaret, consumed by the deferred resync that stamps the anchor's
+    // app + buffer baseline. A plain time guard mis-fired: a paste/⌘Z resync within the
+    // window would re-baseline a stale anchor, and the synchronous syncActiveApp on a
+    // cross-app click would clear the just-made anchor before it could be stamped. The
+    // flag scopes both to an actual click.
+    var clickCaretPending = false
     // Speculative prefetch: the next chunk, generated while the user finishes the
     // current one, so it can appear instantly on exhaustion.
     var prefetched: ActiveCompletion?
@@ -266,6 +279,13 @@ final class TyperApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         styleSampleAt = .distantPast    // re-rank the style sample for the new app's text
         shotCaretPoint = nil
         shotCaretApp = ""
+        // A click into a different app's field switches apps THROUGH this path; that
+        // click's anchor must survive (it's stamped to the new app moments later in the
+        // deferred resync). Only drop a stale anchor from a non-click switch (⌘-Tab etc).
+        if !clickCaretPending {
+            clickCaretPoint = nil
+            clickCaretApp = ""
+        }
         lastCaretPoint = nil
         caretHeightFloor = nil      // fresh font-size measurement per focus session
         updateAXObserver()          // follow the new app's focused element

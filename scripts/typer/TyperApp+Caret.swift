@@ -36,7 +36,63 @@ extension TyperApp {
             lastCaretHeight = shotCaretHeight
             return extrapolated
         }
+        // Click-anchor caret: a left-click placed the caret where the user clicked.
+        // Extrapolate horizontally by the measured width of what they've typed since,
+        // reusing the per-app width calibration. Cheap (no capture/OCR) and the primary
+        // placement path for Electron/web fields that expose no AX caret. Bounded: a
+        // newline or a long burst since the click means wraps we can't track on one
+        // line, so we stop trusting the anchor and fall through.
+        if cfg.clickCaretEnabled, let anchor = clickCaretPoint, clickCaretApp == activeAppKey,
+           Date().timeIntervalSince(clickCaretAt) < 45 {
+            let typedSince = String(buffer.suffix(max(0, buffer.count - clickCaretBufferLen)))
+            if typedSince.count <= 200, !typedSince.contains(where: { $0 == "\n" || $0 == "\r" }) {
+                let advance = typedSince.isEmpty ? 0 : ghostWidth(typedSince) * widthScale()
+                // anchor.y is the click's vertical center; drop half a line height (using
+                // the now-current field height) to the line bottom the overlay renders from.
+                var est = NSPoint(x: anchor.x + advance, y: anchor.y - lastCaretHeight / 2)
+                if let optimistic, abs(est.y - optimistic.y) <= max(6, lastCaretHeight * 0.65),
+                   est.x + 1 < optimistic.x { est = optimistic }
+                lastCaretPoint = est
+                return est
+            }
+        }
         return lastCaretPoint ?? focusedElementPoint() ?? NSPoint(x: 400, y: 400)
+    }
+
+    // Record where a left-click landed as a caret seed. `cgPoint` is CGEvent.location:
+    // global, top-left origin, the same space AX uses — flip to AppKit bottom-left via
+    // the PRIMARY screen height (matches axRectToAppKit). We store the click's vertical
+    // CENTER and apply the half-line-height drop to the line bottom at consume time, not
+    // here: at click time lastCaretHeight may still be the previous field's value, but by
+    // the time the anchor is read the new field's height is known. app/buffer are stamped
+    // later, in the deferred resync, once syncActiveApp has caught up to the focus change.
+    func recordClickCaret(at cgPoint: CGPoint) {
+        let primary = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main
+        let primaryMaxY = primary?.frame.maxY ?? cgPoint.y
+        clickCaretPoint = NSPoint(x: cgPoint.x, y: primaryMaxY - cgPoint.y)
+        clickCaretAt = Date()
+        clickCaretPending = true
+    }
+
+    // The region (global Quartz, top-left) the screenshot caret locator should capture:
+    // the focused element's bounds, narrowed to a few-line band around the best caret y
+    // anchor we have. Returning a thin band instead of the whole window is what makes
+    // the screenshot path cheap enough to run while typing. Main-thread only (reads AX).
+    func caretCaptureClip() -> CGRect? {
+        guard let rect = focusedElementQuartzRect() else { return nil }
+        let lineH = max(lastCaretHeight, shotCaretHeight, 16)
+        // If the field is short (single/few-line input) the whole element IS the band.
+        guard rect.height > lineH * 8, let anchorAppKitY = lastCaretPoint?.y ?? clickCaretPoint?.y else { return rect }
+        let primary = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main
+        let primaryMaxY = primary?.frame.maxY ?? 0
+        // anchor is the line's bottom in AppKit (bottom-left); convert to the line's top
+        // in Quartz (top-left), then pad a few lines each way.
+        let quartzLineTop = primaryMaxY - anchorAppKitY - lineH
+        let pad = lineH * 4
+        let top = max(rect.minY, quartzLineTop - pad)
+        let bottom = min(rect.maxY, quartzLineTop + lineH + pad)
+        guard bottom - top >= 12 else { return rect }
+        return CGRect(x: rect.minX, y: top, width: rect.width, height: bottom - top)
     }
 
     func refreshShotCaretIfNeeded() {
@@ -53,11 +109,16 @@ extension TyperApp {
         let appKey = activeAppKey
         let bufLen = buffer.count
         // Snapshot everything off `self` ON THE MAIN THREAD; the background closure
-        // must not touch self.buffer (concurrent String mutation = crash).
+        // must not touch self.buffer / AX / NSWorkspace (off-main = crash/UB).
         let needle = String(String(buffer.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines).suffix(18)).lowercased()
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let clip = caretCaptureClip()
+        // NSScreen is main-affine; snapshot the primary-display height here so the
+        // background OCR closure can do the Quartz→AppKit flip without touching NSScreen.
+        let primary = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main
+        let primaryMaxY = primary?.frame.maxY ?? 0
         backgroundQueue.async {
-            let res = self.screenshotCaretRect(needle: needle, frontPID: frontPID)
+            let res = self.screenshotCaretRect(needle: needle, frontPID: frontPID, clip: clip, primaryMaxY: primaryMaxY)
             DispatchQueue.main.async {
                 self.shotCaretComputing = false
                 guard appKey == self.activeAppKey, let res else { return }

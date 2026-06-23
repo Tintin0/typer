@@ -39,6 +39,18 @@ Voice
   - lowercase, like the rest of the site. titles under ~60 chars.
 -->
 
+## 2026-06-23 — the ghost finally lands where you're typing in slack and discord
+
+If you've used typer in an Electron app or a browser chat box, you've seen the ghost text sit a little off from your cursor. That's fixed now, and the fix costs nothing.
+
+The reason it drifted is boring but real: native mac apps tell us exactly where the caret is, and Electron and web apps mostly don't. Our old answer was to take a screenshot and read the screen to find the caret, which works but is slow and hard on the battery, so it was off by default — which meant most people just lived with misplaced ghosts. The better answer was sitting in plain sight. When you click into a text field, that click *is* where the caret goes. So we record the click and slide the anchor right by exactly as much as you type. No screenshot, no OCR, no battery cost, and the placement tracks your typing in real time. The moment a real caret is available we hand back to it. This is on by default and closes most of the gap between native and Electron.
+
+We also fixed the screenshot path for the cases that still need it. Instead of grabbing the whole window it now captures a thin band around the caret line and reads only that, which is about ten times less work. The ambient screen reading that feeds context got the same treatment — half resolution, skip the tiny chrome — for roughly a quarter of the cost.
+
+And the percentages. A bunch of you noticed the first suggestion in a fresh field was weirdly often "100%" or "90%". That was the zoom level or a progress bar on your screen leaking into the model and getting continued as if you'd typed it. Now anything on screen is treated as background to consider, not text to copy, and a gate drops a completion that's just a bare number or leads with a percentage — unless you're actually mid-number, where "5" still becomes "0%". No more phantom stats.
+
+The honest caveat: the click anchor follows one line. If you click, then type a full wrapping paragraph in an app with no caret API, it'll lose the thread until your next click — single-line chat boxes, which is most of where this matters, are solid. Everything stayed on your Mac, as always. The [changelog](https://github.com/frgmt0/typer/blob/main/CHANGELOG.md) has the engineering.
+
 ## 2026-06-20 — a typer for every mac, and how fast a big one can be
 
 This week was mostly a stopwatch. We wanted one answer: how large a model can typer run before it stops feeling instant? The answer turned out to be larger than we assumed, so we are turning it into a lineup you pick by your machine.

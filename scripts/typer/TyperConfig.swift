@@ -54,6 +54,12 @@ struct TyperConfig {
     // per caret update is very battery-heavy (it ran on the Neural Engine every ~1.2s
     // while typing in a terminal). Native and Electron/WebKit apps don't need it.
     var screenshotCaretEnabled = false
+    // Click-to-anchor caret: a left-click places the text caret exactly where you
+    // clicked, so we record that point and extrapolate horizontally as you type. This
+    // gives accurate ghost placement in Electron/web fields that expose no AX caret
+    // (Slack, Discord, browser chat boxes) WITHOUT any screenshot or OCR — it is the
+    // cheap path that closes most of the native-vs-Electron gap. On by default.
+    var clickCaretEnabled = true
     // Ambient "topic memory": periodically OCR the focused window, distill the salient
     // entities/topics (not raw text), and resurface them later only when you type about
     // one. Off by default (needs Screen Recording). topic_capture_seconds is the period.
@@ -132,6 +138,7 @@ struct TyperConfig {
             case "min_confidence": cfg.minConfidence = Double(value) ?? cfg.minConfidence
             case "screen_context_enabled": cfg.screenContextEnabled = value == "true"
             case "screenshot_caret_enabled": cfg.screenshotCaretEnabled = value == "true"
+            case "click_caret_enabled": cfg.clickCaretEnabled = value == "true"
             case "topic_memory_enabled": cfg.topicMemoryEnabled = value == "true"
             case "topic_capture_seconds": cfg.topicCaptureSeconds = Double(value) ?? cfg.topicCaptureSeconds
             case "background_refresh_seconds": cfg.backgroundRefreshSeconds = Double(value) ?? cfg.backgroundRefreshSeconds

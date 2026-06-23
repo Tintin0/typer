@@ -3,6 +3,39 @@
 Typer is in **alpha** and not yet versioned. Entries are newest-first, led by the
 commit they landed in. Website: [typr.frgmt.xyz](https://typr.frgmt.xyz).
 
+## Click-anchored caret in Electron/web, ~10x cheaper screenshots, no more phantom percentages
+
+Three things that made suggestions feel off in non-native apps are fixed: the ghost now lines up
+where you're actually typing in Electron/web fields, the screenshot/OCR paths cost a fraction of
+what they did, and completions stop emitting bare percentages.
+
+- **Click-to-anchor caret (`TyperApp+Caret.swift`, `+EventTap.swift`).** Apps like Slack, Discord
+  and browser chat boxes expose no Accessibility caret, so the ghost used to drift off the cursor.
+  A left-click *is* a caret placement, so we now record the click point and slide it right by the
+  measured width of what you type — accurate inline placement with **zero** screenshots or OCR.
+  This is the new default fallback (`click_caret_enabled = true`) and closes most of the
+  native-vs-Electron gap. Bounded to a single line (a newline or a long burst since the click drops
+  the anchor), and it yields immediately to the real AX caret whenever one is available.
+- **Screenshot caret locator ~10x cheaper (`TyperApp+Context.swift`).** When the screenshot
+  fallback *is* enabled, it no longer grabs the whole window: `captureFocusedWindow` takes an
+  optional clip rect and captures only a few-line band around the caret (computed on the main
+  thread from the focused element's bounds), OCR'd with Vision's `.fast` path. The full-window
+  ambient OCR (screen context + topic capture) now captures at half resolution with a
+  `minimumTextHeight` floor that skips tiny chrome — roughly a 4x Vision cost cut on those.
+- **No more phantom percentages (`scripts/llama_server.cpp`).** The first suggestion in a fresh
+  field was often "100%" or "90%" — UI chrome (zoom level, battery, progress) leaking in through
+  screen context and getting continued. Fixed at three layers: a model-agnostic gate drops any
+  completion that's a bare number or leads with a percentage (unless you're mid-number, so "5" →
+  "0%" still works); a streaming guard kills a leading percentage before it can flash; and the OCR
+  /AX context filters now reject numeric-only chrome lines instead of feeding them to the model.
+- **On-screen context is now framing, not steering (`TyperApp+Context.swift`).** Background context
+  is relabeled and trimmed so the model treats what's on screen as *consideration* (topic/tone),
+  not as text to tailor the completion to — your live line stays the thing being continued.
+- **Battery-aware caret end to end.** The default path needs no capture at all, the screenshot
+  path captures a band instead of a screen, and ambient OCR runs at half res. A follow-up
+  adversarial review also caught and fixed an off-main `NSScreen` read in the OCR caret path and a
+  stranded-ghost case where a suppressed partial wasn't torn down.
+
 ## A typed-content eval, a greedy harness, and a Claude-distilled typer-1
 
 We were grading typer-1 on prose and serving a sampler tuned for a model we no longer ship. Both

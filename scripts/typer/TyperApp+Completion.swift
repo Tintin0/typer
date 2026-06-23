@@ -408,7 +408,14 @@ extension TyperApp {
     // the remaining tail; if they diverged we regenerate.
     func presentCompletion(_ text: String?, conf: Double? = nil, requestedBuffer: String) {
         guard let text, !text.isEmpty else {
-            if completion == nil { overlay.orderOut(nil) }
+            // No usable result for this generation (empty, or gated/percentage-suppressed
+            // at the final stage). A streamed partial of THIS generation may already be
+            // painted — tear it down rather than strand a ghost on screen (e.g. a bare
+            // "100" partial whose final the orphan-number gate nulls). Safe to clear: the
+            // caller only reaches here under the matching activeApp + generationSerial
+            // guard, so no newer suggestion is being clobbered.
+            completion = nil
+            overlay.orderOut(nil)
             return
         }
         // The confidence gate: when the model was mostly guessing, show nothing.

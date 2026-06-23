@@ -82,7 +82,10 @@ extension TyperApp {
     // A mouse click is a cursor/focus change, not typing. Clear anything pending,
     // invalidate in-flight generations, and warm the context cache after the target
     // app has processed the click — but never schedule a completion from the click.
-    func handlePointerInteraction() {
+    // A left-click also places the text caret at the click point; record it as a cheap
+    // caret seed for AX-hostile fields (see currentCaretPoint's click-anchor branch).
+    func handlePointerInteraction(at location: CGPoint? = nil) {
+        if cfg.clickCaretEnabled, let location { recordClickCaret(at: location) }
         invalidateAndResync()
         refreshObservedElement()    // a click usually moves keyboard focus too
     }
@@ -101,7 +104,17 @@ extension TyperApp {
         recordLearning()
         let serial = generationSerial
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, self.generationSerial == serial else { return } // typing happened; leave it alone
+            guard let self else { return }
+            // Clear the click-pending flag in every exit path. If typing raced in before
+            // this resync (serial advanced), the buffer was never reset, so a click anchor
+            // can't be baselined coherently — abandon it rather than leave a half-stamped
+            // one that would misplace the ghost.
+            let clickPending = self.clickCaretPending
+            self.clickCaretPending = false
+            guard self.generationSerial == serial else {   // typing happened; leave it alone
+                if clickPending { self.clickCaretPoint = nil; self.clickCaretApp = "" }
+                return
+            }
             self.syncActiveApp()
             if let ax = self.textAroundCursor(limit: 500), !ax.before.isEmpty {
                 self.buffer = String(ax.before.suffix(500))
@@ -114,6 +127,14 @@ extension TyperApp {
             self.lexiconWatermark[self.activeAppKey] = self.buffer.count
             self.saveActiveAppState()
             self.lastCaretPoint = self.caretPoint()
+            // If this resync followed a fresh left-click (pending flag), stamp the click
+            // anchor to the just-synced active app, baselined at the current buffer length
+            // so typed-width extrapolation starts from zero. The flag (not a time window)
+            // ensures a paste/⌘Z resync never re-baselines a stale anchor.
+            if self.cfg.clickCaretEnabled, clickPending, self.clickCaretPoint != nil {
+                self.clickCaretApp = self.activeAppKey
+                self.clickCaretBufferLen = self.buffer.count
+            }
             self.refreshBackgroundIfNeeded()
         }
     }
@@ -128,7 +149,9 @@ extension TyperApp {
         }
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return }  // our own insertion
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
-            handlePointerInteraction()
+            // Only a left-click reliably places the text caret; right/other clicks open
+            // menus and shouldn't seed a caret anchor.
+            handlePointerInteraction(at: type == .leftMouseDown ? event.location : nil)
             return
         }
         guard type == .keyDown else { return }

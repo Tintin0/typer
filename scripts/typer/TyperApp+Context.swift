@@ -30,7 +30,7 @@ extension TyperApp {
                 if AXUIElementCopyAttributeValue(el, attr as CFString, &vRef) == .success,
                    let s = vRef as? String {
                     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if t.count >= 2, t.count <= 2000, !seen.contains(t) {
+                    if t.count >= 2, t.count <= 2000, !seen.contains(t), !isNumericChrome(t) {
                         seen.insert(t)
                         collected.append(t)
                         budget -= t.count
@@ -46,6 +46,17 @@ extension TyperApp {
         walk(root, depth: 0)
         // Text nearest the input (typically last in reading order) is most relevant.
         return String(collected.joined(separator: "\n").suffix(limit))
+    }
+
+    // Short labels that are just a number/percentage (zoom "100%", "12", "3.5k", a
+    // progress readout). Harmless as UI, but as prompt context they teach the base model
+    // to emit bare percentages — keep them out of both the AX walk and OCR.
+    func isNumericChrome(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, t.count <= 12 else { return false }
+        if !t.contains(where: { $0.isNumber }) { return false }
+        let lettery = t.filter { $0.isLetter }.count
+        return lettery <= 1 || t.hasSuffix("%")
     }
 
     func clipboardText(limit: Int, relevantTo context: String) -> String {
@@ -78,7 +89,15 @@ extension TyperApp {
     // main-thread-affine). A class box carries the Task's result across the
     // semaphore so there's no write-after-return race on a local var.
     final class CaptureBox { var value: (image: CGImage, frame: CGRect, title: String)? }
-    func captureFocusedWindow(frontPID: pid_t?) -> (image: CGImage, frame: CGRect, title: String)? {
+    // `clip` (global, top-left Quartz coords) captures only that sub-rect of the window
+    // instead of the whole thing — used by the caret locator to grab a thin band around
+    // the caret line, which cuts both the capture and the downstream OCR cost by ~10x.
+    // `scale` downsamples the captured pixels (1.0 = native); Vision cost scales with
+    // pixel count, so 0.5 is ~4x cheaper OCR with no accuracy loss for body text.
+    // The returned `frame` is the region actually captured (global, top-left), so OCR
+    // box coordinates always map back to the screen correctly.
+    func captureFocusedWindow(frontPID: pid_t?, clip: CGRect? = nil, scale: CGFloat = 1.0)
+        -> (image: CGImage, frame: CGRect, title: String)? {
         guard #available(macOS 14.0, *) else { return nil }
         let sem = DispatchSemaphore(value: 0)
         let box = CaptureBox()
@@ -92,11 +111,24 @@ extension TyperApp {
             guard let win = windows.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) else { return }
             let filter = SCContentFilter(desktopIndependentWindow: win)
             let config = SCStreamConfiguration()
-            config.width = Int(win.frame.width)
-            config.height = Int(win.frame.height)
             config.showsCursor = false
+            // Resolve the captured region (window-local for sourceRect, global for the
+            // returned frame). A clip is intersected with the window; an empty/degenerate
+            // intersection falls back to the whole window.
+            var captured = win.frame
+            if let clip {
+                let local = clip.intersection(win.frame)
+                if local.width >= 8, local.height >= 8 {
+                    config.sourceRect = CGRect(x: local.minX - win.frame.minX, y: local.minY - win.frame.minY,
+                                               width: local.width, height: local.height)
+                    captured = local
+                }
+            }
+            let s = max(0.25, min(1.0, scale))
+            config.width = max(8, Int(captured.width * s))
+            config.height = max(8, Int(captured.height * s))
             if let img = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) {
-                box.value = (img, win.frame, win.title ?? "")
+                box.value = (img, captured, win.title ?? "")
             }
         }
         // Only read box.value if the Task actually finished (semaphore = happens-after).
@@ -105,10 +137,14 @@ extension TyperApp {
 
     func screenOCR(limit: Int, frontPID: pid_t?) -> String {
         guard CGPreflightScreenCaptureAccess() else { return "" }
-        guard let cap = captureFocusedWindow(frontPID: frontPID), cap.image.width > 8, cap.image.height > 8 else { return "" }
+        // Half-resolution capture: Vision cost scales with pixel count, so this is ~4x
+        // cheaper OCR. Body text survives downscaling; only sub-pixel chrome is lost,
+        // which minimumTextHeight skips anyway.
+        guard let cap = captureFocusedWindow(frontPID: frontPID, scale: 0.5), cap.image.width > 8, cap.image.height > 8 else { return "" }
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate          // far fewer "8nd"/"htttsngtab" misreads
         req.usesLanguageCorrection = true
+        req.minimumTextHeight = 0.012             // skip tiny UI chrome (badges, status counters)
         let handler = VNImageRequestHandler(cgImage: cap.image, options: [:])
         guard (try? handler.perform([req])) != nil, let obs = req.results else { return "" }
         var lines: [String] = []
@@ -120,12 +156,17 @@ extension TyperApp {
     }
 
     // Heuristic gate to keep OCR garbage (UI chrome, misreads, glyph soup) out of the
-    // prompt: require mostly letters/spaces and at least one real word.
+    // prompt: require mostly letters/spaces, at least one real word, and reject lines
+    // dominated by digits/percent signs (zoom "100%", counters, progress, prices) — that
+    // numeric chrome is exactly what made completions spit out spurious percentages.
     func isLikelyText(_ s: String) -> Bool {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard t.count >= 4 else { return false }
         let letters = t.filter { $0.isLetter || $0.isWhitespace }.count
         guard Double(letters) / Double(t.count) >= 0.75 else { return false }
+        if t.contains("%") { return false }   // a percentage anywhere reads as a stat/chrome line
+        let digits = t.filter { $0.isNumber }.count
+        if Double(digits) / Double(t.count) >= 0.2 { return false }
         return t.split(whereSeparator: { !$0.isLetter }).contains { $0.count >= 3 }
     }
 
@@ -133,14 +174,38 @@ extension TyperApp {
     // (Electron, terminals, custom editors). Captures the focused window, OCRs it,
     // finds where the user's most-recently-typed text ends on screen, and returns
     // the caret rect there. Slow (~150ms), so callers must throttle/cache it.
-    func screenshotCaretRect(needle: String, frontPID: pid_t?) -> (rect: CGRect, charWidth: CGFloat)? {
+    // Focused element's global rect in Quartz (top-left origin) coords — the space
+    // SCStreamConfiguration.sourceRect / CGEvent use. Read on the main thread (AX is
+    // main-affine), so the caret locator can capture just this element's band.
+    func focusedElementQuartzRect() -> CGRect? {
+        guard let element = focusedElement() else { return nil }
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posValue = posRef, let sizeValue = sizeRef else { return nil }
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posValue as! AXValue, .cgPoint, &point),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+              point.x.isFinite, point.y.isFinite, size.width > 4, size.height > 4 else { return nil }
+        return CGRect(origin: point, size: size)
+    }
+
+    func screenshotCaretRect(needle: String, frontPID: pid_t?, clip: CGRect?, primaryMaxY: CGFloat) -> (rect: CGRect, charWidth: CGFloat)? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
-        // `needle` and `frontPID` are snapshotted on the main thread by the caller —
-        // never read self.buffer / NSWorkspace here (off-main).
+        // `needle`, `frontPID`, `clip` and `primaryMaxY` are all snapshotted on the main
+        // thread by the caller — never read self.buffer / NSWorkspace / AX / NSScreen
+        // here (off-main). The Quartz→AppKit flip uses the passed-in primaryMaxY for the
+        // same reason (NSScreen is main-affine), so we don't call axRectToAppKit here.
         guard needle.count >= 3 else { return nil }
-        guard let cap = captureFocusedWindow(frontPID: frontPID), cap.image.width > 8 else { return nil }
+        // Capture only the caret band (clip): a ~10x smaller image than the old
+        // full-window grab, so both the capture and the Vision pass are far cheaper.
+        // Keep scale 1.0 here (the band is already tiny) so the typed-tail match stays
+        // reliable; boundingBox is normalized, so the screen mapping is scale-agnostic.
+        guard let cap = captureFocusedWindow(frontPID: frontPID, clip: clip, scale: 1.0), cap.image.width > 8 else { return nil }
         let req = VNRecognizeTextRequest()
-        req.recognitionLevel = .accurate
+        req.recognitionLevel = .fast              // matching a typed tail needs speed, not perfect glyphs
         req.usesLanguageCorrection = false
         let handler = VNImageRequestHandler(cgImage: cap.image, options: [:])
         guard (try? handler.perform([req])) != nil, let obs = req.results else { return nil }
@@ -167,7 +232,10 @@ extension TyperApp {
         let quartzTopY = f.minY + (1 - box.maxY) * f.height        // top of the text box, Quartz top-left
         let h = max(12, box.height * f.height)
         let charWidth = bestLen > 0 ? (box.width * f.width) / CGFloat(bestLen) : 9
-        return (axRectToAppKit(CGRect(x: quartzX, y: quartzTopY, width: 1, height: h)), charWidth)
+        // Quartz top-left → AppKit bottom-left flip with the main-thread-snapshotted
+        // primary height (same math as axRectToAppKit, but NSScreen-free off the main thread).
+        let appkitY = primaryMaxY - quartzTopY - h
+        return (CGRect(x: quartzX, y: appkitY, width: 1, height: h), charWidth)
     }
 
     // Refresh the cached background off the hot path, throttled by time + app key.
@@ -240,10 +308,11 @@ extension TyperApp {
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         backgroundQueue.async {
             defer { DispatchQueue.main.async { self.topicCapturing = false } }
-            guard let cap = self.captureFocusedWindow(frontPID: frontPID), cap.image.width > 8 else { return }
+            guard let cap = self.captureFocusedWindow(frontPID: frontPID, scale: 0.5), cap.image.width > 8 else { return }
             let req = VNRecognizeTextRequest()
             req.recognitionLevel = .accurate
             req.usesLanguageCorrection = true
+            req.minimumTextHeight = 0.012
             guard (try? VNImageRequestHandler(cgImage: cap.image, options: [:]).perform([req])) != nil,
                   let obs = req.results else { return }
             let text = obs.compactMap { o -> String? in
@@ -268,11 +337,13 @@ extension TyperApp {
         var blocks: [String] = []
         let appName = currentAppBundleAndName().name
         if !appName.isEmpty { blocks.append("Writing app: \(appName)") }
-        // Put relevant conversation before style, and the user's live text last. The
-        // base model continues the final line, while the earlier labeled blocks bias
-        // topic/tone without being the thing to complete.
+        // Put ambient context before style, and the user's live text last. The base
+        // model continues the final line; the earlier labeled blocks are background it
+        // may consider for topic/tone, NOT content to tailor the completion to. Framed
+        // as on-screen reference (and kept shorter) so a short live line doesn't get
+        // overwhelmed and steered off into whatever happens to be on screen.
         if immediate.count < cfg.maxImmediateForBackground, !cachedBackground.isEmpty {
-            blocks.append("Relevant conversation/context:\n" + String(cachedBackground.suffix(900)))
+            blocks.append("(On screen now — background only, may not be relevant)\n" + String(cachedBackground.suffix(500)))
         }
         // Resurface a recently-viewed topic ONLY when the user is now typing about it
         // (a distinctive entity/keyword from it appears in their recent text).

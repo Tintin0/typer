@@ -48,9 +48,15 @@ adaptive_suggestions = true       # adapt suggestion length + strictness to what
 # good completions score ~0.27+, junk ~0.20.)
 min_confidence = 0.22
 screen_context_enabled = false    # screenshot OCR as prompt context — off by default (noisy)
+# Click-to-anchor caret: a left-click places the text caret exactly where you click,
+# so Typer records that point and slides it right by what you type. This is how ghost
+# text lines up in Electron/web fields (Slack, Discord, browser chat boxes) that expose
+# no Accessibility caret — and it costs nothing (no screenshot, no OCR). On by default.
+click_caret_enabled = true
 # Caret placement in apps with NO Accessibility caret (terminals, custom editors) via
-# screenshot + Vision OCR. OFF by default: it runs on the Neural Engine and is very
-# battery-heavy if it fires repeatedly. Native + Electron/WebKit apps don't need it.
+# screenshot + Vision OCR. OFF by default. Now captures only a thin band around the
+# caret at half resolution (≈10x cheaper than the old full-window grab), but the
+# click-anchor above covers most Electron/web cases without any capture at all.
 screenshot_caret_enabled = false
 # Ambient "topic memory": every few minutes, OCR the focused window, distill the
 # salient names/topics (NOT the raw text), and resurface a short note later — only
@@ -102,6 +108,7 @@ typer1_share_start = 0.10
 typer1_share_min = 0.05
 typer1_share_max = 0.95
 typer1_regression_margin = 0.08
-# Note: caret placement still uses a screenshot fallback (with Screen Recording)
-# only when Accessibility/text-marker caret is unavailable; that is separate from
+# Note: caret placement prefers the Accessibility/text-marker caret; when that is
+# unavailable it falls back to the click anchor (free), then — only if
+# screenshot_caret_enabled — a thin-band screenshot. All separate from
 # screen_context_enabled above.

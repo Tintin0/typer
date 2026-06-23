@@ -124,6 +124,40 @@ static bool looks_bad_completion(const std::string &s) {
     return false;
 }
 
+// Last non-space char of the context (0 if none) — lets the numeric gate tell
+// "the discount is " (prose) from "...is 5" (user mid-number).
+static char last_nonspace(const std::string &s) {
+    for (auto it = s.rbegin(); it != s.rend(); ++it)
+        if (!std::isspace((unsigned char)*it)) return *it;
+    return 0;
+}
+
+// A completion that is itself just a number, or LEADS with a percentage, is almost
+// always pollution from on-screen UI chrome (zoom "100%", battery, progress, a stat
+// readout) leaking through the context — not a real continuation of what the user is
+// writing. Drop it, UNLESS the user is mid-number (context ends in a digit), where
+// "5" -> "0%" or "12" -> ".5" is a legitimate continuation. This is the catch-all for
+// the "first suggestion is 100% / 90%" complaint regardless of where the digits came
+// from. `s` is the already-shaped completion (may have one leading space).
+static bool is_orphan_number(const std::string &s, const std::string &context) {
+    std::string t = trim(s);
+    if (t.empty()) return false;
+    if (std::isdigit((unsigned char)last_nonspace(context))) return false;  // user is mid-number
+    size_t i = 0;
+    if (t[i] == '$') i++;
+    bool saw_digit = false;
+    while (i < t.size() && (std::isdigit((unsigned char)t[i]) || t[i] == '.' || t[i] == ',')) {
+        if (std::isdigit((unsigned char)t[i])) saw_digit = true;
+        i++;
+    }
+    if (!saw_digit) return false;                    // no actual number (e.g. "...", ".", "$")
+    bool pct = (i < t.size() && t[i] == '%');
+    if (pct) i++;
+    std::string rest = trim(t.substr(i));
+    // Leading percentage ("90% off") or a bare number with nothing after ("100", "3.5").
+    return pct || rest.empty();
+}
+
 static std::string limit_words(const std::string &s, int max_words) {
     std::string out;
     int words = 0;
@@ -653,6 +687,21 @@ int main(int argc, char **argv) {
                             }
                         }
                         std::string shaped = utf8_safe(shape(s, false));
+                        // A leading percentage ("100%") is unambiguous even mid-stream and
+                        // is the classic OCR-chrome leak — kill it before it flashes. Bare
+                        // numbers wait for the final gate (mid-stream "100" may yet become
+                        // "100 dollars").
+                        {
+                            std::string ts = trim(shaped);
+                            size_t k = 0;
+                            if (!ts.empty() && ts[k] == '$') k++;
+                            size_t kd = k;
+                            while (k < ts.size() && (std::isdigit((unsigned char)ts[k]) || ts[k] == '.' || ts[k] == ',')) k++;
+                            if (k > kd && k < ts.size() && ts[k] == '%' && !std::isdigit((unsigned char)last_nonspace(context))) {
+                                suppressed = true;
+                                return false;
+                            }
+                        }
                         if (!shaped.empty() && shaped != last_emitted) {
                             last_emitted = shaped;
                             char cbuf[16];
@@ -671,7 +720,7 @@ int main(int argc, char **argv) {
                 std::string out;
                 if (!suppressed) {
                     out = shape(first_line_clean(raw), true);
-                    if (looks_bad_completion(out)) out.clear();
+                    if (looks_bad_completion(out) || is_orphan_number(out, context)) out.clear();
                 }
                 if (out.empty()) {
                     std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
