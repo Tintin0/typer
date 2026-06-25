@@ -1,0 +1,228 @@
+/* ==========================================================================
+   typer — home page layout (composition only).
+   Uses ONLY the shared tokens from styles.css (colors/fonts/spacing/radius).
+   No new identity decisions here — purely arranging shared components.
+   ========================================================================== */
+
+/* ---- HERO ----------------------------------------------------------------- */
+.hero {
+  padding-top: var(--sp-8);
+}
+.hero__head {
+  font-size: var(--t-hero);
+  max-width: 18ch;
+  margin-bottom: var(--sp-6);
+}
+.hero__rest {
+  position: relative;
+  white-space: nowrap;
+}
+.hero__lead {
+  max-width: 56ch;
+  margin-bottom: var(--sp-7);
+}
+.hero__lead .kbd {
+  margin-inline: 1px;
+}
+
+.hero__install {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 720px;
+}
+.hero__cta {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.hero__proof {
+  margin-top: var(--sp-5);
+  font-size: var(--t-label);
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+/* the install command line: keep the copy button clear of the text */
+.code__copy {
+  font-size: 0.7rem;
+  padding: 0.35rem 0.7rem;
+}
+.code__copy.is-copied {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+/* ---- DEMO VIDEO ----------------------------------------------------------- */
+.hero__demo {
+  margin-top: var(--sp-8);
+}
+.demo {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--base-2);
+  overflow: hidden;
+}
+.demo__video {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: var(--base-2);
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+.demo__cap {
+  font-size: var(--t-label);
+  color: var(--ink-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--rule);
+  background: var(--base);
+}
+
+/* ---- THE KEYS ------------------------------------------------------------- */
+.keys {
+  background: var(--base-2);
+  border-block: 1px solid var(--rule);
+}
+.keys__list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-5);
+  border-top: 1px solid var(--rule);
+  border-left: 1px solid var(--rule);
+}
+.keys__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  background: var(--base);
+}
+.keys__item .kbd {
+  font-size: 1rem;
+  padding: 0.4em 0.7em;
+  flex: none;
+}
+.keys__desc {
+  color: var(--ink-2);
+  font-size: var(--t-body);
+}
+.keys__desc strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+@media (max-width: 720px) {
+  .keys__list {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- MODEL LINEUP --------------------------------------------------------- */
+.models {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-5);
+}
+.model {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.model__ttft {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-block: var(--sp-2) var(--sp-3);
+}
+.model__ttft-num {
+  font-size: var(--t-h2);
+  font-weight: 700;
+  color: var(--blue);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.model.card--feature .model__ttft-num {
+  color: var(--green);
+}
+.model__ttft-lbl {
+  font-size: var(--t-label);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+@media (max-width: 820px) {
+  .models {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- COMPATIBILITY (preview) --------------------------------------------- */
+.matrix__more {
+  margin-top: var(--sp-6);
+}
+
+/* ---- OFFERINGS LADDER ----------------------------------------------------- */
+.ladder {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-5);
+}
+.ladder__rung {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ladder__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+.ladder__head .card__kicker {
+  margin-bottom: 0;
+}
+@media (max-width: 720px) {
+  .ladder {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- FINAL CTA ------------------------------------------------------------ */
+.cta {
+  border-top: 1px solid var(--rule);
+  background: var(--base-2);
+}
+.cta__inner {
+  max-width: 720px;
+  text-align: center;
+}
+.cta__head {
+  font-size: var(--t-h2);
+  margin-bottom: var(--sp-3);
+}
+.cta__lead {
+  margin-bottom: var(--sp-6);
+  color: var(--ink-2);
+}
+.cta__code {
+  text-align: left;
+  margin-bottom: var(--sp-5);
+}
+.cta__row {
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-5);
+}
+.cta__foot {
+  font-size: var(--t-label);
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+/* the hero caret already blinks (styles.css); reduced-motion handled globally */
