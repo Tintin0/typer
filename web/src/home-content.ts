@@ -200,7 +200,7 @@ export function homeMarkup(): string {
       <p class="eyebrow">local · on-device · macOS 14+</p>
       <h1 class="hero__head">
         you type the first half,<br />it shows you
-        <span class="hero__rest"><span class="hero__type" id="hero-type"></span><span class="hero__ghost" id="hero-ghost">the rest.</span><span class="hero__caret" aria-hidden="true"></span></span>
+        <span class="hero__rest"><span class="hero__type" id="hero-type"></span><span class="hero__caret" aria-hidden="true"></span><span class="hero__ghost" id="hero-ghost">the rest.</span></span>
       </h1>
       <p class="lead hero__lead">
         autocomplete that never leaves your Mac. a dim suggestion appears at your caret in

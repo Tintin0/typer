@@ -54,26 +54,32 @@ function wireCopyButtons(): void {
 }
 
 /* ---- typed hero motif: "the rest." writes itself once ---------------------
-   The ghost text ("the rest.") is the static, reduced-motion fallback already in
-   the markup. When motion is allowed we clear it and type it into the adjacent
-   "type" span, leaving the ghost faint behind it — the same accept-the-ghost flow
-   the product shows. Purely additive: if JS is off the sentence reads correctly. */
+   True ghost-text autocomplete: the suggestion ("the rest.") starts as faint
+   ghost, and as the solid "typed" half grows the ghost half shrinks by the same
+   character — so the two spans always sum to "the rest." and the line never
+   reflows. The caret sits at the insertion point between them (markup order:
+   type, caret, ghost). Purely additive: with JS off the static ghost reads
+   correctly ("…it shows you the rest."). */
 function playHeroType(): void {
-  if (reduceMotion) return;
   const typeEl = document.getElementById("hero-type");
   const ghostEl = document.getElementById("hero-ghost");
   if (!typeEl || !ghostEl) return;
 
   const full = "the rest.";
-  ghostEl.style.opacity = "0.35"; // keep a faint ghost behind the typed text
+  if (reduceMotion) {
+    // no animation: show the suggestion fully accepted (solid), no ghost.
+    typeEl.textContent = full;
+    ghostEl.textContent = "";
+    return;
+  }
+
   let i = 0;
   const tick = () => {
-    typeEl.textContent = full.slice(0, i);
+    typeEl.textContent = full.slice(0, i); // solid, accepted
+    ghostEl.textContent = full.slice(i); // faint, remaining — shrinks as we type
     if (i < full.length) {
       i += 1;
       window.setTimeout(tick, 70 + Math.random() * 60);
-    } else {
-      ghostEl.style.opacity = "0"; // fully consumed
     }
   };
   // small beat before it starts, so the line reads first
