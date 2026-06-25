@@ -62,7 +62,8 @@ function charDelay(ch: string): number {
 
 // ---- block scaffolding ----
 const TAGS: Record<string, keyof HTMLElementTagNameMap> = {
-  brand: "div", h1: "h1", p: "p", h2: "div", cap: "div", code: "pre", list: "pre", foot: "div",
+  brand: "div", h1: "h1", p: "p", h2: "div", cap: "div", code: "pre", list: "pre",
+  matrix: "pre", note: "div", tiers: "div", foot: "div",
 };
 
 function openBlock(kind: keyof typeof TAGS, html = ""): HTMLElement {
@@ -113,6 +114,7 @@ type Step =
   | { t: "mark"; id: string; text: string }
   | { t: "moveEnd"; id: string; as: string }
   | { t: "video" }
+  | { t: "snap"; kind: keyof typeof TAGS; html: string }
   | { t: "fast"; on: boolean }
   | { t: "pause"; ms: number };
 
@@ -180,6 +182,21 @@ async function moveEndStep(id: string, as: string) {
   await sleep(460);
 }
 
+// a dense block (the matrix, the offerings) snaps in whole with the accept-flash —
+// the same gesture as taking a full suggestion, since you wouldn't hand-type a table.
+async function snapStep(kind: keyof typeof TAGS, html: string) {
+  const block = openBlock(kind);
+  caret.classList.add("hide");
+  await sleep(220);
+  const flash = el("span"); flash.className = "accepted"; flash.innerHTML = html;
+  active!.done.append(flash);
+  requestAnimationFrame(() => flash.classList.add("settle"));
+  setTimeout(() => flash.classList.remove("accepted", "settle"), 650);
+  follow();
+  caret.remove(); block.append(caret); caret.classList.remove("hide");
+  await sleep(360);
+}
+
 // drag the demo recording in, fiddle with placement, then drop it into the flow
 async function videoStep() {
   caret.classList.add("hide");
@@ -218,10 +235,35 @@ async function run(step: Step) {
     }
     case "moveEnd": await moveEndStep(step.id, step.as); break;
     case "video": await videoStep(); break;
+    case "snap":  await snapStep(step.kind, step.html); break;
     case "fast":  fast = step.on; break;
     case "pause": await sleep(step.ms); break;
   }
 }
+
+// =====================================================================
+// CONTENT BLOCKS — dense tables/ladders that snap in whole (see snapStep).
+// edited here and mirrored verbatim in renderFinal(); keep the two in sync.
+// =====================================================================
+
+// per-app caret placement, straight from docs/research/caret-placement.md §2.
+// status legend: solid (green) · approximate (accent) · known gap (red).
+const MATRIX = [
+  "  app                       caret placement        status",
+  "  ─────────────────────────────────────────────────────────────",
+  '  native (textedit, notes)  <span class="col">AX bounds-for-range</span>    <span class="ok">solid</span>',
+  '  webkit / electron         <span class="col">AX text-marker bounds</span>  <span class="ok">solid</span>',
+  '  terminal, iterm2          <span class="col">AX text area + OCR</span>     <span class="ok">solid</span>',
+  '  gpu terminals (warp…)     <span class="col">screenshot OCR caret</span>   <span class="approx">approximate</span>',
+  '  google docs               <span class="col">needs docs a11y on</span>     <span class="approx">approximate</span>',
+].join("\n");
+
+// open-core offerings — honest about now vs planned. never gates the core.
+const TIERS =
+  '<div class="tier"><span class="what"><b>free local core.</b> every model, learned style, per-app context. MIT, build from source.</span><span class="stat now">now · free, forever</span></div>' +
+  '<div class="tier"><span class="what"><b>signed builds + auto-update.</b> skip the toolchain. the source build stays free and identical.</span><span class="stat soon">planned</span></div>' +
+  '<div class="tier"><span class="what"><b>cloud distillation → local LoRA.</b> opt in, train a sharper personal model off-device, download it, run it locally.</span><span class="stat soon">planned</span></div>' +
+  '<div class="tier"><span class="what"><b>pro + team conveniences.</b> instruction packs, settings sync, managed denylists. settings, never your content.</span><span class="stat soon">later</span></div>';
 
 // =====================================================================
 // THE SCRIPT — what typr types, and the gestures it performs along the way.
@@ -269,6 +311,20 @@ const SCRIPT: Step[] = [
   { t: "fast",  on: false },
   { t: "pause", ms: 300 },
 
+  // where it works — the per-app caret matrix, snapped in like a pasted table
+  { t: "block", kind: "h2" }, { t: "type", text: "where the caret lands" },
+  { t: "snap",  kind: "matrix", html: MATRIX },
+  { t: "block", kind: "note" },
+  { t: "type",  text: "honest, not aspirational — approximate stays approximate until it isn't." },
+  { t: "pause", ms: 300 },
+
+  // what it costs — the open-core ladder. core is always free + local.
+  { t: "block", kind: "h2" }, { t: "type", text: "free core, optional extras" },
+  { t: "snap",  kind: "tiers", html: TIERS },
+  { t: "block", kind: "note" },
+  { t: "type",  text: "the engine never leaves your Mac and is never gated. everything above the core is opt-in and degrades back to fully local." },
+  { t: "pause", ms: 300 },
+
   // install, completed in one keystroke
   { t: "block", kind: "h2" }, { t: "type", text: "install" },
   { t: "block", kind: "code", html: `<span class="pr">$ </span>` },
@@ -306,6 +362,12 @@ function renderFinal() {
   typer-1m   1.7B   16GB    first word on screen in 27ms
   typer-1l   4B     32GB +  longer accurate runs
   typer-writer, for rewriting and drafting, lands in Alpha 2.</pre>
+    <div class="blk h2">where the caret lands</div>
+    <pre class="blk matrix">${MATRIX}</pre>
+    <div class="blk note">honest, not aspirational — approximate stays approximate until it isn't.</div>
+    <div class="blk h2">free core, optional extras</div>
+    <div class="blk tiers">${TIERS}</div>
+    <div class="blk note">the engine never leaves your Mac and is never gated. everything above the core is opt-in and degrades back to fully local.</div>
     <div class="blk h2">install</div>
     <pre class="blk code"><span class="pr">$ </span>git clone https://github.com/frgmt0/typer.git && ./install.sh</pre>
     <div class="blk foot">free, forever · MIT · runs on llama.cpp · macOS 14+<br><br>${FOOTER_LINKS}</div>`;

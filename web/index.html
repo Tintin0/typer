@@ -46,6 +46,25 @@
   pre.list b { color: var(--fg); font-weight: 400; }
   pre.code .pr { color: var(--dim); }
   .cap { color: var(--dim); margin: 0.7rem 0 1.7rem; }
+
+  /* compatibility matrix — same monospace idiom as pre.list, with a status column.
+     reuses the existing color tokens: green = solid, accent = approximate, red = known gap. */
+  pre.matrix { margin: 0 0 0.6rem; white-space: pre; overflow-x: auto; color: var(--dim); font-size: 13.5px; line-height: 1.85; }
+  pre.matrix .col { color: var(--fg); }
+  pre.matrix .ok { color: var(--green); }
+  pre.matrix .approx { color: var(--accent); }
+  pre.matrix .gap { color: var(--red); }
+  .note { color: var(--ghost); font-size: 13px; margin: 0 0 1.7rem; }
+
+  /* offerings ladder — small two-column "what / status" rows, honest about now vs planned */
+  .tiers { margin: 0 0 1.7rem; display: grid; gap: 0.55rem; }
+  .tier { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 0.5rem 1rem; align-items: baseline; }
+  .tier .what { color: var(--dim); }
+  .tier .what b { color: var(--fg); font-weight: 400; }
+  .tier .stat { font-size: 12px; white-space: nowrap; color: var(--ghost); }
+  .tier .stat.now { color: var(--green); }
+  .tier .stat.soon { color: var(--accent); }
+  @media (max-width: 560px) { .tier { grid-template-columns: 1fr; gap: 0.1rem; } }
   .foot { color: var(--dim); margin-top: 2rem; }
   .foot a { color: var(--dim); }
   .foot a:hover { color: var(--fg); }
