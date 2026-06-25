@@ -94,6 +94,12 @@
   --gutter: clamp(1rem, 4vw, 2.5rem);
   --nav-h: 64px;
   --grid: clamp(48px, 8vw, 96px);
+
+  /* ordered (Bayer 8x8) dither ramp — used as an alpha mask for the section
+     dividers (.dither). White cells dissolve from dense at the top edge to
+     nothing at the bottom; repeats horizontally, full-height vertically.
+     Generated from a Bayer matrix — see the .dither component. */
+  --dither-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='64' viewBox='0 0 32 64' fill='%23fff'%3E%3Crect x='0' y='0' width='4' height='4'/%3E%3Crect x='4' y='0' width='4' height='4'/%3E%3Crect x='8' y='0' width='4' height='4'/%3E%3Crect x='12' y='0' width='4' height='4'/%3E%3Crect x='16' y='0' width='4' height='4'/%3E%3Crect x='20' y='0' width='4' height='4'/%3E%3Crect x='24' y='0' width='4' height='4'/%3E%3Crect x='0' y='4' width='4' height='4'/%3E%3Crect x='4' y='4' width='4' height='4'/%3E%3Crect x='8' y='4' width='4' height='4'/%3E%3Crect x='12' y='4' width='4' height='4'/%3E%3Crect x='16' y='4' width='4' height='4'/%3E%3Crect x='20' y='4' width='4' height='4'/%3E%3Crect x='24' y='4' width='4' height='4'/%3E%3Crect x='28' y='4' width='4' height='4'/%3E%3Crect x='0' y='8' width='4' height='4'/%3E%3Crect x='8' y='8' width='4' height='4'/%3E%3Crect x='12' y='8' width='4' height='4'/%3E%3Crect x='16' y='8' width='4' height='4'/%3E%3Crect x='24' y='8' width='4' height='4'/%3E%3Crect x='0' y='12' width='4' height='4'/%3E%3Crect x='4' y='12' width='4' height='4'/%3E%3Crect x='8' y='12' width='4' height='4'/%3E%3Crect x='12' y='12' width='4' height='4'/%3E%3Crect x='16' y='12' width='4' height='4'/%3E%3Crect x='20' y='12' width='4' height='4'/%3E%3Crect x='24' y='12' width='4' height='4'/%3E%3Crect x='28' y='12' width='4' height='4'/%3E%3Crect x='0' y='16' width='4' height='4'/%3E%3Crect x='8' y='16' width='4' height='4'/%3E%3Crect x='16' y='16' width='4' height='4'/%3E%3Crect x='24' y='16' width='4' height='4'/%3E%3Crect x='0' y='20' width='4' height='4'/%3E%3Crect x='4' y='20' width='4' height='4'/%3E%3Crect x='12' y='20' width='4' height='4'/%3E%3Crect x='16' y='20' width='4' height='4'/%3E%3Crect x='20' y='20' width='4' height='4'/%3E%3Crect x='28' y='20' width='4' height='4'/%3E%3Crect x='0' y='24' width='4' height='4'/%3E%3Crect x='8' y='24' width='4' height='4'/%3E%3Crect x='16' y='24' width='4' height='4'/%3E%3Crect x='24' y='24' width='4' height='4'/%3E%3Crect x='4' y='28' width='4' height='4'/%3E%3Crect x='12' y='28' width='4' height='4'/%3E%3Crect x='20' y='28' width='4' height='4'/%3E%3Crect x='28' y='28' width='4' height='4'/%3E%3Crect x='0' y='32' width='4' height='4'/%3E%3Crect x='8' y='32' width='4' height='4'/%3E%3Crect x='16' y='32' width='4' height='4'/%3E%3Crect x='24' y='32' width='4' height='4'/%3E%3Crect x='4' y='36' width='4' height='4'/%3E%3Crect x='20' y='36' width='4' height='4'/%3E%3Crect x='0' y='40' width='4' height='4'/%3E%3Crect x='8' y='40' width='4' height='4'/%3E%3Crect x='16' y='40' width='4' height='4'/%3E%3Crect x='24' y='40' width='4' height='4'/%3E%3Crect x='0' y='48' width='4' height='4'/%3E%3Crect x='16' y='48' width='4' height='4'/%3E%3Crect x='24' y='48' width='4' height='4'/%3E%3Crect x='24' y='56' width='4' height='4'/%3E%3C/svg%3E");
 }
 
 :root[data-theme="dark"] {
@@ -238,15 +244,20 @@ body::before {
   color: var(--ink-2);
 }
 
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: var(--t-label);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--blue);
-  margin-bottom: var(--sp-2);
+/* dithered section divider: a Bayer-ordered pixel ramp that dissolves the seam
+   between two sections. Pure decoration (aria-hidden in markup). The pattern is
+   an alpha mask (--dither-img); the visible colour is the mask's fill, so it
+   themes for free. Sits in normal flow between <section>s. */
+.dither {
+  height: var(--sp-8);
+  background-color: var(--rule-strong);
+  opacity: 0.55;
+  pointer-events: none;
+  -webkit-mask: var(--dither-img) repeat-x center / 32px 100%;
+  mask: var(--dither-img) repeat-x center / 32px 100%;
 }
+/* flip the ramp so the dense edge faces the section below instead of above */
+.dither--up { transform: scaleY(-1); }
 
 .section h2 { font-size: var(--t-h2); }
 
@@ -331,6 +342,9 @@ body::before {
 .btn--blue:hover { background: var(--blue-soft); }
 .btn--icon { padding: 0.55rem; gap: 0; }
 .btn--icon svg { width: 1.1em; height: 1.1em; }
+/* trailing diagonal arrow on "leaves the site" buttons; nudges out on hover */
+.btn__arrow { width: 1em; height: 1em; flex: none; transition: transform 140ms ease; }
+.btn:hover .btn__arrow { transform: translate(1.5px, -1.5px); }
 
 /* 6.2 kbd keycap */
 .kbd {
@@ -422,7 +436,7 @@ body::before {
   letter-spacing: -0.02em;
 }
 .nav__brand:hover { text-decoration: none; }
-.nav__brand .mark { width: 26px; height: 26px; flex: none; }
+.nav__brand .mark { width: auto; height: 22px; flex: none; }
 .nav__links {
   display: flex;
   align-items: center;
@@ -549,7 +563,7 @@ body::before {
   flex-direction: column;
   gap: var(--sp-3);
 }
-.footer__brand .mark { width: 56px; height: 56px; }
+.footer__brand .mark { width: auto; height: 42px; }
 .footer__brand-name {
   font-family: var(--font-display);
   font-weight: 700;
@@ -615,8 +629,6 @@ body::before {
   border-bottom: 1px solid var(--rule-strong);
   padding: var(--sp-3) var(--sp-4);
   background: var(--base-2);
-  position: sticky;
-  top: var(--nav-h);
 }
 .matrix td {
   padding: var(--sp-3) var(--sp-4);
@@ -714,6 +726,29 @@ body::before {
   right: var(--sp-3);
 }
 
+/* 6.10a logo mark (caret + cascading sheets) — see shell.ts logoMark */
+.logo__bar { fill: var(--blue); }
+.logo__sheet--1 { fill: var(--ghost); }
+.logo__sheet--2 { fill: var(--ink-3); }
+.logo__sheet--3 { fill: var(--ink-2); }
+/* the bar blinks like a live caret; the sheets settle in on mount, staggered */
+.logo__bar {
+  transform-box: fill-box;
+  animation: logo-caret 1.2s step-end infinite;
+}
+.logo__sheet {
+  transform-box: fill-box;
+  animation: logo-settle 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.logo__sheet--1 { animation-delay: 60ms; }
+.logo__sheet--2 { animation-delay: 160ms; }
+.logo__sheet--3 { animation-delay: 260ms; }
+@keyframes logo-caret { 50% { opacity: 0.3; } }
+@keyframes logo-settle {
+  from { opacity: 0; transform: translate(7px, -6px); }
+  to { opacity: 1; transform: translate(0, 0); }
+}
+
 /* 6.10 hero caret / ghost-text motif */
 .hero__type { color: var(--ink); }
 .hero__ghost { color: var(--ghost); }
@@ -737,6 +772,8 @@ body::before {
     scroll-behavior: auto !important;
   }
   .hero__caret { animation: none; }
+  .logo__bar { animation: none; }
+  .logo__sheet { animation: none; opacity: 1; transform: none; }
   .btn--primary:hover { transform: none; }
   .faq summary::after { transition: none; }
 }

@@ -36,12 +36,6 @@
   gap: var(--sp-4);
   flex-wrap: wrap;
 }
-.hero__proof {
-  margin-top: var(--sp-5);
-  font-size: var(--t-label);
-  color: var(--ink-3);
-  letter-spacing: 0.02em;
-}
 
 /* the install command line: keep the copy button clear of the text */
 .code__copy {

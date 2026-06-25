@@ -16,6 +16,12 @@
 const GITHUB = "https://github.com/frgmt0/typer";
 const INSTALL_CMD = "git clone https://github.com/frgmt0/typer && cd typer && ./install.sh";
 
+/* a small up-right diagonal arrow for "leaves the site" links (e.g. GitHub) */
+const ARROW_UPRIGHT = `<svg class="btn__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>`;
+
+/* a dithered divider between sections (decorative; see .dither in styles.css) */
+const DITHER = `<div class="dither" aria-hidden="true"></div>`;
+
 /* ---- the per-app caret compatibility matrix (preview subset for the home page;
    the full table lives on /compatibility). Status + methods are sourced from
    docs/research/caret-placement.md §2 + docs/overhaul-spec.md §B. -------------- */
@@ -197,7 +203,6 @@ export function homeMarkup(): string {
   <!-- ============================ HERO ============================ -->
   <section class="section hero" id="top">
     <div class="container">
-      <p class="eyebrow">local · on-device · macOS 14+</p>
       <h1 class="hero__head">
         you type the first half,<br />it shows you
         <span class="hero__rest"><span class="hero__type" id="hero-type"></span><span class="hero__caret" aria-hidden="true"></span><span class="hero__ghost" id="hero-ghost">the rest.</span></span>
@@ -214,12 +219,9 @@ export function homeMarkup(): string {
           <span class="prompt">$ </span>git clone <span class="ghost">https://github.com/frgmt0/typer</span> &amp;&amp; cd typer &amp;&amp; <span class="hero__type">./install.sh</span>
         </div>
         <div class="hero__cta">
-          <a class="btn btn--primary" href="${GITHUB}" target="_blank" rel="noopener">get typer</a>
-          <a class="btn btn--blue" href="${GITHUB}" target="_blank" rel="noopener">view source</a>
+          <a class="btn btn--primary" href="${GITHUB}" target="_blank" rel="noopener">github ${ARROW_UPRIGHT}</a>
         </div>
       </div>
-
-      <p class="hero__proof mono">runs on llama.cpp + a local GGUF model · no account · no cloud · password fields skipped · MIT</p>
     </div>
 
     <div class="container hero__demo">
@@ -228,11 +230,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ===================== HOW IT WORKS / PRIVACY ===================== -->
   <section class="section" id="how" aria-labelledby="how-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">how it works</p>
         <h2 id="how-h">on your Mac, nowhere else.</h2>
         <p class="section__lead">
           llama.cpp runs a small GGUF model on your machine. there is no account, no Apple
@@ -267,11 +270,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ====================== THE KEYS ====================== -->
   <section class="section keys" id="keys" aria-labelledby="keys-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">the flow</p>
         <h2 id="keys-h">type into the suggestion.</h2>
         <p class="section__lead">three keys, no menu. the ghost is dim until you take it.</p>
       </div>
@@ -292,11 +296,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ====================== MODEL LINEUP ====================== -->
   <section class="section" id="models" aria-labelledby="models-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">the lineup</p>
         <h2 id="models-h">three models. pick by your machine.</h2>
         <p class="section__lead">
           time-to-first-token on an M2 Pro. q8 turned out faster than full precision and half
@@ -317,11 +322,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ================== COMPATIBILITY MATRIX ================== -->
   <section class="section" id="compatibility" aria-labelledby="compat-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">caret coverage</p>
         <h2 id="compat-h">honest about where it lands.</h2>
         <p class="section__lead">
           an ordered fallback ladder places the ghost on your real caret — and we mark the
@@ -352,11 +358,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ======================= QoL FEATURES ======================= -->
   <section class="section" id="features" aria-labelledby="feat-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">quality of life</p>
         <h2 id="feat-h">the stuff that makes it yours.</h2>
         <p class="section__lead">a layer of small controls on top of a completion engine that just runs.</p>
       </div>
@@ -374,11 +381,12 @@ export function homeMarkup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ====================== OFFERINGS LADDER ====================== -->
   <section class="section" id="offerings" aria-labelledby="off-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">open core</p>
         <h2 id="off-h">we charge for convenience, never the core.</h2>
         <p class="section__lead">
           every rung is opt-in and degrades to the one below it. if our servers vanish, the app
@@ -400,6 +408,8 @@ export function homeMarkup(): string {
       </div>
     </div>
   </section>
+
+  ${DITHER}
 
   <!-- ========================= FINAL CTA ========================= -->
   <section class="section cta" aria-labelledby="cta-h">

@@ -8,16 +8,18 @@ export type ActivePage = "home" | "compatibility" | "research" | "announcements"
 
 const GITHUB_URL = "https://github.com/frgmt0/typer";
 
-/* ---- the geometric caret/cursor-block logo mark (typer's "cube") ---------- */
-/* a filled cursor block + a thin blinking caret bar, in --blue. Reused at all
-   sizes; pass a class for sizing. The bar carries the brand's "live caret". */
+/* ---- the caret + cascading-sheets logo mark ------------------------------- */
+/* a tall blue caret bar on the left with three sheets stepping down to the
+   right — the brand's "live caret" plus a suggestion cascading into place.
+   Fills route through theme tokens (CSS in styles.css §6.10) so it themes for
+   free; the sheets settle in on mount and the bar blinks. Pass a class for
+   sizing. Reused in the nav + footer. */
 export function logoMark(cls = "mark"): string {
-  return `<svg class="${cls}" viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
-  <rect x="3" y="6" width="16" height="20" rx="1" fill="var(--blue)"/>
-  <rect x="23" y="3" width="3" height="26" rx="1" fill="var(--blue)"/>
-  <rect x="7.5" y="11" width="7" height="2" rx="1" fill="var(--base)"/>
-  <rect x="7.5" y="15" width="7" height="2" rx="1" fill="var(--base)"/>
-  <rect x="7.5" y="19" width="4" height="2" rx="1" fill="var(--base)"/>
+  return `<svg class="logo ${cls}" viewBox="0 0 144 98" fill="none" aria-hidden="true" focusable="false">
+  <path class="logo__sheet logo__sheet--1" d="m132 13.7h-47.1v18.3h48.7v-17c0-0.6-0.8-1.3-1.6-1.3z"/>
+  <polygon class="logo__sheet logo__sheet--2" points="66.5 31.9 66.5 50.5 133.7 50.5 133.7 32"/>
+  <path class="logo__sheet logo__sheet--3" d="m47.8 50.4v18.3h85.8c0-0.3 0.1-0.7 0.1-1.1v-17.2h-85.9z"/>
+  <path class="logo__bar" d="m27.1 10.4h-15.1c-0.9 0-1.8 1-1.8 1.9v73.7c0.2 0.8 0.9 1.8 1.8 1.8l15-0.1c0.9 0.1 1.8-0.5 1.8-1.7v-73.9c-0.2-1-0.9-1.7-1.7-1.7z"/>
 </svg>`;
 }
 

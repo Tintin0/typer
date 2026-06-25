@@ -22,6 +22,9 @@ mountChrome("compatibility");
 
 const GITHUB = "https://github.com/frgmt0/typer";
 
+/* a dithered divider between sections (decorative; see .dither in styles.css) */
+const DITHER = `<div class="dither" aria-hidden="true"></div>`;
+
 type Status = "solid" | "approx" | "issue";
 const STATUS_LABEL: Record<Status, string> = {
   solid: "solid",
@@ -281,7 +284,6 @@ function markup(): string {
   <!-- ============================ HERO ============================ -->
   <section class="section compat-hero">
     <div class="container">
-      <p class="eyebrow">honest by design</p>
       <h1 class="compat-hero__head">where the ghost lands, app by app.</h1>
       <p class="lead compat-hero__lead">
         typer places inline ghost-text on your real caret through an ordered fallback ladder.
@@ -300,11 +302,12 @@ function markup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ======================= THE LADDER ======================= -->
   <section class="section compat-ladder-sec" aria-labelledby="ladder-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">the fallback ladder</p>
         <h2 id="ladder-h">tries the precise thing first, degrades gracefully.</h2>
         <p class="section__lead">
           every completion runs down this list until one method yields a plausible caret rect;
@@ -326,11 +329,12 @@ function markup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ====================== THE MATRIX ====================== -->
   <section class="section compat-matrix-sec" id="matrix" aria-labelledby="matrix-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">the matrix</p>
         <h2 id="matrix-h">per-app caret coverage.</h2>
         <p class="section__lead">
           measured on macOS 14+, Apple Silicon. some rows are approximate by construction — the app
@@ -347,11 +351,12 @@ function markup(): string {
     </div>
   </section>
 
+  ${DITHER}
+
   <!-- ========================= FAQ ========================= -->
   <section class="section compat-faq-sec" aria-labelledby="faq-h">
     <div class="container">
       <div class="section__head">
-        <p class="eyebrow">questions</p>
         <h2 id="faq-h">the honest version.</h2>
       </div>
       <div class="faq">
@@ -364,6 +369,8 @@ function markup(): string {
       </div>
     </div>
   </section>
+
+  ${DITHER}
 
   <!-- ========================= CTA ========================= -->
   <section class="section compat-cta" aria-labelledby="ccta-h">
