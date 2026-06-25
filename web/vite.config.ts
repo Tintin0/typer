@@ -14,6 +14,7 @@ function cleanUrls(): Plugin {
   const middleware = (req: any, _res: any, next: () => void) => {
     const url = req.url ?? "";
     if (/^\/announcements(\?|$)/.test(url)) req.url = "/announcements.html";
+    else if (/^\/compatibility(\?|$)/.test(url)) req.url = "/compatibility.html";
     else if (/^\/research(\/|\?|$)/.test(url)) req.url = "/research.html";
     else if (/^\/v2(\?|$)/.test(url)) req.url = "/v2.html";
     next();
@@ -40,6 +41,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
+        compatibility: resolve(__dirname, "compatibility.html"),
         announcements: resolve(__dirname, "announcements.html"),
         research: resolve(__dirname, "research.html"),
         v2: resolve(__dirname, "v2.html"),

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>typer · app compatibility — local autocomplete for macOS</title>
+<meta name="description" content="An honest, per-app compatibility matrix for typer: caret placement method, completion quality, known quirks, and status (solid / approximate / known issue) across native, Electron, terminal, and Google Docs apps on macOS." />
+<meta name="keywords" content="autocomplete compatibility macos, terminal autocomplete macos, slack autocomplete, vscode autocomplete macos, google docs autocomplete" />
+<meta property="og:title" content="typer · app compatibility" />
+<meta property="og:description" content="Honest per-app caret compatibility for typer on macOS." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://typr.frgmt.xyz/compatibility" />
+<meta name="theme-color" content="#fafaf8" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/space-grotesk-var.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/dm-sans-var.woff2" />
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("typer-theme");
+      if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+<header id="nav"></header>
+
+<main id="compatibility">
+  <!-- Compatibility matrix content rendered by src/compatibility.ts (owned by the
+       compatibility-page agent, next wave). Foundation provides the shell + chrome. -->
+  <section class="section">
+    <div class="container">
+      <p class="eyebrow">honest by design</p>
+      <h1 style="font-size: var(--t-h2); margin-bottom: var(--sp-5);">app compatibility</h1>
+      <p class="lead" style="max-width: 60ch;">
+        the per-app caret matrix lands here in the next wave.
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer id="footer"></footer>
+
+<script type="module" src="/src/compatibility.ts"></script>
+</body>
+</html>
