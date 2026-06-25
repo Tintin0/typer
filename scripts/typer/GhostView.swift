@@ -42,7 +42,9 @@ final class GhostView: NSView {
         root.mask = taper
     }
 
-    func render(_ attr: NSAttributedString, fontSize fs: CGFloat, taperWidth: CGFloat, shimmer doShimmer: Bool) {
+    // `font` is the host field's real font (spec B.2) when known, else a system font; it
+    // is used for the shimmer mask so the sweep matches the rendered ghost typography.
+    func render(_ attr: NSAttributedString, fontSize fs: CGFloat, font: NSFont, taperWidth: CGFloat, shimmer doShimmer: Bool) {
         CATransaction.begin(); CATransaction.setDisableActions(true)   // no implicit anim on text/move
         let h = ceil(attr.size().height)
         let f = CGRect(x: inset, y: (bounds.height - h) / 2, width: max(0, bounds.width - inset), height: h)
@@ -52,14 +54,14 @@ final class GhostView: NSView {
         let fadeStart = bounds.width > taperWidth ? (bounds.width - taperWidth) / bounds.width : 0.55
         taper.locations = [0, NSNumber(value: Double(fadeStart)), 1.0]
         CATransaction.commit()
-        if doShimmer { runShimmer(text: attr.string, fontSize: fs, frame: f) } else { shimmer.isHidden = true }
+        if doShimmer { runShimmer(text: attr.string, font: font, frame: f) } else { shimmer.isHidden = true }
     }
 
-    private func runShimmer(text: String, fontSize fs: CGFloat, frame f: CGRect) {
+    private func runShimmer(text: String, font: NSFont, frame f: CGRect) {
         shimmer.isHidden = false
         shimmer.frame = bounds
         shimmerMask.string = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: fs), .foregroundColor: NSColor.white])
+            .font: font, .foregroundColor: NSColor.white])
         shimmerMask.frame = f
         shimmer.locations = [1.0, 1.0, 1.0]   // settle: band swept off the right edge
         let band = CABasicAnimation(keyPath: "locations")

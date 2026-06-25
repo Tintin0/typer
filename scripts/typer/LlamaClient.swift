@@ -7,8 +7,57 @@ import NaturalLanguage
 import ScreenCaptureKit
 import Vision
 
+// Token-space budgeting cache (spec C.4). Tokenizing each context block via the helper
+// has a real round-trip cost, but the heavy blocks (style sample, OCR/background,
+// field-meta) are largely unchanged request-to-request. An LRU keyed exactly like
+// Cotypist's `TokenizationCache` (string + addBOS + allowSpecial) lets the budgeter
+// reuse a count instead of re-asking the helper every keystroke.
+struct TokCacheKey: Hashable {
+    let string: String
+    let addBOS: Bool
+    let allowSpecial: Bool
+}
+
+final class TokenizationCache {
+    private struct Entry { let tokens: Int; var lastUsed: Date }
+    private var cache: [TokCacheKey: Entry] = [:]
+    private let lock = NSLock()
+    private let capacity: Int
+
+    init(capacity: Int = 256) { self.capacity = capacity }
+
+    func count(for key: TokCacheKey) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard var e = cache[key] else { return nil }
+        e.lastUsed = Date(); cache[key] = e
+        return e.tokens
+    }
+
+    func store(_ tokens: Int, for key: TokCacheKey) {
+        lock.lock(); defer { lock.unlock() }
+        cache[key] = Entry(tokens: tokens, lastUsed: Date())
+        if cache.count > capacity {
+            // Evict the least-recently-used quarter in one pass (amortized O(1) per insert).
+            let drop = cache.sorted { $0.value.lastUsed < $1.value.lastUsed }
+                .prefix(cache.count - capacity * 3 / 4)
+            for (k, _) in drop { cache[k] = nil }
+        }
+    }
+
+    func clear() { lock.lock(); cache.removeAll(); lock.unlock() }
+}
+
 final class LlamaClient {
     private let cfg: TyperConfig
+    // Per-client LRU of (block → token count). Shared by the budgeter so a stable
+    // style/background block is measured once, not per keystroke.
+    let tokenizationCache = TokenizationCache()
+    // Off-main queue that warms the tokenization cache. The budgeter (called on the MAIN
+    // thread inside generate()) must never block on helper IPC (review H1), so it only ever
+    // reads the cache or char-estimates synchronously, and schedules the real tokenize here.
+    private let warmQueue = DispatchQueue(label: "typer.tokenwarm", qos: .utility)
+    private var warmingKeys = Set<TokCacheKey>()
+    private let warmLock = NSLock()
     // When set, this client always serves this exact .gguf (the ModelRouter spawns one
     // client per model). When nil, it falls back to findModel(cfg) — the original
     // single-model behaviour.
@@ -97,7 +146,14 @@ final class LlamaClient {
     // `lowPriority` (speculative prefetch) yields the helper instead of waiting: if a
     // foreground request already holds the lock, the prefetch is skipped rather than
     // queued, so it can never delay real input.
+    // `suffix` is the text AFTER the caret (spec §E#13). Non-empty only for mid-line
+    // completions; the helper frames the request as FIM (<pre>context<suf>suffix<mid>)
+    // when the loaded model exposes infill tokens, so the completion fits the gap instead
+    // of duplicating/ignoring trailing text. Empty (the default) keeps the plain
+    // continuation path byte-identical to before.
     func request(task: String, context: String, maxWords: Int, lexicon: String = "",
+                 lexiconBias: Float? = nil,
+                 suffix: String = "",
                  lowPriority: Bool = false,
                  onPartial: ((String, Double?) -> Void)? = nil) throws -> HelperSuggestion? {
         if lowPriority {
@@ -107,8 +163,13 @@ final class LlamaClient {
         }
         defer { lock.unlock() }
         try start()
-        let req = HelperRequest(task: task, context: context, max_words: maxWords, lexicon: lexicon)
-        dlog("request task=\(task) chars=\(context.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
+        // The wire request carries the FIM suffix only when present; an empty suffix
+        // omits the field so non-mid-line requests encode exactly as before (the helper
+        // treats a missing/empty "suffix" as plain continuation).
+        let req = CompleteRequest(task: task, context: context, max_words: maxWords,
+                                  lexicon: lexicon, lexicon_bias: lexiconBias,
+                                  suffix: suffix.isEmpty ? nil : suffix)
+        dlog("request task=\(task) chars=\(context.count) sfx=\(suffix.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try encoder.encode(req) + Data([0x0A])
         do {
             try input?.write(contentsOf: data)
@@ -133,6 +194,119 @@ final class LlamaClient {
         }
     }
 
+    // Wire type for a completion request. Mirrors HelperRequest but adds the optional
+    // FIM `suffix` (spec §E#13); when nil the key is omitted entirely so the encoded
+    // request is byte-identical to the old continuation-only request.
+    private struct CompleteRequest: Codable {
+        let task: String
+        let context: String
+        let max_words: Int
+        let lexicon: String
+        let lexicon_bias: Float?   // strength-scaled per-word logit bias; nil ⇒ helper default (0.5)
+        let suffix: String?
+    }
+
+    // Wire type for the helper's tokenize endpoint (spec C.4).
+    private struct TokenizeRequest: Codable {
+        let mode: String
+        let context: String
+        let add_bos: Int
+    }
+    private struct TokenizeResponse: Codable {
+        let ok: Bool?
+        let n_tokens: Int?
+    }
+
+    // Count the tokens in `block` via the helper's tokenize endpoint, memoized in the
+    // LRU. Used by the token-space budgeter so a long background block can't crowd out
+    // the live line. Best-effort: on any failure it returns a char-based estimate
+    // (~4 chars/token) so budgeting degrades gracefully instead of blocking input.
+    // `lowPriority` skips (rather than queues) when a real request holds the lock, so
+    // measurement never delays a completion.
+    func tokenCount(_ block: String, addBOS: Bool = false, lowPriority: Bool = true) -> Int {
+        if block.isEmpty { return 0 }
+        let key = TokCacheKey(string: block, addBOS: addBOS, allowSpecial: true)
+        if let cached = tokenizationCache.count(for: key) { return cached }
+        let estimate = max(1, (block.count + 3) / 4)
+        if lowPriority {
+            guard lock.try() else { return estimate }
+        } else {
+            lock.lock()
+        }
+        defer { lock.unlock() }
+        do {
+            try start()
+            let req = TokenizeRequest(mode: "tokenize", context: block, add_bos: addBOS ? 1 : 0)
+            let data = try encoder.encode(req) + Data([0x0A])
+            try input?.write(contentsOf: data)
+            guard let line = try readResponseLine(timeoutMs: 1500), !line.isEmpty else { return estimate }
+            let res = try decoder.decode(TokenizeResponse.self, from: line)
+            guard let n = res.n_tokens else { return estimate }
+            tokenizationCache.store(n, for: key)
+            return n
+        } catch {
+            // Best-effort measurement: a timeout here is often just a helper still loading the
+            // model (review M3). Do NOT terminate it — that would kill a cold-starting helper
+            // and force the next real request() to respawn+reload. Just use the estimate; a
+            // genuinely dead pipe is detected and respawned by request().
+            return estimate
+        }
+    }
+
+    // Char-based token estimate (~4 chars/token). The non-blocking fallback used on the
+    // main-thread budgeting path so it never waits on helper IPC.
+    @inline(__always) private func estimateTokens(_ s: String) -> Int { max(1, (s.count + 3) / 4) }
+
+    // NON-BLOCKING token count for the budgeter (review H1): returns the cached real count if
+    // present, otherwise a char estimate IMMEDIATELY (no IPC), and warms the cache off-main so
+    // a stable block (style/background/field-meta) converges to its real count within a couple
+    // of generations. Never tokenizes synchronously on the caller's thread.
+    private func tokenCountCachedOrWarm(_ block: String, addBOS: Bool = false) -> Int {
+        if block.isEmpty { return 0 }
+        let key = TokCacheKey(string: block, addBOS: addBOS, allowSpecial: true)
+        if let cached = tokenizationCache.count(for: key) { return cached }
+        // Not cached: warm it off-main (dedup so a block measured every generation only enqueues
+        // one in-flight tokenize), and return the estimate now.
+        warmLock.lock()
+        let alreadyWarming = !warmingKeys.insert(key).inserted
+        warmLock.unlock()
+        if !alreadyWarming {
+            warmQueue.async { [weak self] in
+                guard let self else { return }
+                _ = self.tokenCount(block, addBOS: addBOS, lowPriority: true)  // populates the cache
+                self.warmLock.lock(); self.warmingKeys.remove(key); self.warmLock.unlock()
+            }
+        }
+        return estimateTokens(block)
+    }
+
+    // Token-space prompt budgeting (spec C.4 / research R3). Each labeled block is
+    // measured (cached) and admitted in PRIORITY order — immediate (the live line) first,
+    // so it can never be starved — until the token budget is spent. The immediate block is
+    // always kept whole even if it alone exceeds the budget (the model needs the line it is
+    // completing); lower-priority blocks are dropped wholesale once the budget is gone,
+    // keeping the surviving prefix byte-stable for llama.cpp KV reuse (a partially-trimmed
+    // block would shift the prefix every keystroke and defeat the cache).
+    // `blocks` is highest→lowest priority; `immediate` is the live before-cursor text and is
+    // ALWAYS included as the final block. Returns the joined context the helper consumes.
+    //
+    // Runs on the MAIN thread (inside generate()), so it must NEVER block on helper IPC
+    // (review H1): `immediate` changes every keystroke and would always miss the cache, so it
+    // is always char-estimated; the stable priority blocks use the cached-or-warm count.
+    func budgetedContext(blocks: [String], immediate: String, tokenBudget: Int) -> String {
+        let parts = blocks.filter { !$0.isEmpty }
+        var spent = estimateTokens(immediate)        // never IPC on the live line
+        var kept: [String] = []
+        for block in parts {
+            let n = tokenCountCachedOrWarm(block)
+            if spent + n > tokenBudget { continue }   // drop wholesale; keep the prefix stable
+            kept.append(block)
+            spent += n
+        }
+        kept.append(immediate)
+        return kept.count == 1 ? immediate : kept.joined(separator: "\n\n")
+    }
+
     // Lock-safe warm-up so the launch-time start() can't double-spawn against the
     // first real request().
     func warmUp() { lock.lock(); defer { lock.unlock() }; try? start() }
@@ -142,5 +316,7 @@ final class LlamaClient {
         lock.lock(); defer { lock.unlock() }
         process?.terminate()
         process = nil; input = nil; output = nil
+        // Token counts are per-model (vocab); a different model would mis-budget.
+        tokenizationCache.clear()
     }
 }

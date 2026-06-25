@@ -147,6 +147,16 @@ extension TyperApp {
             if completion != nil || active != nil { clearSuggestion() }
             return
         }
+        // Secure FIELD gate (spec D.3): catches password/concealed fields that don't trip
+        // the process-wide secure-input flag (non-secure-input password fields, secure web
+        // fields). The AX read is bounded (AXSafe) and only taken while a suggestion is on
+        // screen — the path where we MUST duck out — so the idle keystroke path stays free
+        // of a per-key IPC round-trip. `generate()` independently re-checks via isAppDisabled.
+        if completion != nil || active != nil,
+           let el = focusedElement(), focusedFieldIsSecure(el) {
+            clearSuggestion()
+            return
+        }
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return }  // our own insertion
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
             // Only a left-click reliably places the text caret; right/other clicks open
@@ -252,6 +262,10 @@ extension TyperApp {
         lastUserTypedAt = Date()
         acceptGraceUntil = .distantPast   // typed a real character — moved on; a Tab now is a real Tab
         appendToBuffer(text)
+        // Emoji completion (#7): a finished `:shortcode:` / emoticon expands in place, or a
+        // `:prefix` surfaces a candidate. Consumes the event when handled (no LLM completion).
+        // No-op unless cfg.emojiCompletionsEnabled. (review L1: was implemented but never called)
+        if maybeHandleEmoji(text) { return }
         // A just-finished misspelled word takes priority over following a live
         // completion: typing the separator that ends "peopel" should surface the fix,
         // not get swallowed as "you typed along with the ghost". Only fires when the

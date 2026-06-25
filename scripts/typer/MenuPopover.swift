@@ -42,6 +42,14 @@ struct MenuSnapshot {
     var trainingEnabled = false
     var trainingCount = 0
 
+    // Timed snooze (#3). Populated from the live deadlines so the menu can render a countdown
+    // and a Resume action; the durations row writes new deadlines through performMenuAction.
+    var anySnoozeActive = false
+    var globalSnoozeActive = false
+    var globalSnoozeLabel = ""      // e.g. "14m" — remaining on the global deadline
+    var appSnoozeActive = false
+    var appSnoozeLabel = ""         // e.g. "5m" — remaining on the current app's deadline
+
     var racing = false
     var aName = "a"
     var bName = "b"
@@ -60,8 +68,13 @@ struct MenuSnapshot {
     var modelVariant = "s"        // "s" | "m" | "l" — the tier currently being served
 }
 
-enum MenuAction {
+enum MenuAction: Equatable {
     case config, log, inspectTraining, resetRace, clearStyle, resetAll, quit, disableCurrentApp, checkUpdates
+    // Overhaul (Wave 0) additions. snooze/snoozeApp carry a duration in minutes.
+    case openSettings
+    case snooze(minutes: Int)
+    case snoozeApp(minutes: Int)
+    case resumeCompletions
 }
 
 final class MenuModel: ObservableObject {
@@ -96,7 +109,8 @@ struct MenuRootView: View {
             divider
             SwitchRow(title: "Completions", isOn: model.bind("completion_enabled", \.completionEnabled))
             SwitchRow(title: "Typo correction", isOn: model.bind("typo_correction_enabled", \.typoEnabled))
-            SwitchRow(title: "Grammar", subtitle: "experimental", isOn: model.bind("grammar_enabled", \.grammarEnabled))
+            divider
+            snoozeSection
             divider
             sections
             divider
@@ -207,43 +221,93 @@ struct MenuRootView: View {
 
     // MARK: sections
 
+    // The popover is the quick-access surface: app on/off, model, completions/typo, snooze,
+    // per-app disable, and a way into Settings. Everything else (context capture, the learning
+    // toggles, training data, grammar, battery, terminals) now lives in the Settings window.
     private var sections: some View {
         VStack(spacing: 1) {
-            MenuSection(title: "Behavior") {
-                if s.hasCurrentApp {
+            if s.hasCurrentApp {
+                MenuSection(title: "This app") {
                     SwitchRow(title: "Disable in \(s.currentAppName)",
                               isOn: Binding(get: { s.currentAppDisabled }, set: { _ in model.toggleCurrentApp() }))
                 }
-                SwitchRow(title: "Skip terminal apps", isOn: model.bind("disable_in_terminals", \.disableInTerminals))
-                SwitchRow(title: "Battery saver", subtitle: s.batteryThrottling ? "throttling now" : nil,
-                          isOn: model.bind("battery_saver", \.batterySaver))
             }
-            MenuSection(title: "Context & learning") {
-                SwitchRow(title: "Window text", isOn: model.bind("window_context_enabled", \.windowContext))
-                SwitchRow(title: "Clipboard", isOn: model.bind("clipboard_context_enabled", \.clipboardContext))
-                SwitchRow(title: "Screen OCR", subtitle: "noisy", isOn: model.bind("screen_context_enabled", \.screenContext))
-                SwitchRow(title: "Screenshot caret", subtitle: "terminals; battery-heavy", isOn: model.bind("screenshot_caret_enabled", \.screenshotCaret))
-                SwitchRow(title: "Remember what I read", subtitle: s.topicCount > 0 ? "\(s.topicCount) topics" : nil, isOn: model.bind("topic_memory_enabled", \.topicMemory))
-                SwitchRow(title: "Learn my style", isOn: model.bind("style_memory_enabled", \.styleMemory))
-                SwitchRow(title: "Learn my vocabulary", isOn: model.bind("lexicon_enabled", \.lexicon))
-                SwitchRow(title: "Adapt to my accepts", isOn: model.bind("adaptive_suggestions", \.adaptive))
-            }
-            MenuSection(title: "Training & data") {
-                SwitchRow(title: "Record my typing",
-                          subtitle: s.trainingCount > 0 ? "\(s.trainingCount) samples" : "trains a local model",
-                          isOn: model.bind("training_log_enabled", \.trainingEnabled))
-                if s.trainingEnabled, s.trainingCount > 0 {
-                    ActionRow(title: "Inspect training data…") { model.action(.inspectTraining) }
-                }
+            MenuSection(title: "More") {
+                ActionRow(title: "Settings…") { model.action(.openSettings) }
                 if s.racing { ActionRow(title: "Reset model race") { model.action(.resetRace) } }
-                ActionRow(title: "Clear learned style") { model.action(.clearStyle) }
                 ActionRow(title: "Reset all data…", tint: .red) { model.action(.resetAll) }
             }
         }
     }
 
+    // MARK: snooze (#3)
+
+    // When nothing is snoozed: a "Snooze for…" row of 5 / 15 / 60-minute chips that pause all
+    // completions, plus a per-app row when there's a current app. When a deadline is live: a
+    // status line with the countdown and a Resume button. Rows keep the popover open (handled in
+    // performMenuAction) so the user can snooze and immediately see the badge update.
+    private var snoozeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("SNOOZE").font(.system(size: 10, weight: .semibold)).tracking(0.4)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if s.anySnoozeActive {
+                    let label = s.globalSnoozeActive ? s.globalSnoozeLabel : s.appSnoozeLabel
+                    Text("paused · \(label)").font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, kInset)
+
+            if s.anySnoozeActive {
+                // Spell out which scope is paused, then offer one Resume that clears everything.
+                if s.globalSnoozeActive {
+                    snoozeStatusRow(text: "All completions paused — \(s.globalSnoozeLabel) left")
+                }
+                if s.appSnoozeActive {
+                    snoozeStatusRow(text: "\(s.currentAppName) paused — \(s.appSnoozeLabel) left")
+                }
+                Button(action: { model.action(.resumeCompletions) }) {
+                    Text("Resume completions").font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 26)
+                        .padding(.horizontal, kInset - 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).padding(.horizontal, 6)
+            } else {
+                snoozeChips(title: "Pause all for", action: { .snooze(minutes: $0) })
+                if s.hasCurrentApp {
+                    snoozeChips(title: "Pause \(s.currentAppName) for", action: { .snoozeApp(minutes: $0) })
+                }
+            }
+        }
+    }
+
+    private func snoozeStatusRow(text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, kInset)
+    }
+
+    // One labelled row of 5 / 15 / 60-minute chips; `make` builds the right MenuAction per scope.
+    private func snoozeChips(title: String, action make: @escaping (Int) -> MenuAction) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            ForEach([5, 15, 60], id: \.self) { mins in
+                SnoozeChip(label: mins == 60 ? "1h" : "\(mins)m") { model.action(make(mins)) }
+            }
+        }
+        .frame(minHeight: 26)
+        .padding(.horizontal, kInset)
+    }
+
     private var footer: some View {
         HStack(spacing: 4) {
+            IconButton(symbol: "slider.horizontal.3", help: "Open Settings…") { model.action(.openSettings) }
             IconButton(symbol: "gearshape", help: "Open config") { model.action(.config) }
             IconButton(symbol: "doc.plaintext", help: "Open log") { model.action(.log) }
             if s.canUpdate {
@@ -322,6 +386,24 @@ private struct ActionRow: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
         .onHover { hover = $0 }
+    }
+}
+
+// A small pill button used by the snooze duration rows.
+private struct SnoozeChip: View {
+    let label: String
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 11, weight: .medium))
+                .frame(width: 34, height: 22)
+                .foregroundStyle(hover ? Color.white : Color.secondary)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(hover ? Color.accentColor : Color.primary.opacity(0.08)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).onHover { hover = $0 }
     }
 }
 

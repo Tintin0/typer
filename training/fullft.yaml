@@ -1,0 +1,8 @@
+# Full fine-tune config for Qwen3-0.6B-Base on Claude gold.
+# Full-FT needs a lower peak LR than LoRA (no low-rank constraint): cosine 2e-5 -> 1e-6,
+# 50-step warmup. Matches v1's full-FT approach but on the better Claude-teacher data.
+lr_schedule:
+  name: cosine_decay
+  arguments: [2.0e-5, 1050, 1.0e-6]
+  warmup: 50
+  warmup_init: 1.0e-7

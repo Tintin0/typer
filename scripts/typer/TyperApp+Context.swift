@@ -14,10 +14,10 @@ extension TyperApp {
     // this captures the conversation above the input box; for editors, the document.
     func windowText(limit: Int) -> String {
         guard let element = focusedElement() else { return "" }
-        var rootRef: CFTypeRef?
+        _ = axBound(element)   // 50 ms messaging timeout (D.1): a wedged host can't stall the walk
         let root: AXUIElement
-        if AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &rootRef) == .success, let r = rootRef {
-            root = (r as! AXUIElement)
+        if let r = axRead(element, kAXWindowAttribute as String), CFGetTypeID(r) == AXUIElementGetTypeID() {
+            root = axBound(r as! AXUIElement)
         } else { root = element }
 
         var collected: [String] = []
@@ -25,10 +25,8 @@ extension TyperApp {
         var budget = 6000
         func walk(_ el: AXUIElement, depth: Int) {
             if depth > 14 || budget <= 0 { return }
-            for attr in [kAXValueAttribute, kAXTitleAttribute] {
-                var vRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(el, attr as CFString, &vRef) == .success,
-                   let s = vRef as? String {
+            for attr in [kAXValueAttribute as String, kAXTitleAttribute as String] {
+                if let s = axString(el, attr) {
                     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
                     if t.count >= 2, t.count <= 2000, !seen.contains(t), !isNumericChrome(t) {
                         seen.insert(t)
@@ -37,10 +35,8 @@ extension TyperApp {
                     }
                 }
             }
-            var cRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &cRef) == .success,
-               let kids = cRef as? [AXUIElement] {
-                for k in kids { if budget <= 0 { break }; walk(k, depth: depth + 1) }
+            if let kidsRef = axRead(el, kAXChildrenAttribute as String), let kids = kidsRef as? [AXUIElement] {
+                for k in kids { if budget <= 0 { break }; walk(axBound(k), depth: depth + 1) }
             }
         }
         walk(root, depth: 0)
@@ -135,24 +131,66 @@ extension TyperApp {
         return sem.wait(timeout: .now() + 1.5) == .success ? box.value : nil
     }
 
-    func screenOCR(limit: Int, frontPID: pid_t?) -> String {
+    // Context OCR (spec C.1). Instead of OCR-ing the whole window @0.5× (sidebars,
+    // toolbars, the lot), crop to a caret-anchored band — the focused field plus ~6 lines
+    // above it — and then filter Vision observations to the field's horizontal column.
+    // This is the same machinery the caret locator already uses (focusedElementQuartzRect
+    // + captureFocusedWindow(clip:)), reused for context: ~5–10× less Vision work and the
+    // sidebar/toolbar noise removed. Falls back to the whole-window @0.5× capture when no
+    // field rect is available (AX-hostile apps), preserving the old behavior there.
+    // `fieldQuartz`/`primaryMaxY` are snapshotted on the main thread by the caller (AX +
+    // NSScreen are main-affine); this runs off-main.
+    func screenOCR(limit: Int, frontPID: pid_t?, fieldQuartz: CGRect? = nil) -> String {
         guard CGPreflightScreenCaptureAccess() else { return "" }
-        // Half-resolution capture: Vision cost scales with pixel count, so this is ~4x
-        // cheaper OCR. Body text survives downscaling; only sub-pixel chrome is lost,
-        // which minimumTextHeight skips anyway.
-        guard let cap = captureFocusedWindow(frontPID: frontPID, scale: 0.5), cap.image.width > 8, cap.image.height > 8 else { return "" }
+        var clip: CGRect? = nil
+        var xRange: (lo: CGFloat, hi: CGFloat)? = nil
+        if let field = fieldQuartz, field.width > 4, field.height > 4 {
+            // ~6 lines above the field; clip is intersected with the window inside capture.
+            clip = field.insetBy(dx: 0, dy: -field.height * 6)
+        }
+        // Caret band at scale 1.0 (already tiny) for crisp small text; the whole-window
+        // fallback stays at 0.5× since it's large.
+        let cap = captureFocusedWindow(frontPID: frontPID, clip: clip, scale: clip == nil ? 0.5 : 1.0)
+        guard let cap, cap.image.width > 8, cap.image.height > 8 else {
+            if let pid = frontPID, let app = NSRunningApplication(processIdentifier: pid),
+               let b = app.bundleIdentifier { Admissibility.shared.noteFailure(bundle: b) }
+            return ""
+        }
+        // Field's normalized X-range within the CAPTURED frame, so we can drop observations
+        // that fall outside the field's column (port of performOCR(on:textFieldXRange:)).
+        if let field = fieldQuartz, cap.frame.width > 1, field.width > 4 {
+            let lo = (field.minX - cap.frame.minX) / cap.frame.width
+            let hi = (field.maxX - cap.frame.minX) / cap.frame.width
+            if hi > lo { xRange = (lo, hi) }
+        }
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate          // far fewer "8nd"/"htttsngtab" misreads
         req.usesLanguageCorrection = true
         req.minimumTextHeight = 0.012             // skip tiny UI chrome (badges, status counters)
+        // Vision wastes cycles probing for scripts the user never writes; pin to en-US when
+        // the user is monolingual-English so detection is faster and cleaner.
+        if isLikelyMonolingualEnglish() { req.recognitionLanguages = ["en-US"] }
         let handler = VNImageRequestHandler(cgImage: cap.image, options: [:])
         guard (try? handler.perform([req])) != nil, let obs = req.results else { return "" }
         var lines: [String] = []
         for o in obs {
+            // X-range column filter (with a 0.1 normalized margin for inset/padding).
+            if let xr = xRange {
+                let m = o.boundingBox.midX
+                if m < xr.lo - 0.1 || m > xr.hi + 0.1 { continue }
+            }
             guard let cand = o.topCandidates(1).first, cand.confidence >= 0.5 else { continue }
             if isLikelyText(cand.string) { lines.append(cand.string) }
         }
         return String(lines.joined(separator: "\n").suffix(limit))
+    }
+
+    // Whether the user writes essentially only English, so OCR/Vision can pin to en-US.
+    // Conservative: derives from the system's preferred languages (no extra state). If the
+    // top preferred language isn't English we leave Vision in auto-detect mode.
+    func isLikelyMonolingualEnglish() -> Bool {
+        guard let primary = Locale.preferredLanguages.first else { return false }
+        return primary.hasPrefix("en")
     }
 
     // Heuristic gate to keep OCR garbage (UI chrome, misreads, glyph soup) out of the
@@ -179,11 +217,9 @@ extension TyperApp {
     // main-affine), so the caret locator can capture just this element's band.
     func focusedElementQuartzRect() -> CGRect? {
         guard let element = focusedElement() else { return nil }
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posValue = posRef, let sizeValue = sizeRef else { return nil }
+        _ = axBound(element)   // bounded AX reads (D.1)
+        guard let posValue = axRead(element, kAXPositionAttribute as String),
+              let sizeValue = axRead(element, kAXSizeAttribute as String) else { return nil }
         var point = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(posValue as! AXValue, .cgPoint, &point),
@@ -238,13 +274,23 @@ extension TyperApp {
         return (CGRect(x: quartzX, y: appkitY, width: 1, height: h), charWidth)
     }
 
-    // Refresh the cached background off the hot path, throttled by time + app key.
-    func refreshBackgroundIfNeeded() {
+    // Refresh the cached background off the hot path. Throttled by time + app key, unless
+    // `force` (an AX-event-driven refresh from the debounce, C.2) bypasses the time gate —
+    // the user just paused after editing, which is precisely when fresh background helps.
+    // Per-app admissibility backoff (C.5) skips apps that recently errored/returned empty.
+    func refreshBackgroundIfNeeded(force: Bool = false) {
+        // Never capture our own UI (Settings/onboarding/menu): AX-walking a SwiftUI
+        // window builds its a11y graph synchronously on the main thread → beachball.
+        if frontmostIsSelf { return }
         let key = activeAppKey
+        let (bundle, _) = currentAppBundleAndName()
+        // Skip apps inside their capture-backoff window (C.5) — don't hammer a misbehaving
+        // host. The static denylists are enforced elsewhere; this is the self-healing one.
+        if Admissibility.shared.isBackedOff(bundle: bundle) { return }
         // Refresh less often while saving power (fewer AX/screenshot wakeups).
         let interval = powerSaving ? max(cfg.backgroundRefreshSeconds, 10.0) : cfg.backgroundRefreshSeconds
         let fresh = Date().timeIntervalSince(backgroundRefreshedAt) < interval && key == backgroundKey
-        if fresh || backgroundRefreshing { return }
+        if (fresh && !force) || backgroundRefreshing { return }
         backgroundRefreshing = true
         // Snapshot cfg flags + frontmost PID on main (cfg mutates on main; NSWorkspace
         // is main-affine).
@@ -253,6 +299,8 @@ extension TyperApp {
         let wantClipboard = cfg.clipboardContextEnabled
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let recentText = String(buffer.suffix(300))   // for clipboard relevance
+        // Field rect for the cropped context OCR (C.1) — read AX on main, use off-main.
+        let fieldQuartz = wantScreen ? focusedElementQuartzRect() : nil
         backgroundQueue.async {
             var parts: [String] = []
             // Prefer clean AX text. Only fall back to (noisier) OCR when AX gives us
@@ -264,7 +312,7 @@ extension TyperApp {
                 if w.count > 40 { parts.append(w); windowChars = w.count }
             }
             if wantScreen, windowChars < 120 {
-                let o = self.screenOCR(limit: 600, frontPID: frontPID)
+                let o = self.screenOCR(limit: 600, frontPID: frontPID, fieldQuartz: fieldQuartz)
                 if o.count > 40 { parts.append(o) }
             }
             if wantClipboard {
@@ -272,14 +320,61 @@ extension TyperApp {
                 if !c.isEmpty { parts.append("Clipboard: " + c) }
             }
             let bg = parts.joined(separator: "\n")
+            // Admissibility bookkeeping (C.5): an empty capture in an app that wanted one is
+            // a soft failure (back off); any text clears the backoff.
+            if !bundle.isEmpty {
+                if bg.isEmpty, (wantWindow || wantScreen) {
+                    Admissibility.shared.noteFailure(bundle: bundle)
+                } else if !bg.isEmpty {
+                    Admissibility.shared.noteSuccess(bundle: bundle)
+                }
+            }
             DispatchQueue.main.async {
                 self.cachedBackground = bg
                 self.backgroundRefreshedAt = Date()
                 self.backgroundKey = key
                 self.backgroundRefreshing = false
-                log("background refreshed key=\(key) chars=\(bg.count)")
+                log("background refreshed key=\(key) chars=\(bg.count) force=\(force)")
             }
         }
+    }
+
+    // Cheap AX field metadata for the prompt (spec C.3). No screenshot: read the focused
+    // field's placeholder / title / help / description, web DOM identity, and the page URL,
+    // all bounded by the 50 ms messaging timeout. Surface as a single labeled line so the
+    // model knows what KIND of field this is ("Search", "Message #general", a compose box
+    // on gmail.com) — a strong, essentially free signal that mirrors Cotypist's
+    // TextFieldProperties. Returns "" when nothing useful is exposed.
+    func fieldMetadataBlock() -> String {
+        guard let el = focusedElement() else { return "" }
+        _ = axBound(el)
+        // Field label: prefer an explicit placeholder, else title/description/help.
+        var label = ""
+        for attr in [kAXPlaceholderValueAttribute as String, kAXTitleAttribute as String,
+                     kAXDescriptionAttribute as String, kAXHelpAttribute as String] {
+            if let s = axString(el, attr) {
+                let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if t.count >= 2, t.count <= 80, !isNumericChrome(t) { label = t; break }
+            }
+        }
+        // Web element identity (Chromium/WebKit expose these) — distinguishes fields within
+        // one web app (Gmail compose vs. Gmail search).
+        if label.isEmpty {
+            if let dom = axString(el, "AXDOMIdentifier") {
+                let t = dom.trimmingCharacters(in: .whitespacesAndNewlines)
+                if t.count >= 2, t.count <= 60 { label = t }
+            }
+        }
+        // Page host (W1A's caret module owns currentWebHost() -> String?; reuse it so the
+        // field line carries the domain, e.g. "gmail.com", distinguishing web fields).
+        let host = currentWebHost() ?? ""
+        let appName = currentAppBundleAndName().name
+        if label.isEmpty && host.isEmpty { return "" }
+        var line = "Field"
+        if !label.isEmpty { line += ": \(label)" }
+        if !appName.isEmpty { line += " in \(appName)" }
+        if !host.isEmpty { line += " — \(host)" }
+        return line
     }
 
     // Ambient topic capture: periodically OCR the focused window, distill its salient
@@ -335,8 +430,23 @@ extension TyperApp {
     // is sparse (chat boxes), where it helps most and risks the least regression.
     func assembledContext(immediate: String) -> String {
         var blocks: [String] = []
-        let appName = currentAppBundleAndName().name
+        let (appBundle, appName) = currentAppBundleAndName()
+        // Per-app custom instructions (#1, spec E §1). The user's per-app instruction text
+        // (AppOverrides.customInstructions, resolved with domain rows for web) is injected
+        // as the very FIRST block so it shapes tone for THIS app only and survives token
+        // budgeting (highest priority). It is appended LAST among instruction sources so a
+        // per-app rule can override a broader one. Placed in the prompt, never the training
+        // target (spec G #2), so the base model isn't overfit to one app's voice. When the
+        // text changes the prompt prefix bytes change here, so the helper's value-match KV
+        // prefix reuse re-decodes from this point automatically — no separate flag needed.
+        let instr = resolvedInstructions(bundle: appBundle)
+        if !instr.isEmpty { blocks.append("Instructions: \(instr)") }
         if !appName.isEmpty { blocks.append("Writing app: \(appName)") }
+        // Cheap AX field metadata (C.3): placeholder/title/url tell the model what kind of
+        // field this is — a strong, near-free signal. Placed early as background, before the
+        // user's live line.
+        let fieldMeta = fieldMetadataBlock()
+        if !fieldMeta.isEmpty { blocks.append(fieldMeta) }
         // Put ambient context before style, and the user's live text last. The base
         // model continues the final line; the earlier labeled blocks are background it
         // may consider for topic/tone, NOT content to tailor the completion to. Framed
@@ -356,7 +466,14 @@ extension TyperApp {
             // main-thread time, and a sample that reshuffles per request changes the
             // middle of the prompt — invalidating the helper's KV prefix cache that
             // the stable context windows exist to preserve.
-            let maxChars = immediate.count < cfg.maxImmediateForBackground ? 360 : 160
+            // Personalization (#10): scale the style-sample size with
+            // `cfg.personalizationStrength` (0..1). Strength 0 (the default) keeps the
+            // established baseline so the working style feature never regresses; higher
+            // strength widens the sample (up to 1.5×) so the completion leans harder toward
+            // how the user writes. The seam for the W4 logit-bias map is the companion
+            // `personalizedLexicon()` on the completion side.
+            let baseChars = immediate.count < cfg.maxImmediateForBackground ? 360 : 160
+            let maxChars = Int((Double(baseChars) * (1.0 + 0.5 * cfg.personalizationStrength)).rounded())
             if Date().timeIntervalSince(styleSampleAt) > 5 || styleSampleChars != maxChars {
                 cachedStyleSample = styleMemory.sample(maxChars: maxChars, relevantTo: immediate, category: appCategory())
                 styleSampleAt = Date()
@@ -365,7 +482,39 @@ extension TyperApp {
             let s = cachedStyleSample
             if s.split(separator: " ").count >= 4 { blocks.append("Examples of my recent writing style:\n" + s) }
         }
+        // Token-space budgeting (C.4): the blocks above are highest→lowest priority. Measure
+        // each via the helper's tokenizer (LRU-cached) and admit in order until the budget is
+        // spent, with `immediate` (the live line) ALWAYS kept last so a long background block
+        // can never crowd it out. The leader client serves the tokenizer; budgeting falls
+        // back to a char estimate if the helper isn't up yet (degrades gracefully, never
+        // blocks input). Budget leaves headroom for generation inside the helper's 1536 ctx.
+        if let client = router?.client(for: .a) {
+            return client.budgetedContext(blocks: blocks, immediate: immediate, tokenBudget: contextTokenBudget)
+        }
         blocks.append(immediate)
         return blocks.count == 1 ? immediate : blocks.joined(separator: "\n\n")
     }
+
+    // Resolve the instruction text to inject for the current app (#1, spec E §1). Per-app
+    // `customInstructions` (resolved with the matching web-domain row) take precedence; a
+    // global instruction source would be appended FIRST so the per-app text can override
+    // its tone. No global-instructions config field exists this wave (W0 added only the
+    // per-app `customInstructions` sidecar), so today this returns the per-app text alone;
+    // the join is kept as the seam for a future global field. Bounded so a long instruction
+    // can't dominate the prompt budget.
+    func resolvedInstructions(bundle: String) -> String {
+        var parts: [String] = []
+        // (seam) global instructions would go here, before the per-app text.
+        if let perApp = OverrideStore.shared.resolved(bundle: bundle, host: currentWebHost()).customInstructions {
+            let t = perApp.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { parts.append(t) }
+        }
+        let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(joined.prefix(300))
+    }
+
+    // Token budget for the assembled prompt's context blocks (C.4). The helper runs a 1536
+    // token context; reserve room for the generated continuation and the model's own
+    // wrapping, so the assembled context is capped well under that.
+    var contextTokenBudget: Int { 1100 }
 }

@@ -8,6 +8,12 @@ import ScreenCaptureKit
 import SwiftUI
 import Vision
 
+// Single 1 Hz ticker driving the snooze countdown in the menu-bar title and pruning expired
+// deadlines. Stored module-side because TyperApp's stored props live in TyperApp.swift (owned by
+// another wave) and Swift extensions can't add stored properties; the app delegate is a singleton
+// so a file-private holder is unambiguous. Only runs while a deadline is active, and self-stops.
+private var snoozeCountdownTimer: Timer?
+
 extension TyperApp {
     func setupMenu() {
         NSApp.setActivationPolicy(.accessory)
@@ -37,7 +43,79 @@ extension TyperApp {
             button.image = img
             button.imagePosition = .imageLeading
         }
-        button.title = cfg.enabled ? " \(stats.accepted)" : " ⏸"
+        // An active snooze takes precedence over the running count: show "⏸ 14m" so the
+        // pause and its remaining time are visible at a glance. updateStatusTitle is the
+        // single place the title is computed, so the snooze countdown and the accept count
+        // never fight over it.
+        if cfg.enabled, let remaining = activeSnoozeRemaining() {
+            button.title = " ⏸ \(Self.formatSnoozeRemaining(remaining))"
+        } else {
+            button.title = cfg.enabled ? " \(stats.accepted)" : " ⏸"
+        }
+    }
+
+    // The largest live snooze deadline (global or any per-app), as seconds remaining, or nil
+    // when nothing is snoozed. Prunes deadlines that have already passed so the map can't grow
+    // unbounded. The displayed countdown is the soonest-to-expire active deadline so the badge
+    // reflects "the snooze that will lift next."
+    func activeSnoozeRemaining() -> TimeInterval? {
+        let now = Date()
+        var soonest: Date?
+        if let g = allCompletionsDisabledUntil {
+            if g > now { soonest = g } else { allCompletionsDisabledUntil = nil }
+        }
+        for (bundle, deadline) in perAppDisabledUntil {
+            if deadline <= now { perAppDisabledUntil[bundle] = nil; continue }
+            if soonest == nil || deadline < soonest! { soonest = deadline }
+        }
+        guard let s = soonest else { return nil }
+        return s.timeIntervalSince(now)
+    }
+
+    // Round the remaining interval to a compact menu-bar label: "14m" above a minute, "45s"
+    // below, ceiling-rounded so a snooze never reads "0m" while still active.
+    static func formatSnoozeRemaining(_ seconds: TimeInterval) -> String {
+        if seconds >= 60 {
+            let mins = Int((seconds / 60).rounded(.up))
+            return "\(mins)m"
+        }
+        let secs = max(1, Int(seconds.rounded(.up)))
+        return "\(secs)s"
+    }
+
+    // Start (or keep alive) the 1 Hz ticker that refreshes the snooze countdown badge and clears
+    // expired deadlines. Idempotent; self-stops once no deadline remains so it costs nothing when
+    // the user isn't snoozed.
+    func startSnoozeCountdownIfNeeded() {
+        guard activeSnoozeRemaining() != nil else { return }
+        if snoozeCountdownTimer != nil { return }
+        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); snoozeCountdownTimer = nil; return }
+            // activeSnoozeRemaining prunes expired deadlines as a side effect.
+            if self.activeSnoozeRemaining() == nil {
+                timer.invalidate()
+                snoozeCountdownTimer = nil
+            }
+            self.updateStatusTitle()
+            self.menuModel.refresh()
+        }
+        // Fire during menu-tracking / modal run loops too, so the badge keeps counting down.
+        RunLoop.main.add(t, forMode: .common)
+        snoozeCountdownTimer = t
+    }
+
+    // Remaining seconds for the currently-targeted app's snooze, if any (for the menu UI).
+    func appSnoozeRemaining(bundle: String) -> TimeInterval? {
+        guard let d = perAppDisabledUntil[bundle] else { return nil }
+        let r = d.timeIntervalSinceNow
+        return r > 0 ? r : nil
+    }
+
+    // Remaining seconds for the global snooze, if any (for the menu UI).
+    func globalSnoozeRemaining() -> TimeInterval? {
+        guard let d = allCompletionsDisabledUntil else { return nil }
+        let r = d.timeIntervalSinceNow
+        return r > 0 ? r : nil
     }
 
     // Open/close the custom popover under the status item, snapshotting fresh state first.
@@ -90,6 +168,18 @@ extension TyperApp {
         s.adaptive = cfg.adaptiveSuggestions
 
         s.trainingEnabled = cfg.trainingLogEnabled; s.trainingCount = trainingLog.count()
+
+        // Snooze (#3): surface any active global / per-app deadline so the menu can show a
+        // countdown and a Resume action instead of the snooze durations.
+        if let g = globalSnoozeRemaining() {
+            s.globalSnoozeActive = true
+            s.globalSnoozeLabel = TyperApp.formatSnoozeRemaining(g)
+        }
+        if !curBundle.isEmpty, curBundle != "no.bundle", let a = appSnoozeRemaining(bundle: curBundle) {
+            s.appSnoozeActive = true
+            s.appSnoozeLabel = TyperApp.formatSnoozeRemaining(a)
+        }
+        s.anySnoozeActive = s.globalSnoozeActive || s.appSnoozeActive
 
         if let r = router?.raceState() {
             s.racing = true; s.aName = r.a; s.bName = r.b; s.aShare = r.aShare
@@ -146,6 +236,10 @@ extension TyperApp {
             cfg.topicMemoryEnabled = v
             if v, !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
             startTopicTimer()
+        // These two bind live Settings switches; without a case they fell to `default: return`,
+        // never persisted, and the SwiftUI toggle visibly bounced back (review M2).
+        case "show_suggested_fixes": cfg.showSuggestedFixes = v
+        case "suppress_completion_on_typo_suspected": cfg.suppressCompletionOnTypoSuspected = v
         default: return
         }
         writeConfig(key, v ? "true" : "false")
@@ -153,10 +247,89 @@ extension TyperApp {
         updateStatusTitle()
     }
 
+    // Sibling setters to setToggle for the non-Bool config rows the settings window edits.
+    // Each updates cfg and persists the single key to config.toml. Wave 2A consumes these
+    // from SettingsModel; W0 wires every key the spec's settings controls reference.
+    func setInt(key: String, value: Int) {
+        switch key {
+        case "max_completion_words": cfg.maxCompletionWords = max(1, value)
+        case "min_context_chars": cfg.minContextChars = max(0, value)
+        case "emoji_skin_tone": cfg.emojiSkinTone = min(max(value, 0), 5)
+        case "debounce_ms": cfg.debounceMs = max(0, value)
+        case "idle_reset_seconds": cfg.idleResetSeconds = max(1, value)
+        default: return
+        }
+        writeConfig(key, String(value))
+        log("set \(key)=\(value)")
+    }
+
+    func setDouble(key: String, value: Double) {
+        switch key {
+        case "personalization_strength": cfg.personalizationStrength = min(max(value, 0), 1)
+        case "min_confidence": cfg.minConfidence = max(0, value)
+        case "topic_capture_seconds": cfg.topicCaptureSeconds = max(60, value)
+        case "background_refresh_seconds": cfg.backgroundRefreshSeconds = max(0.5, value)
+        default: return
+        }
+        writeConfig(key, String(value))
+        log("set \(key)=\(value)")
+    }
+
+    func setString(key: String, value: String) {
+        switch key {
+        case "model_path": cfg.modelPath = (value as NSString).expandingTildeInPath
+        default: return
+        }
+        writeConfig(key, value)
+        log("set \(key)=<string>")
+    }
+
+    // MARK: - Timed snooze (#3) — Wave 2A fills the menu UI + countdown; these are the
+    // action handlers behind the new MenuAction cases so the menu compiles in W0.
+
+    func openSettingsFromMenu() { openSettings() }
+
+    // Snooze ALL completions for `minutes`. Ephemeral deadline; clearSuggestion so any
+    // visible ghost goes away immediately.
+    func snoozeAll(minutes: Int) {
+        allCompletionsDisabledUntil = Date().addingTimeInterval(Double(minutes) * 60)
+        clearSuggestion()
+        startSnoozeCountdownIfNeeded()
+        updateStatusTitle()
+        log("snooze all \(minutes)m")
+    }
+
+    // Snooze completions for the currently-targeted app only.
+    func snoozeCurrentApp(minutes: Int) {
+        let (bundle, _) = popoverTargetBundleAndName()
+        guard !bundle.isEmpty, bundle != "no.bundle" else { return }
+        perAppDisabledUntil[bundle] = Date().addingTimeInterval(Double(minutes) * 60)
+        if isAppDisabled() || !completionsAllowed(bundle: bundle) { clearSuggestion() }
+        startSnoozeCountdownIfNeeded()
+        updateStatusTitle()
+        log("snooze app \(bundle) \(minutes)m")
+    }
+
+    // Clear all snooze deadlines (global + per-app), stop the countdown ticker, and restore
+    // the normal status title.
+    func resumeCompletions() {
+        allCompletionsDisabledUntil = nil
+        perAppDisabledUntil.removeAll()
+        snoozeCountdownTimer?.invalidate()
+        snoozeCountdownTimer = nil
+        updateStatusTitle()
+        log("resumed completions")
+    }
+
     // Route a popover button to its handler. Everything but the per-app toggle closes the
     // popover first so any file/sheet it opens isn't stuck behind it.
     func performMenuAction(_ a: MenuAction) {
-        if a != .disableCurrentApp { popover?.performClose(nil) }
+        // The snooze rows and per-app toggle keep the popover open; everything else closes it
+        // first so any file/sheet/window it opens isn't stuck behind the popover.
+        switch a {
+        case .disableCurrentApp, .snooze, .snoozeApp, .resumeCompletions: break
+        default: popover?.performClose(nil)
+        }
         switch a {
         case .config: openConfig()
         case .log: openLog()
@@ -167,6 +340,10 @@ extension TyperApp {
         case .quit: quit()
         case .disableCurrentApp: toggleDisableCurrentApp()
         case .checkUpdates: checkForUpdates()
+        case .openSettings: openSettingsFromMenu()
+        case .snooze(let minutes): snoozeAll(minutes: minutes)
+        case .snoozeApp(let minutes): snoozeCurrentApp(minutes: minutes)
+        case .resumeCompletions: resumeCompletions()
         }
     }
 
@@ -217,6 +394,13 @@ extension TyperApp {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    // Reconcile after the settings window edits cfg.disabledApps directly (it writes the config
+    // itself): drop any visible ghost if the current app just became disabled, refresh the badge.
+    func applyDisabledAppsChange() {
+        if isAppDisabled() { clearSuggestion() }
+        updateStatusTitle()
+    }
+
     @objc func toggleDisableCurrentApp() {
         let (bundle, _) = popoverTargetBundleAndName()
         guard !bundle.isEmpty, bundle != "no.bundle" else { return }
@@ -241,6 +425,9 @@ extension TyperApp {
         feedback.clear()
         router.reset()
         trainingLog.clear()
+        OverrideStore.shared.clear()     // per-app/domain quirk + custom-instruction sidecar
+        Admissibility.shared.reset()     // per-app capture backoff state
+        InlinePrediction.clearRecord()   // forget the saved prior NSAutomaticInlinePrediction value (review L4)
         stats = TyperStats(); stats.save()
         buffer = ""; buffersByApp.removeAll(); lastInputByApp.removeAll()
         lexiconWatermark.removeAll()

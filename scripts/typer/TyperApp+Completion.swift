@@ -97,6 +97,77 @@ extension TyperApp {
         cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
     }
 
+    // Completion length cap in words (#9). The configured bucket is the ceiling; the
+    // adaptive feedback layer (when on) nudges it toward how much the user actually
+    // accepts. The helper converts words→a token budget and stops early on a clause
+    // boundary, so a high bucket lengthens completions without forcing padding.
+    func completionWordCap() -> Int {
+        cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
+    }
+
+    // Personalized lexicon for the sampler (#10, Wave 4). Gated by the existing
+    // `cfg.lexiconEnabled` feature flag, then routed through the router's single
+    // personalization seam (`PersonalizationBias`), which scales BOTH the lexicon string AND
+    // the `[token:Float]` logit-bias map by `cfg.personalizationStrength`. Strength 0 — the
+    // default — yields an empty list (personalization off, no regression); higher strength
+    // sends more of the user's frequent words and a deeper per-token bias. The router reads the
+    // strength here (not its init-time cfg copy), so a slider change takes effect on the very
+    // next generation, and re-derives only when the strength bucket or word list changes.
+    func personalizedLexicon() -> String {
+        guard cfg.lexiconEnabled else { return "" }
+        installBiasTokenizerIfNeeded()
+        // Pull a generous candidate pool (the router trims to the strength-scaled count); the
+        // 60s-cached topWords keeps this off the disk on the hot path.
+        let pool = lexicon.topWords(64)
+        return router.lexiconString(words: pool, strength: cfg.personalizationStrength)
+    }
+
+    // Per-word logit-bias weight for the lexicon, scaled by the personalization slider so the
+    // control is actually felt: 0.5 (the gentle historical baseline) at strength 0, rising to
+    // ~2.5 at full strength where suggestions lean hard toward your own words. nil ⇒ helper
+    // default (0.5), keeping the wire byte-identical when personalization is off.
+    func personalizedLexiconBias() -> Float? {
+        guard cfg.lexiconEnabled, cfg.personalizationStrength > 0 else { return nil }
+        return Float(0.5 + cfg.personalizationStrength * 2.0)
+    }
+
+    // The `[token:Float]` logit-bias map for this generation (spec §G.3 interim). Built from the
+    // same strength-scaled word pool as `personalizedLexicon()`. Empty when personalization is
+    // off (strength 0 / flag off) or until the helper token-id accessor is wired. Passed to the
+    // sampler via the request path's bias seam.
+    func personalizationBiasMap() -> [Int32: Float] {
+        guard cfg.lexiconEnabled, cfg.personalizationStrength > 0 else { return [:] }
+        installBiasTokenizerIfNeeded()
+        let pool = lexicon.topWords(64)
+        return router.personalizationBias(words: pool, strength: cfg.personalizationStrength)
+    }
+
+    // Wire the router's bias-map builder to the helper tokenizer ONCE. The closure asks the
+    // current default arm for a word's token ids via the helper's tokenize endpoint (`ids:1`)
+    // and returns the FIRST — the word-start token the helper biases. Lazy + idempotent so it
+    // costs nothing until personalization is actually used.
+    //
+    // DEPENDENCY (LlamaClient owner — W1B/W2B): `LlamaClient.tokenCount` already round-trips the
+    // tokenize endpoint but decodes only `n_tokens`; the endpoint also returns the id list when
+    // `ids:1` is set. Exposing `func tokenIDs(_ block: String) -> [Int32]` there (decode the
+    // `tokens` array) lets this closure return real ids and the `[token:Float]` map populates.
+    // Until then `tokenIDs(_:)` is absent, so this closure returns [] and the bias MAP stays
+    // empty — but the strength-scaled lexicon STRING path (the live mechanism) is fully wired.
+    private func installBiasTokenizerIfNeeded() {
+        router.setBiasTokenizer { [weak self] word in
+            self?.leadingTokenIDs(of: word) ?? []
+        }
+    }
+
+    // Leading token id(s) of `word` from the active helper. Returns [] when no token-id accessor
+    // is available on the client yet (see the DEPENDENCY note above); the bias-string channel is
+    // unaffected. Kept as a single indirection point so wiring the real accessor is one edit.
+    private func leadingTokenIDs(of word: String) -> [Int32] {
+        // No public token-id accessor on LlamaClient yet; the bias map is empty until one lands.
+        // The strength-scaled lexicon string still reaches the sampler via request(lexicon:).
+        return []
+    }
+
     // A suggestion was just shown: remember the context it continued so the eventual
     // accept/reject can be written as one example. No-op unless safe to capture.
     func noteTraining(context: String, suggestion: String, conf: Double?, source: String) {
@@ -266,13 +337,13 @@ extension TyperApp {
         prefetchInFlight = true
         let promptContext = assembledContext(immediate: predicted)
         let appKey = activeAppKey
-        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
-        let lex = cfg.lexiconEnabled ? lexicon.topWords() : ""
+        let maxWords = completionWordCap()
+        let lex = personalizedLexicon()
         // Continue on the SAME model the current suggestion came from — a prefetch is the
         // tail of the same thought, and the eventual accept is attributed to routedModel.
         let prefetchClient = router.client(for: routedModel)
         backgroundQueue.async {
-            let sug = (try? prefetchClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lowPriority: true)) ?? nil
+            let sug = (try? prefetchClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lexiconBias: self.personalizedLexiconBias(), lowPriority: true)) ?? nil
             DispatchQueue.main.async {
                 self.prefetchInFlight = false
                 guard appKey == self.activeAppKey, let t = sug?.text, !t.isEmpty else { return }
@@ -317,10 +388,21 @@ extension TyperApp {
 
     func generate() {
         syncActiveApp()
-        if isAppDisabled() { clearSuggestion(); return }    // per-app / terminal disable
+        // Never complete into our own UI (Settings/onboarding text fields): reading the
+        // focused element / caret of a SwiftUI window AX-walks its a11y tree on the main
+        // thread and beachballs. (Same reason as refreshBackgroundIfNeeded/updateAXObserver.)
+        if frontmostIsSelf { clearSuggestion(); return }
+        if isAppDisabled() { clearSuggestion(); return }    // per-app / terminal denylist (W1C: password mgrs always, IDEs by default, secure fields)
+        // Timed snooze (#3, spec E §3): a global or per-app "Snooze for…" deadline
+        // suppresses completions until it expires. Deadlines are ephemeral and pruned by
+        // completionsAllowed as they pass; the menu's 1 Hz timer refreshes the countdown.
+        if !completionsAllowed(bundle: currentAppBundleAndName().bundle) { clearSuggestion(); return }
         // Inline completion is the only LLM-backed feature (typo correction is local,
         // via NSSpellChecker). If it's off, never touch the model helper.
         guard cfg.enabled, cfg.completionEnabled else { clearSuggestion(); return }
+        // Don't extend a word that looks misspelled (#8). No-op unless the user enabled
+        // suppress_completion_on_typo_suspected. (review L2: was implemented but never called)
+        if typoSuspectedInCurrentWord() { clearSuggestion(); return }
         // Only user text input should initiate completions. A click/focus change can
         // refresh context, but it must not create a suggestion; also ignore orphaned
         // timers that fire long after the typing burst that scheduled them.
@@ -341,8 +423,32 @@ extension TyperApp {
         let axContext = (axContextRaw?.count ?? 0) >= max(cfg.minContextChars, min(20, keyContext.count / 2)) ? axContextRaw : nil
         let contextSource = axContext == nil ? "key-buffer" : "AXValue"
         let context = axContext ?? keyContext
+        // Mid-line completion fidelity (#13). The caret sits inside existing text with
+        // real characters after it on the line. Old behavior bailed outright; now we
+        // complete only at a clean WORD BOUNDARY (the model would otherwise rewrite the
+        // word being edited) and hand the trailing text to the helper as a FIM suffix so
+        // the completion fits the gap instead of duplicating/ignoring what follows. The
+        // repeat-drop guard below (and in presentCompletion) still catches a completion
+        // that merely echoes the trailing text. Honors the global toggle + per-app
+        // override (W0 `cfg.midLineCompletionsEnabled`, AppOverrides.midLineCompletionsDisabled).
+        var fimSuffix = ""
         if axContext != nil, let after = axCtx?.after, isMidLine(after: after) {
-            log("[\(activeAppKey)] generate skipped mid-line"); clearSuggestion(); return
+            let midLineOK = cfg.midLineCompletionsEnabled &&
+                OverrideStore.shared.resolved(bundle: currentAppBundleAndName().bundle,
+                                              host: currentWebHost()).midLineCompletionsDisabled != true
+            // Only complete from a word boundary: the char immediately before the caret
+            // must be whitespace/empty, else we'd be mid-word and any continuation would
+            // fight the word the user is editing.
+            let atWordBoundary = context.isEmpty || (context.last?.isWhitespace ?? true)
+            guard midLineOK, atWordBoundary else {
+                log("[\(activeAppKey)] generate skipped mid-line (ok=\(midLineOK) boundary=\(atWordBoundary))")
+                clearSuggestion(); return
+            }
+            // The line's trailing text becomes the FIM suffix (bounded; the helper caps it
+            // again). Stop at the line end — completing across a hard newline isn't FIM.
+            let lineTail = String(after.prefix { $0 != "\n" && $0 != "\r" })
+            fimSuffix = String(lineTail.prefix(400))
+            log("[\(activeAppKey)] mid-line FIM suffix chars=\(fimSuffix.count)")
         }
         // Remember the text right after the caret so we can drop completions that
         // just repeat it (e.g. at end of a line that already has following text).
@@ -356,10 +462,17 @@ extension TyperApp {
         let appKey = activeAppKey
         let reqBuffer = buffer            // buffer snapshot for the staleness check
         let promptContext = assembledContext(immediate: context)
-        // Ask for roughly as much as the user historically takes, and ship their
-        // vocabulary along so sampling leans toward how they actually write.
-        let maxWords = cfg.adaptiveSuggestions ? feedback.adjustedMaxWords(base: cfg.maxCompletionWords) : cfg.maxCompletionWords
-        let lex = cfg.lexiconEnabled ? lexicon.topWords() : ""
+        // Completion length control (#9): the configured bucket (`cfg.maxCompletionWords`,
+        // surfaced by W2A's segmented control) is the word cap; the adaptive layer nudges
+        // it toward how much the user actually takes. The helper turns words→token cap and
+        // stops early on a clause boundary so a long bucket doesn't pad.
+        let maxWords = completionWordCap()
+        // Personalization (#10): ship the user's vocabulary so sampling leans toward how
+        // they write, with the count scaled by `cfg.personalizationStrength`. The logit-bias
+        // MAP itself is W4 — this leaves the seam (strength already shapes lexicon weight +
+        // the style-sample size in assembledContext).
+        let lex = personalizedLexicon()
+        let suffix = fimSuffix
         dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
         // Anchor (an AX caret read) only on the FIRST painted partial; the user hasn't
         // typed since the request (guard below), so the caret can't have moved while
@@ -389,7 +502,7 @@ extension TyperApp {
                     firstPartial = false
                 }
             }
-            let sug = try? routedClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, onPartial: onPartial)
+            let sug = try? routedClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lexiconBias: self.personalizedLexiconBias(), suffix: suffix, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded

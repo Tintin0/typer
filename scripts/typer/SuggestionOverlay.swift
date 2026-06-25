@@ -7,8 +7,35 @@ import NaturalLanguage
 import ScreenCaptureKit
 import Vision
 
+// Named correction colors (#8, spec E §8). Mirrors Cotypist's asset colors
+// `autocorrectStrikethroughRed` / `autocorrectCorrectionGreen`: the typo is struck through in
+// red, the suggested fix drawn in green right after it. Kept as one place so the overlay and
+// any future candidate picker render the diff identically. Dynamic so they read correctly in
+// light and dark appearances.
+enum CorrectionColors {
+    static let strikethroughRed = NSColor(name: "autocorrectStrikethroughRed") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 1.0, green: 0.42, blue: 0.40, alpha: 1)
+            : NSColor(srgbRed: 0.78, green: 0.16, blue: 0.13, alpha: 1)
+    }
+    static let correctionGreen = NSColor(name: "autocorrectCorrectionGreen") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.36, green: 0.86, blue: 0.50, alpha: 1)
+            : NSColor(srgbRed: 0.13, green: 0.62, blue: 0.30, alpha: 1)
+    }
+    // Advisory grammar notes (no machine-applicable fix): amber, distinct from a real fix.
+    static let advisoryAmber = NSColor.systemOrange
+}
+
 final class SuggestionOverlay: NSPanel {
     private let ghost = GhostView(frame: NSRect(x: 0, y: 0, width: 420, height: 38))
+
+    // The host field's real font/color, read over AX (spec B.2) by the caret subsystem
+    // and stashed here just before placement. When set, the inline ghost renders in the
+    // host typography instead of NSFont.systemFont, which is what removes fast-typing
+    // horizontal drift on monospace/condensed/proportional fonts. nil = system fallback.
+    var pendingHostFont: NSFont?
+    var pendingHostColor: NSColor?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 420, height: 38),
@@ -27,10 +54,13 @@ final class SuggestionOverlay: NSPanel {
     private func fontSize(for lineHeight: CGFloat) -> CGFloat { min(max(lineHeight * 0.62, 11), 30) }
 
     func showCompletion(_ text: String, at point: NSPoint, lineHeight: CGFloat, animate: Bool) {
-        let fs = fontSize(for: lineHeight)
+        // Prefer the host font (B.2); fall back to the system font sized to the caret line.
+        let font = pendingHostFont ?? NSFont.systemFont(ofSize: fontSize(for: lineHeight))
+        let fs = font.pointSize
+        let base = pendingHostColor ?? NSColor.labelColor
         let attr = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: fs), .foregroundColor: NSColor.labelColor.withAlphaComponent(0.5)])
-        place(attr, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: animate)
+            .font: font, .foregroundColor: base.withAlphaComponent(0.5)])
+        place(attr, fontSize: fs, font: font, at: point, lineHeight: lineHeight, shimmer: animate)
     }
 
     // Inline diff for a pending correction. Spelling, and grammar with a fix, render the
@@ -40,25 +70,27 @@ final class SuggestionOverlay: NSPanel {
         let fs = fontSize(for: lineHeight)
         let s = NSMutableAttributedString()
         if let replacement = c.replacement {
+            // Typo struck through in red, fix in green right after — the named-color diff (#8).
             s.append(NSAttributedString(string: c.displayOriginal, attributes: [
                 .font: NSFont.systemFont(ofSize: fs),
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .foregroundColor: NSColor.systemRed.withAlphaComponent(0.7)]))
+                .strikethroughColor: CorrectionColors.strikethroughRed,
+                .foregroundColor: CorrectionColors.strikethroughRed.withAlphaComponent(0.75)]))
             s.append(NSAttributedString(string: " → " + replacement, attributes: [
                 .font: NSFont.systemFont(ofSize: fs, weight: .semibold),
-                .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95)]))
+                .foregroundColor: CorrectionColors.correctionGreen]))
         } else {
             // Advisory-only grammar note: amber, no green replacement glyph.
             s.append(NSAttributedString(string: c.message ?? c.displayOriginal, attributes: [
                 .font: NSFont.systemFont(ofSize: fs, weight: .medium),
-                .foregroundColor: NSColor.systemOrange.withAlphaComponent(0.95)]))
+                .foregroundColor: CorrectionColors.advisoryAmber.withAlphaComponent(0.95)]))
         }
-        place(s, fontSize: fs, at: point, lineHeight: lineHeight, shimmer: true)
+        place(s, fontSize: fs, font: NSFont.systemFont(ofSize: fs), at: point, lineHeight: lineHeight, shimmer: true)
     }
 
     // `point` is the caret's right edge (x) and bottom (y). The panel is the caret
     // line height, so the text is vertically centered on the caret line (inline).
-    private func place(_ attr: NSAttributedString, fontSize fs: CGFloat, at point: NSPoint, lineHeight: CGFloat, shimmer: Bool) {
+    private func place(_ attr: NSAttributedString, fontSize fs: CGFloat, font: NSFont, at point: NSPoint, lineHeight: CGFloat, shimmer: Bool) {
         let textW = ceil(attr.size().width)
         let taperW: CGFloat = 20
         let w = min(textW + 8, 760)
@@ -74,7 +106,7 @@ final class SuggestionOverlay: NSPanel {
         ghost.frame = NSRect(origin: .zero, size: frame.size)
         // Shimmer only on a genuinely fresh appearance — never while streaming updates
         // or shrinking as the user types through it.
-        ghost.render(attr, fontSize: fs, taperWidth: taperW, shimmer: shimmer && !wasVisible)
+        ghost.render(attr, fontSize: fs, font: font, taperWidth: taperW, shimmer: shimmer && !wasVisible)
         if !wasVisible {
             ghost.fadeIn()
             orderFrontRegardless()

@@ -33,20 +33,42 @@ final class ModelRouter {
     // "m" (1.7B) and "l" (4B) are single higher-quality models served straight (no race), each
     // fetched on demand the first time it's chosen and cached in Models/. Hosted on Hugging Face
     // (typer-org/typer-1). The tier the user picks is recommended from their RAM at onboarding.
+    // CPU performance tiers, derived from the count of performance cores on the machine.
+    // Used to recommend the largest model the hardware can actually run at a usable latency.
+    enum CPUTier: Int, Comparable {
+        case low = 0       // ≤2 perf cores (base M-series, older Intel)
+        case standard = 1  // 3–5 perf cores (M Pro class)
+        case high = 2      // 6+ perf cores (M Max / Ultra / high-core Intel)
+        static func < (l: CPUTier, r: CPUTier) -> Bool { l.rawValue < r.rawValue }
+    }
+
     struct ModelTier {
-        let id: String        // "m" | "l"
-        let file: String      // filename under Models/
-        let url: String       // HF download URL
-        let label: String     // human label
-        let approxMB: Int     // download-size hint for the UI
+        let id: String              // "m" | "l"
+        let file: String            // filename under Models/
+        let repo: String            // Hugging Face repo, e.g. "typer-org/typer-1"
+        let quantFile: String       // GGUF file within the repo (== file here, but named for clarity)
+        let url: String             // HF download URL
+        let label: String           // human label
+        let approxMB: Int           // download-size hint for the UI
+        let sizeBytes: Int64        // exact on-disk download size for disk-space pre-check + validation
+        let runtimeMemBytes: Int64  // resident memory the loaded model needs (weights + KV headroom)
+        let isBaseModel: Bool       // true = pretrained base (no instruct tuning); the "s" tier ships base+race
+        let minMemoryGB: Int        // installed-RAM floor below which this tier is not recommended
+        let recommendedCPUTier: CPUTier  // perf-core class at/above which this tier is recommended
     }
     static let downloadTiers: [ModelTier] = [
         ModelTier(id: "m", file: "typer-1m.gguf",
+                  repo: "typer-org/typer-1", quantFile: "typer-1m.gguf",
                   url: "https://huggingface.co/typer-org/typer-1/resolve/main/typer-1m.gguf",
-                  label: "typer-1m (1.7B)", approxMB: 1834),
+                  label: "typer-1m (1.7B)", approxMB: 1834,
+                  sizeBytes: 1_834 * 1_048_576, runtimeMemBytes: 3_200 * 1_048_576,
+                  isBaseModel: false, minMemoryGB: 14, recommendedCPUTier: .standard),
         ModelTier(id: "l", file: "typer-1l.gguf",
+                  repo: "typer-org/typer-1", quantFile: "typer-1l.gguf",
                   url: "https://huggingface.co/typer-org/typer-1/resolve/main/typer-1l.gguf",
-                  label: "typer-1l (4B)", approxMB: 4366),
+                  label: "typer-1l (4B)", approxMB: 4366,
+                  sizeBytes: 4_366 * 1_048_576, runtimeMemBytes: 6_400 * 1_048_576,
+                  isBaseModel: false, minMemoryGB: 24, recommendedCPUTier: .high),
     ]
     static func tier(_ id: String) -> ModelTier? { downloadTiers.first { $0.id == id } }
     static var modelsDir: URL {
@@ -57,6 +79,68 @@ final class ModelRouter {
     static func tierInstalled(_ id: String) -> Bool {
         guard let t = tier(id) else { return false }
         return FileManager.default.fileExists(atPath: tierPath(t))
+    }
+
+    // MARK: - Hardware recommendation (#11)
+
+    // Installed physical memory, in whole GB.
+    static var installedMemoryGB: Int {
+        Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0).rounded())
+    }
+
+    // Performance-core count via sysctl hw.perflevel0.physicalcpu (Apple silicon). Falls back to
+    // hw.physicalcpu on Intel where perflevel0 is absent. 0 on failure → treated as the low tier.
+    static func performanceCoreCount() -> Int {
+        func sysctlInt(_ name: String) -> Int? {
+            var value: Int32 = 0
+            var size = MemoryLayout<Int32>.size
+            return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : nil
+        }
+        if let c = sysctlInt("hw.perflevel0.physicalcpu"), c > 0 { return c }
+        if let c = sysctlInt("hw.physicalcpu"), c > 0 { return c }
+        return 0
+    }
+
+    static var cpuTier: CPUTier {
+        switch performanceCoreCount() {
+        case 6...:    return .high
+        case 3...5:   return .standard
+        default:      return .low
+        }
+    }
+
+    // The small base/race tier that always ships with the app. Modeled as a synthetic tier so the
+    // recommendation logic can reason about every option uniformly.
+    static let smallTier = ModelTier(
+        id: "s", file: "", repo: "typer-org/typer-1", quantFile: "",
+        url: "", label: "typer-1s (0.6B)", approxMB: 600,
+        sizeBytes: 600 * 1_048_576, runtimeMemBytes: 900 * 1_048_576,
+        isBaseModel: true, minMemoryGB: 0, recommendedCPUTier: .low)
+
+    static var allTiers: [ModelTier] { [smallTier] + downloadTiers }
+
+    // Largest tier whose RAM + CPU floors the machine clears. Walks biggest→smallest and returns
+    // the first that fits; the small tier (no floors) always fits, so this never returns nil.
+    static func recommendedTier() -> ModelTier {
+        let ram = installedMemoryGB
+        let cpu = cpuTier
+        for t in allTiers.sorted(by: { $0.runtimeMemBytes > $1.runtimeMemBytes }) {
+            if ram >= t.minMemoryGB && cpu >= t.recommendedCPUTier { return t }
+        }
+        return smallTier
+    }
+
+    // A "you could run a bigger model" notice: non-nil when the recommended tier is larger than
+    // what's currently selected/served. The UI shows this once so a 32 GB Mac on the small model
+    // learns it can move up. Returns the recommended tier to offer.
+    static func upgradeRecommendation(currentVariant: String) -> ModelTier? {
+        let rec = recommendedTier()
+        guard rec.id != "s" else { return nil }
+        // Order the ids small→large so we can compare "is the recommendation bigger than current".
+        let order = ["s": 0, "m": 1, "l": 2]
+        let cur = order[currentVariant] ?? 0
+        let recRank = order[rec.id] ?? 0
+        return recRank > cur ? rec : nil
     }
 
     // True for this router instance when it's serving a single downloaded tier (no race).
@@ -157,10 +241,57 @@ final class ModelRouter {
     }
 
     // Wipe the race state (share + reward windows + any lock) — also called by "Reset All Data".
-    func reset() { mem.reset() }
+    // Also drops the derived personalization bias cache: "Reset All Data" clears the lexicon it
+    // is built from, so the cached map/string must rebuild from the now-empty vocabulary. No
+    // separate state file to remove — the bias map is derived in-memory from lexicon.json.
+    func reset() { mem.reset(); personalization.invalidate() }
 
     // Kill both arms' helper processes — called before swapping the router on a model switch.
     func shutdown() { clientA.stop(); clientB?.stop() }
+
+    // MARK: - Personalization logit-bias (#10, Wave 4 interim — NO LoRA)
+    //
+    // The personalization seam, owned in one place. From the user's high-frequency words
+    // (PersonalLexicon) we derive BOTH:
+    //   1. `lexiconString(...)` — the strength-scaled, frequency-ordered word list that the
+    //      EXISTING request path already carries (`LlamaClient.request(lexicon:)`); the helper
+    //      tokenizes it and biases the sampler toward those words. This is the live mechanism.
+    //   2. `personalizationBias(...)` — the `[token:Float]` logit-bias map the spec calls for:
+    //      each kept word's first token mapped to a strength-scaled boost (front-loaded by
+    //      frequency rank). This is the in-process artifact a future weighted wire consumes
+    //      directly; it is derived from real token ids via the helper's tokenize endpoint
+    //      (`ids:1`) through the injected tokenizer, never a Swift-side guess.
+    //
+    // Both are OFF (empty) when `strength == 0` — today's default — so personalization adds
+    // nothing until the user opts in, and both re-derive whenever the strength bucket or the
+    // underlying word list changes (cached otherwise; this runs on the generation hot path).
+    private let personalization = PersonalizationBias()
+
+    // A tokenizer the bias builder uses to map a word to its leading token id. Injected from
+    // the app (it wraps the helper's tokenize/`ids` endpoint). Until set, `personalizationBias`
+    // yields an empty map and only the lexicon-string path is active — the helper still applies
+    // its own per-word bias from the string, so personalization is never silently dead.
+    func setBiasTokenizer(_ tok: @escaping (String) -> [Int32]) {
+        guard personalization.tokenizer == nil else { return }   // idempotent: wire once
+        personalization.tokenizer = tok
+    }
+
+    // The strength-scaled lexicon word list for the live request path. `strength` is read at
+    // call time (not from the init-time cfg copy) so a slider change takes effect immediately.
+    // Empty when strength == 0 or the feature flag is off.
+    func lexiconString(words: String, strength: Double) -> String {
+        personalization.lexiconString(words: words, strength: strength)
+    }
+
+    // The `[token:Float]` logit-bias map (spec G.3 interim). Re-derived on strength/word change;
+    // empty when strength == 0 or no tokenizer is wired yet.
+    func personalizationBias(words: String, strength: Double) -> [Int32: Float] {
+        personalization.biasMap(words: words, strength: strength)
+    }
+
+    // Drop the derived bias state — strength changed enough that the cache must rebuild, or the
+    // lexicon was wiped by "Reset All Data".
+    func resetPersonalization() { personalization.invalidate() }
 
     // Synchronously persist race state — called on app terminate so a winner locked
     // in the last debounce window isn't lost on quit.
@@ -347,4 +478,97 @@ final class RouterMemory {
         try? d.write(to: url, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
+}
+
+// Personalization logit-bias builder (spec §G.3 interim — NO LoRA). Turns the user's
+// high-frequency words into (a) the strength-scaled lexicon string the live request path
+// already carries and (b) the `[token:Float]` logit-bias map the spec specifies. Both are
+// derived from the SAME word list and the SAME strength so the two channels never disagree.
+//
+// Strength (0..1) shapes personalization on two axes:
+//   • breadth — how many of the user's words ride along (baseline 48 → cap 64 at full
+//     strength), matching the prior `personalizedLexicon()` behavior so strength 0 is a
+//     no-op and not a regression;
+//   • depth   — the per-token logit boost. Each kept word is front-loaded by its frequency
+//     rank (the most-typed words bias hardest) and the whole curve is scaled by strength, so
+//     a low slider nudges and a high slider leans.
+//
+// All state is main-thread-confined (it lives on the generation hot path, same as the rest of
+// the router) and memoized on `(strengthBucket, words)`: tokenization only re-runs when the
+// user moves the slider or their top-word list actually changes.
+final class PersonalizationBias {
+    // Helper-backed tokenizer: word → its token ids (leading-space form). Returns [] until the
+    // app wires it; the bias map stays empty in that window (the lexicon-string channel still
+    // works, so personalization is degraded, never dead).
+    var tokenizer: ((String) -> [Int32])?
+
+    // Gentle by design: at full strength a frequent word's first token gets at most this boost
+    // (matching the helper's historical +0.5 flat bias ceiling), tapering toward the tail of the
+    // list. Far too small to force a word the model wouldn't otherwise consider — it breaks ties
+    // toward the user's vocabulary and nothing more.
+    private static let maxBoost: Float = 0.5
+    private static let baseWords = 48
+    private static let maxWords = 64
+
+    private var cacheKey = ""              // "<bucket>|<words>" the cache was built for
+    private var cachedString = ""
+    private var cachedMap: [Int32: Float] = [:]
+
+    // Bucket strength to one decimal so micro-jitter on a continuous slider doesn't thrash the
+    // tokenizer; the visible effect is identical and the cache stays warm.
+    private func key(_ words: String, _ strength: Double) -> String {
+        let bucket = Int((min(1, max(0, strength)) * 10).rounded())
+        return "\(bucket)|\(words)"
+    }
+
+    // Frequency-ordered word slice for the given strength: the established baseline (48) at
+    // strength 0 — preserving today's lexicon behavior, NOT a regression — growing toward the
+    // 64-word cap as strength rises. The caller has already gated on `lexiconEnabled`.
+    private func scaledWords(_ words: String, _ strength: Double) -> [String] {
+        let s = min(1, max(0, strength))
+        let n = Self.baseWords + Int((Double(Self.maxWords - Self.baseWords) * s).rounded())
+        return words.split(separator: " ").prefix(n).map(String.init)
+    }
+
+    // The lexicon STRING channel: present at all strengths (it is the pre-existing
+    // `lexiconEnabled` feature, gated by the caller). Strength only widens it.
+    func lexiconString(words: String, strength: Double) -> String {
+        rebuildIfNeeded(words: words, strength: strength)
+        return cachedString
+    }
+
+    func biasMap(words: String, strength: Double) -> [Int32: Float] {
+        rebuildIfNeeded(words: words, strength: strength)
+        return cachedMap
+    }
+
+    private func rebuildIfNeeded(words: String, strength: Double) {
+        let k = key(words, strength)
+        if k == cacheKey { return }
+        cacheKey = k
+        let kept = scaledWords(words, strength)
+        cachedString = kept.joined(separator: " ")
+        cachedMap = [:]
+        // The bias MAP is OFF at strength 0 (spec §G.3) even though the lexicon string stays at
+        // its baseline — strength 0 is neutral sampling, no per-token boost.
+        let s = Float(min(1, max(0, strength)))
+        guard s > 0, !kept.isEmpty, let tok = tokenizer else { return }
+        let count = kept.count
+        // Map each word's FIRST token (as a word-start, leading space) to a strength-scaled,
+        // rank-tapered boost. Dedup on token id keeping the strongest (most-frequent) weight so
+        // two words sharing a leading token don't double-count.
+        for (i, w) in kept.enumerated() {
+            let ids = tok(" " + w)
+            guard let first = ids.first else { continue }
+            // Linear taper from 1.0 (rank 0) down to ~0.4 (last rank): the head of the list bites
+            // hardest. Scaled by strength so the whole curve collapses to 0 as the slider drops.
+            let rankWeight = 1.0 - 0.6 * (Float(i) / Float(max(1, count - 1)))
+            let boost = Self.maxBoost * s * rankWeight
+            if let existing = cachedMap[first] { cachedMap[first] = max(existing, boost) }
+            else { cachedMap[first] = boost }
+        }
+    }
+
+    // Force a rebuild on the next query (slider moved past the cache bucket, or lexicon reset).
+    func invalidate() { cacheKey = "" }
 }

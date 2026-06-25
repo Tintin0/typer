@@ -62,6 +62,19 @@ static int json_get_int(const std::string &s, const std::string &key, int def) {
     return end == s.c_str() + p ? def : (int)v;
 }
 
+static double json_get_double(const std::string &s, const std::string &key, double def) {
+    std::string pat = "\"" + key + "\"";
+    size_t p = s.find(pat);
+    if (p == std::string::npos) return def;
+    p = s.find(':', p + pat.size());
+    if (p == std::string::npos) return def;
+    ++p;
+    while (p < s.size() && std::isspace((unsigned char)s[p])) ++p;
+    char *end = nullptr;
+    double v = std::strtod(s.c_str() + p, &end);
+    return end == s.c_str() + p ? def : v;
+}
+
 static std::string json_escape(const std::string &s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -317,6 +330,40 @@ public:
         return std::string(buf, buf + n);
     }
 
+    // FIM (fill-in-the-middle) support, spec §E#13. A mid-line completion has real
+    // text AFTER the caret; a plain continuation model can't see it and tends to
+    // duplicate or ignore it. When the loaded GGUF carries the infill special tokens
+    // (Qwen2.5-Coder, CodeLlama, DeepSeek-Coder, StarCoder2, …) we frame the request as
+    // <pre>prefix<suf>suffix<mid> so the model fills the gap between what's typed and
+    // what trails the caret. Models without these tokens fall back to plain
+    // continuation in the request handler.
+    bool fim_available() const {
+        return llama_vocab_fim_pre(vocab) != LLAMA_TOKEN_NULL &&
+               llama_vocab_fim_suf(vocab) != LLAMA_TOKEN_NULL &&
+               llama_vocab_fim_mid(vocab) != LLAMA_TOKEN_NULL;
+    }
+
+    // Assemble the FIM token sequence. llama.cpp's reference infill ordering is
+    // [FIM_PRE] prefix [FIM_SUF] suffix [FIM_MID]; the model generates the middle after
+    // FIM_MID. prefix/suffix are tokenized WITHOUT special parsing so caret-adjacent
+    // user text ("<", "|", …) can never be mistaken for control tokens.
+    std::vector<llama_token> build_fim_tokens(const std::string &prefix, const std::string &suffix) {
+        std::vector<llama_token> toks;
+        auto pre = tokenize(prefix, false);
+        auto suf = tokenize(suffix, false);
+        // Bound each side so the FIM frame still fits the context with generation room.
+        int side_cap = (n_ctx - 64) / 2;
+        if (side_cap < 1) side_cap = 1;
+        if ((int)pre.size() > side_cap) pre.erase(pre.begin(), pre.end() - side_cap);  // keep tail nearest caret
+        if ((int)suf.size() > side_cap) suf.resize(side_cap);                          // keep head nearest caret
+        toks.push_back(llama_vocab_fim_pre(vocab));
+        toks.insert(toks.end(), pre.begin(), pre.end());
+        toks.push_back(llama_vocab_fim_suf(vocab));
+        toks.insert(toks.end(), suf.begin(), suf.end());
+        toks.push_back(llama_vocab_fim_mid(vocab));
+        return toks;
+    }
+
     void init_biases() {
         // Ban every control / special / added token by id, read from the actual vocab, so
         // the model can't emit BOS/EOS/turn/chat/repo markup into a plaintext completion.
@@ -342,11 +389,14 @@ public:
     // word start) gets a small logit boost. +0.5 is deliberately gentle: enough to
     // break ties toward the user's own words, far too small to force one in where
     // it doesn't fit (min-p and the nucleus still apply afterwards).
-    void set_lexicon(const std::string &words) {
-        if (words == lexicon_key) return;
-        lexicon_key = words;
+    void set_lexicon(const std::string &words, float weight) {
+        // The cache key folds in the weight so moving the personalization slider rebuilds the
+        // bias table even when the word list is unchanged.
+        std::string key = words + "\x1f" + std::to_string(weight);
+        if (key == lexicon_key) return;
+        lexicon_key = key;
         lexicon_biases.clear();
-        if (words.empty()) return;
+        if (words.empty() || weight <= 0.0f) return;
         std::set<llama_token> banned;
         for (const auto &b : special_biases) banned.insert(b.token);
         std::set<llama_token> seen;
@@ -357,7 +407,7 @@ public:
             if (toks.empty()) continue;
             llama_token t = toks[0];
             if (banned.count(t) || !seen.insert(t).second) continue;
-            lexicon_biases.push_back({t, 0.5f});
+            lexicon_biases.push_back({t, weight});   // strength-scaled by the app (0.5 baseline)
         }
     }
 
@@ -495,6 +545,14 @@ public:
         // declares one (Gemma yes; Qwen3/SmolLM2 base no) — replaces the old hardcoded
         // "<bos>" literal so any base model tokenizes correctly.
         auto toks = tokenize(prompt, llama_vocab_get_add_bos(vocab));
+        return generate_from_tokens(toks, max_tokens, on_token);
+    }
+
+    // The decode + sampling loop, sharing one implementation between plain-continuation
+    // generate() and the FIM path (which pre-builds its own <pre>/<suf>/<mid> token
+    // sequence). `toks` is the already-tokenized prompt.
+    std::string generate_from_tokens(std::vector<llama_token> toks, int max_tokens,
+                         const std::function<bool(const std::string &, double)> &on_token = nullptr) {
         int over = (int)toks.size() + max_tokens + 8 - n_ctx;
         if (over > 0) {
             // Front-truncate to fit the context window. Clamp so at least one token
@@ -632,8 +690,43 @@ int main(int argc, char **argv) {
         while (std::getline(std::cin, line)) {
             try {
                 std::string context = json_get_string(line, "context");
+                // Text AFTER the caret (spec §E#13). Present only for mid-line completions;
+                // empty for end-of-line, where the plain continuation path is used as before.
+                std::string suffix = json_get_string(line, "suffix");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
+
+                // Tokenize helper (W1B / spec C.4): count tokens for an arbitrary block so
+                // the Swift side can budget the prompt in token space instead of by char
+                // count. Pure measurement — it never touches the KV cache, the sampler, or
+                // FIM, so it is safe to interleave with completion requests on the same
+                // process. `add_bos` mirrors the per-model BOS handling generate() uses.
+                // Returns {"ok":true,"n_tokens":N}; the full id list is omitted (the Swift
+                // budgeter only needs the count, and shipping thousands of ids per call is
+                // wasteful) but a {"tokens":[...]} array is included when "ids":1 is set.
+                if (json_get_string(line, "mode") == "tokenize") {
+                    bool add_bos = json_get_int(line, "add_bos", 1) != 0 &&
+                                   llama_vocab_get_add_bos(engine.vocab);
+                    auto toks = engine.tokenize(context, add_bos);
+                    std::string out = "{\"ok\":true,\"n_tokens\":" + std::to_string(toks.size());
+                    if (json_get_int(line, "ids", 0) != 0) {
+                        out += ",\"tokens\":[";
+                        for (size_t i = 0; i < toks.size(); ++i) {
+                            if (i) out += ',';
+                            out += std::to_string((int)toks[i]);
+                        }
+                        out += "]";
+                    }
+                    out += "}";
+                    std::cout << out << "\n" << std::flush;
+                    continue;
+                }
+
                 if (context.size() > 2200) context = stable_tail(context, 2200);
+                // Bound the FIM suffix: the trailing text only needs to be enough to
+                // condition the gap (the model fills BETWEEN prefix and suffix), and a
+                // huge trailing document would crowd the context. Keep the head (nearest
+                // the caret) since that is what the completion must agree with.
+                if (suffix.size() > 600) suffix.resize(600);
 
                 // Raw baseline path (eval_compare.py): greedy decode, harness logic stripped,
                 // only first-line + trim cleanup so the comparison reflects the model itself.
@@ -648,7 +741,8 @@ int main(int argc, char **argv) {
                                    << json_escape(out) << "\",\"conf\":" << cbuf << "}}\n" << std::flush;
                     continue;
                 }
-                engine.set_lexicon(json_get_string(line, "lexicon"));
+                engine.set_lexicon(json_get_string(line, "lexicon"),
+                                   (float)json_get_double(line, "lexicon_bias", 0.5));
 
                 int max_tokens = std::max(8, std::min(18, max_words + 7));
                 bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
@@ -671,9 +765,19 @@ int main(int argc, char **argv) {
                     return s;
                 };
 
+                // Mid-line FIM (spec §E#13): when there is trailing text after the caret
+                // AND the model exposes infill tokens, frame the request as
+                // <pre>context<suf>suffix<mid> so the completion fits the gap instead of
+                // duplicating or ignoring what follows. Otherwise fall back to plain
+                // continuation (the Swift side only sends `suffix` when mid-line
+                // completion is enabled, so non-FIM models simply behave as before).
+                bool use_fim = !trim(suffix).empty() && engine.fim_available();
+                std::vector<llama_token> fim_toks;
+                if (use_fim) fim_toks = engine.build_fim_tokens(context, suffix);
+
                 // Stream partial completions token-by-token so the UI shows the
                 // first word almost immediately instead of waiting for all of them.
-                std::string raw = engine.generate(prompt_complete(context), max_tokens,
+                auto on_stream =
                     [&](const std::string &full, double conf) -> bool {
                         std::string s = first_line_clean(full);
                         if (s.empty()) return true;
@@ -715,7 +819,11 @@ int main(int argc, char **argv) {
                         char last = shaped.empty() ? 0 : shaped.back();
                         if (wc >= 3 && (last == '.' || last == '!' || last == '?')) return false;
                         return wc < max_words;
-                    });
+                    };
+
+                std::string raw = use_fim
+                    ? engine.generate_from_tokens(fim_toks, max_tokens, on_stream)
+                    : engine.generate(prompt_complete(context), max_tokens, on_stream);
 
                 std::string out;
                 if (!suppressed) {

@@ -23,6 +23,29 @@ model_path = ""
 
 max_completion_words = 7      # length of each suggestion chunk
 min_context_chars = 6         # don't suggest until this much has been typed
+
+# ── Overhaul settings (also editable from the menu-bar Settings window) ──────────
+# Personalization strength 0..1. Interim mechanism: scales how much your own recent
+# writing + frequent vocabulary bias each completion (0 = neutral, off).
+personalization_strength = 0
+# Suggested-fix styling (#8): show the red-strike → green-replacement inline diff for
+# detected typos.
+show_suggested_fixes = true
+# When the word you're typing looks misspelled, suppress the inline completion instead
+# of extending a likely-wrong word. Conservative; off by default.
+suppress_completion_on_typo_suspected = false
+# Emoji completion (#7). emoji_completions_enabled expands a finished :shortcode: to its
+# emoji inline; emoji_search_enabled offers a filtered list as you type a :prefix.
+emoji_completions_enabled = false
+emoji_search_enabled = false
+# Default skin tone for emoji that support it: 0 = none (yellow), 1..5 = light → dark.
+emoji_skin_tone = 0
+# Mid-line completion fidelity (#13): complete at word boundaries in the middle of a
+# line (fill-in-the-middle) instead of only at the end of the text. On by default.
+mid_line_completions_enabled = true
+# Inline-prediction clash (#4): if macOS's own "Show inline predictive text" is on, warn
+# once and offer a deep-link to the Keyboard settings pane. Set false to silence.
+inline_prediction_warn = true
 debounce_ms = 110             # pause-before-generating; should exceed your between-key
                               # gap so we generate once per PAUSE, not once per key
                               # (too low = a model run on nearly every keystroke = battery drain)

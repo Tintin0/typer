@@ -20,3 +20,4 @@ venv/
 # Local style/personalization data
 style.txt
 /data/
+.gstack/

@@ -96,6 +96,10 @@ extension TyperApp {
             self.onboarding?.close()
             self.onboarding = nil
             log("onboarding complete")
+            // Right after first-run onboarding, surface the macOS inline-prediction clash card
+            // (#4) if Apple's global prediction is on — so the two grey suggestions don't fight.
+            // Guide-by-default; the card hosts the explicit opt-in write.
+            self.maybeWarnInlinePrediction()
         }
         controller.show(app: self)
     }

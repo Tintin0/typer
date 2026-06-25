@@ -7,6 +7,10 @@ import NaturalLanguage
 import ScreenCaptureKit
 import Vision
 
+private extension Comparable {
+    func clamped(_ lo: Self, _ hi: Self) -> Self { min(max(self, lo), hi) }
+}
+
 struct TyperConfig {
     var enabled = true
     var completionEnabled = true
@@ -24,6 +28,30 @@ struct TyperConfig {
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
     var minContextChars = 6
+
+    // ── Overhaul (Wave 0) new fields ──────────────────────────────────────────
+    // Personalization strength 0..1: interim mechanism scales style-sample chars +
+    // lexicon weight and builds a logit-bias map from the user's frequent words
+    // (W2A surfaces the slider, W2B/W4 consume it). 0 = neutral.
+    var personalizationStrength: Double = 0
+    // Suggested-fix styling (#8): draw the red-strike → green-replacement inline diff.
+    var showSuggestedFixes = true
+    // Typo-suspicion gate (#8): when the current word looks misspelled, suppress the
+    // inline completion rather than extend a likely-wrong word. Conservative default.
+    var suppressCompletionOnTypoSuspected = false
+    // Emoji completion (#7): expand a finished `:shortcode:` to its emoji inline.
+    var emojiCompletionsEnabled = false
+    // Emoji search (#7): a leading `:prefix` offers a filtered candidate list.
+    var emojiSearchEnabled = false
+    // Default skin-tone modifier for emoji that support it: 0 = none (yellow),
+    // 1..5 = Fitzpatrick light→dark (the five U+1F3FB..U+1F3FF modifiers).
+    var emojiSkinTone = 0
+    // Mid-line completion fidelity (#13): when true, complete at word boundaries in the
+    // middle of a line (FIM suffix) instead of bailing. On by default.
+    var midLineCompletionsEnabled = true
+    // Inline-prediction clash (#4): when true and the macOS global "Show inline
+    // predictive text" default is on, surface a one-time warning + Keyboard deep-link.
+    var inlinePredictionWarn = true
     // Trailing debounce before a generation fires. Must be longer than the gap
     // between keystrokes (~80–200ms) so we generate once per *pause* rather than
     // once per *key* — at 25ms we fired a full model inference on nearly every
@@ -125,6 +153,14 @@ struct TyperConfig {
             case "model_path": cfg.modelPath = (value as NSString).expandingTildeInPath
             case "max_completion_words": cfg.maxCompletionWords = Int(value) ?? cfg.maxCompletionWords
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
+            case "personalization_strength": cfg.personalizationStrength = (Double(value) ?? cfg.personalizationStrength).clamped(0, 1)
+            case "show_suggested_fixes": cfg.showSuggestedFixes = value == "true"
+            case "suppress_completion_on_typo_suspected": cfg.suppressCompletionOnTypoSuspected = value == "true"
+            case "emoji_completions_enabled": cfg.emojiCompletionsEnabled = value == "true"
+            case "emoji_search_enabled": cfg.emojiSearchEnabled = value == "true"
+            case "emoji_skin_tone": cfg.emojiSkinTone = (Int(value) ?? cfg.emojiSkinTone).clamped(0, 5)
+            case "mid_line_completions_enabled": cfg.midLineCompletionsEnabled = value == "true"
+            case "inline_prediction_warn": cfg.inlinePredictionWarn = value == "true"
             case "debounce_ms": cfg.debounceMs = Int(value) ?? cfg.debounceMs
             case "idle_reset_seconds": cfg.idleResetSeconds = Int(value) ?? cfg.idleResetSeconds
             case "prefetch_enabled": cfg.prefetchEnabled = value == "true"
