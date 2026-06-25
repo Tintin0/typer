@@ -11,9 +11,13 @@
 // The route is decided from location.pathname so the same bundle works whether it was
 // reached via research.html (the index) or the SPA fallback (a nested slug path).
 
+import "./styles.css";
+import { mountChrome } from "./shell.ts";
 import { marked } from "marked";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+
+mountChrome("research");
 
 // Eagerly glob every post as raw text. Vite inlines these at build time, so the set of
 // posts is fixed in the bundle and adding a file is the only step needed to publish.
@@ -114,7 +118,7 @@ type ChartSpec = {
   data: Array<{ label: string; value?: number; values?: number[]; highlight?: boolean }>;
 };
 
-const SERIES_FILLS = ["var(--caret)", "var(--green)", "#c98bdb", "#e0a458"];
+const SERIES_FILLS = ["var(--blue)", "var(--green)", "var(--ink-3)", "var(--ghost)"];
 
 function renderChart(spec: ChartSpec): string {
   const data = spec.data || [];
@@ -175,7 +179,7 @@ function renderChart(spec: ChartSpec): string {
       const by = rowY + 6;
       const barH = rowH - 16;
       const bw = Math.max(2, x(v) - trackX);
-      const fill = d.highlight ? "var(--caret)" : "var(--ghost)";
+      const fill = d.highlight ? "var(--blue)" : "var(--ghost)";
       bars.push(
         `<rect x="${trackX}" y="${by}" width="${bw}" height="${barH}" rx="3" fill="${fill}"${d.highlight ? ' class="ch-hi"' : ""}/>` +
           `<text x="${trackX - 12}" y="${by + barH / 2}" class="ch-label${d.highlight ? " ch-label-hi" : ""}" text-anchor="end" dominant-baseline="middle">${label}</text>` +
@@ -278,6 +282,131 @@ function renderMarkdown(body: string): string {
   return html;
 }
 
+// ---- page-local styles -----------------------------------------------------
+// Compose the shared design tokens (styles.css) for the research index + paper
+// layout, math, tables, code, and the hand-rolled SVG charts. No new colors or
+// fonts are decided here; everything references the shared :root tokens.
+const RESEARCH_STYLES = `
+  #research { max-width: 78ch; }
+  #research .empty { color: var(--ink-3); font-family: var(--font-mono); }
+  #research time {
+    font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-3);
+  }
+  #research .authors { font-family: var(--font-mono); font-size: var(--t-small); color: var(--ink-3); }
+
+  /* ---- index listing ---- */
+  #research .rpost-card { border-top: 1px solid var(--rule); padding: var(--sp-6) 0; }
+  #research .rpost-card:last-child { border-bottom: 1px solid var(--rule); }
+  #research .rpost-card .meta { display: flex; align-items: center; gap: var(--sp-3); margin: 0 0 var(--sp-3); flex-wrap: wrap; }
+  #research .rpost-card h2 { font-size: var(--t-h3); line-height: 1.3; margin: 0 0 var(--sp-3); }
+  #research .rpost-card h2 a { color: var(--ink); }
+  #research .rpost-card h2 a:hover { color: var(--blue); text-decoration: none; }
+  #research .rpost-card .abstract { color: var(--ink-2); margin: 0 0 var(--sp-3); line-height: 1.7; }
+  #research .rpost-card .readlink a { font-family: var(--font-mono); font-size: var(--t-small); font-weight: 700; }
+
+  /* ---- single paper ---- */
+  #research .paper { padding-top: 0; }
+  #research .backlink { margin: 0 0 var(--sp-7); }
+  #research .backlink a, #research .paper-foot a { font-family: var(--font-mono); font-size: var(--t-small); color: var(--ink-3); }
+  #research .backlink a:hover, #research .paper-foot a:hover { color: var(--ink); }
+  #research .paper-head { margin-bottom: var(--sp-7); }
+  #research .paper-head .meta { display: flex; align-items: center; gap: var(--sp-3); margin: 0 0 var(--sp-4); flex-wrap: wrap; }
+  #research .paper-head h1 { font-size: var(--t-h2); line-height: 1.15; margin: 0 0 var(--sp-5); }
+  #research .paper-head .abstract {
+    color: var(--ink-2); line-height: 1.7; margin: 0;
+    padding-left: var(--sp-4); border-left: 2px solid var(--blue);
+  }
+  #research .abstract-label { color: var(--ink); font-weight: 700; }
+
+  /* long-form body */
+  #research .paper-body { line-height: 1.8; color: var(--ink-2); }
+  #research .paper-body h2 { font-size: var(--t-h3); margin: var(--sp-8) 0 var(--sp-4); }
+  #research .paper-body h3 { font-size: var(--t-h4); margin: var(--sp-6) 0 var(--sp-3); }
+  #research .paper-body h4 {
+    font-family: var(--font-mono); font-size: var(--t-small); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3);
+    margin: var(--sp-5) 0 var(--sp-2);
+  }
+  #research .paper-body p { color: var(--ink-2); margin: 0 0 var(--sp-4); }
+  #research .paper-body strong { color: var(--ink); font-weight: 700; }
+  #research .paper-body a { color: var(--blue); }
+  #research .paper-body ul, #research .paper-body ol { color: var(--ink-2); margin: 0 0 var(--sp-4); padding-left: 2.2ch; }
+  #research .paper-body li { margin-bottom: var(--sp-2); }
+  #research .paper-body li::marker { color: var(--blue); }
+  #research .paper-body blockquote {
+    margin: var(--sp-5) 0; padding-left: var(--sp-4);
+    border-left: 2px solid var(--rule-strong); color: var(--ink-3);
+  }
+  #research .paper-body hr { border: none; border-top: 1px solid var(--rule); margin: var(--sp-7) 0; }
+
+  /* fenced code */
+  #research .paper-body pre {
+    background: var(--base-2); border: 1px solid var(--rule); border-radius: var(--radius);
+    padding: var(--sp-4) var(--sp-5); overflow-x: auto; margin: var(--sp-5) 0; line-height: 1.6;
+  }
+  #research .paper-body pre code {
+    color: var(--ink); border: none; background: none; padding: 0;
+    font-family: var(--font-mono); font-size: var(--t-code); white-space: pre;
+  }
+  #research .paper-body :not(pre) > code {
+    font-family: var(--font-mono); font-size: 0.9em; color: var(--ink);
+    background: var(--base-2); border: 1px solid var(--rule); border-radius: var(--radius);
+    padding: 0.05em 0.4ch; word-break: break-word;
+  }
+
+  /* tables */
+  #research .paper-body .table-wrap { overflow-x: auto; margin: var(--sp-5) 0; }
+  #research .paper-body table {
+    border-collapse: collapse; width: 100%;
+    font-family: var(--font-mono); font-size: var(--t-code); border: 1px solid var(--rule);
+  }
+  #research .paper-body th {
+    text-align: left; font-weight: 700; color: var(--ink);
+    padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--rule-strong);
+    background: var(--base-2); white-space: nowrap;
+  }
+  #research .paper-body td {
+    padding: var(--sp-2) var(--sp-4); color: var(--ink-2); border-bottom: 1px solid var(--rule);
+  }
+  #research .paper-body tbody tr:last-child td { border-bottom: none; }
+  #research .paper-body td strong, #research .paper-body th strong { color: var(--ink); }
+
+  /* math */
+  #research .math-block { margin: var(--sp-5) 0; overflow-x: auto; overflow-y: hidden; padding: 0.2rem 0; }
+  #research .math-block .katex-display { margin: 0; }
+  #research .paper-body .katex { color: var(--ink); }
+
+  /* charts (SVG built by the renderer) */
+  #research .chart { margin: var(--sp-6) 0; padding: var(--sp-4) 0 var(--sp-3); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  #research .ch-title { font-family: var(--font-display); font-size: var(--t-small); font-weight: 700; color: var(--ink); margin: 0 0 var(--sp-4); line-height: 1.4; }
+  #research .chart svg { display: block; width: 100%; height: auto; }
+  #research .ch-grid { stroke: var(--rule); stroke-width: 1; }
+  #research .ch-axisline { stroke: var(--rule-strong); stroke-width: 1; }
+  #research .ch-axis { fill: var(--ink-3); font-family: var(--font-mono); font-size: 11px; }
+  #research .ch-label { fill: var(--ink-2); font-family: var(--font-mono); font-size: 12px; }
+  #research .ch-label-hi { fill: var(--ink); font-weight: 700; }
+  #research .ch-val { fill: var(--ink-3); font-family: var(--font-mono); font-size: 12px; }
+  #research .ch-val-hi { fill: var(--blue); font-weight: 700; }
+  #research .ch-legend { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-5); margin: 0 0 var(--sp-4); }
+  #research .ch-leg { display: inline-flex; align-items: center; gap: 0.5ch; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+  #research .ch-swatch { width: 10px; height: 10px; border-radius: var(--radius); display: inline-block; }
+  #research .ch-note { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); margin: var(--sp-3) 0 0; line-height: 1.55; }
+
+  #research .paper-foot { margin-top: var(--sp-8); padding-top: var(--sp-5); border-top: 1px solid var(--rule); }
+`;
+
+const researchStyleEl = document.createElement("style");
+researchStyleEl.textContent = RESEARCH_STYLES;
+document.head.appendChild(researchStyleEl);
+
+// On a single-post route the page has its own paper header (date/title/abstract),
+// so collapse the index hero to avoid a duplicate "research" heading.
+function hideIndexHero(): void {
+  const hero = document.getElementById("research-hero");
+  if (hero) hero.style.display = "none";
+}
+
 // ---- views -----------------------------------------------------------------
 
 // The slug can arrive two ways: as a clean path /research/<slug> (dev, and the SPA
@@ -314,6 +443,7 @@ function renderIndex(root: HTMLElement, posts: Post[]): void {
 
 function renderPost(root: HTMLElement, post: Post): void {
   document.title = `${post.title} — typr research`;
+  hideIndexHero();
   // Normalize the address bar to the canonical clean URL even when we arrived via the
   // ?p= query hand-off, so links copied from the page are the pretty form.
   if (location.search) {

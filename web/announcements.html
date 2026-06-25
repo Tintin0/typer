@@ -3,104 +3,52 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>typr · announcements</title>
-<meta name="description" content="What's new in typr, local on-device autocomplete for macOS. Written for humans; the changelog has the engineering." />
-<meta property="og:title" content="typr · announcements" />
-<meta property="og:description" content="What's new in typr, written for humans." />
+<title>typer · announcements</title>
+<meta name="description" content="What's new in typer, local on-device autocomplete for macOS. Written for humans; the changelog has the engineering." />
+<meta property="og:title" content="typer · announcements" />
+<meta property="og:description" content="What's new in typer, written for humans." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://typr.frgmt.xyz/announcements" />
-<meta name="theme-color" content="#0b0b0d" />
+<meta name="theme-color" content="#fafaf8" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-<style>
-  :root {
-    --bg: #0b0b0d; --fg: #e7e7ea; --dim: #8a8a92; --faint: #55555e;
-    --accent: #6ea8ff; --green: #5fd081; --rule: #1f1f25;
-    --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Fira Code", Menlo, monospace;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body {
-    background: var(--bg); color: var(--fg);
-    font-family: var(--mono); font-size: 15px; line-height: 1.75;
-    -webkit-font-smoothing: antialiased; padding: 0 1.4rem 6rem;
-  }
-  .col { max-width: 74ch; margin: 0 auto; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; text-underline-offset: 3px; }
-
-  .top { display: flex; justify-content: space-between; align-items: baseline; padding: 2rem 0; flex-wrap: wrap; gap: 0.5rem; }
-  .brand { color: var(--dim); }
-  .brand .g { color: var(--accent); }
-  .top nav { display: flex; gap: 1.2rem; }
-  .top nav a { color: var(--dim); }
-  .top nav a:hover { color: var(--fg); }
-
-  .hero { padding: 1.5rem 0 1rem; }
-  h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 0.7rem; }
-  .g { color: var(--faint); }
-  .hero p { color: var(--dim); margin: 0; }
-  code { color: var(--fg); background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.05em 0.5ch; font-size: 0.92em; }
-
-  /* featured entry */
-  .featured { padding: 1.6rem 0 1.4rem; border-top: 1px solid var(--rule); margin-top: 1.2rem; }
-  .meta { display: flex; align-items: baseline; gap: 1ch; margin: 0 0 0.7rem; }
-  .tag { color: var(--green); }
-  .tag::before { content: "["; } .tag::after { content: "]"; }
-  time { color: var(--faint); font-size: 13px; }
-  .featured h2 { font-size: 1.2rem; font-weight: 700; line-height: 1.35; margin: 0 0 0.8rem; }
-  .body p { color: var(--dim); margin: 0 0 0.9rem; }
-  .body p:last-child { margin-bottom: 0; }
-  .body strong { color: var(--fg); font-weight: 700; }
-  .body ul { margin: 0 0 0.9rem; padding-left: 1.6ch; list-style: none; }
-  .body li { color: var(--dim); margin-bottom: 0.4rem; }
-  .body li::before { content: "- "; color: var(--faint); }
-
-  /* collapsed entries */
-  .entry { border-top: 1px solid var(--rule); }
-  .entry:last-of-type { border-bottom: 1px solid var(--rule); }
-  .entry summary { display: flex; align-items: baseline; gap: 1.2ch; cursor: pointer; padding: 0.9rem 0; list-style: none; }
-  .entry summary::-webkit-details-marker { display: none; }
-  .entry summary:hover .entry-title { color: var(--fg); }
-  .entry summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .entry time { flex-shrink: 0; width: 13ch; }
-  .entry-title { color: var(--dim); }
-  .chev { margin-left: auto; color: var(--faint); }
-  .entry[open] .chev { transform: rotate(90deg); display: inline-block; }
-  .entry[open] .entry-title { color: var(--fg); }
-  .entry .body { padding: 0 0 1.3rem; }
-  @media (min-width: 560px) { .entry .body { padding-left: calc(13ch + 1.2ch); } }
-  .empty { color: var(--dim); }
-
-  footer { margin-top: 3rem; padding-top: 1.4rem; border-top: 1px solid var(--rule); color: var(--faint); font-size: 13px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; }
-  footer a { color: var(--dim); }
-  footer a:hover { color: var(--fg); }
-</style>
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/space-grotesk-var.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/dm-sans-var.woff2" />
+<!-- early theme: set data-theme before paint to avoid a flash. Mirrors initThemeEarly(). -->
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("typer-theme");
+      if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
-<div class="col">
-  <header class="top">
-    <a class="brand" href="/">typr<span class="g">_</span></a>
-    <nav>
-      <a href="/">home</a>
-      <a href="/research">research</a>
-      <a href="https://github.com/frgmt0/typer">github ↗</a>
-    </nav>
-  </header>
+<header id="nav"></header>
 
-  <section class="hero">
-    <h1>announcements</h1>
-    <p>what's new in typr, written for humans. the engineering lives in the <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a>. this is what it feels like to use.</p>
+<main id="page">
+  <section class="section">
+    <div class="container">
+      <p class="eyebrow">written for humans</p>
+      <h1 style="font-size: var(--t-h2); margin-bottom: var(--sp-5);">announcements</h1>
+      <p class="lead" style="max-width: 58ch;">
+        what's new in typer, written for humans. the engineering lives in the
+        <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md" target="_blank" rel="noopener">changelog</a>;
+        this is what it feels like to use.
+      </p>
+    </div>
   </section>
 
-  <main id="feed" aria-label="announcements">
-    <noscript><p class="empty">this feed needs JavaScript, or just read <a href="https://github.com/frgmt0/typer/blob/main/ANNOUNCEMENTS.md">ANNOUNCEMENTS.md</a> on GitHub.</p></noscript>
-  </main>
+  <section class="section" style="padding-top: 0;">
+    <div class="container">
+      <div id="feed" aria-label="announcements">
+        <noscript><p class="empty">this feed needs JavaScript, or just read <a href="https://github.com/frgmt0/typer/blob/main/ANNOUNCEMENTS.md" target="_blank" rel="noopener">ANNOUNCEMENTS.md</a> on GitHub.</p></noscript>
+      </div>
+    </div>
+  </section>
+</main>
 
-  <footer>
-    <span>typr · local autocomplete for macOS</span>
-    <span><a href="/research">research</a> · <a href="https://github.com/frgmt0/typer">source</a> · <a href="https://github.com/frgmt0/typer/blob/main/CHANGELOG.md">changelog</a> · MIT</span>
-  </footer>
-</div>
+<footer id="footer"></footer>
 
 <script type="module" src="/src/announcements.ts"></script>
 </body>

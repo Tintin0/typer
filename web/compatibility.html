@@ -27,17 +27,21 @@
 <header id="nav"></header>
 
 <main id="compatibility">
-  <!-- Compatibility matrix content rendered by src/compatibility.ts (owned by the
-       compatibility-page agent, next wave). Foundation provides the shell + chrome. -->
-  <section class="section">
-    <div class="container">
-      <p class="eyebrow">honest by design</p>
-      <h1 style="font-size: var(--t-h2); margin-bottom: var(--sp-5);">app compatibility</h1>
-      <p class="lead" style="max-width: 60ch;">
-        the per-app caret matrix lands here in the next wave.
-      </p>
-    </div>
-  </section>
+  <!-- The full per-app caret matrix is rendered by src/compatibility.ts. The
+       noscript fallback below points at the source ladder for no-JS visitors. -->
+  <noscript>
+    <section class="section">
+      <div class="container">
+        <p class="eyebrow">honest by design</p>
+        <h1 style="font-size: var(--t-h2); margin-bottom: var(--sp-5);">app compatibility</h1>
+        <p class="lead" style="max-width: 60ch;">
+          the per-app caret matrix needs JavaScript. the underlying fallback ladder lives in
+          <a href="https://github.com/frgmt0/typer/blob/main/docs/overhaul-spec.md" target="_blank" rel="noopener">docs/overhaul-spec.md</a>
+          §B on GitHub.
+        </p>
+      </div>
+    </section>
+  </noscript>
 </main>
 
 <footer id="footer"></footer>
