@@ -1,0 +1,76 @@
+/* ==========================================================================
+   typer — interactive hero demo (the ghost-text "dance" across Mac apps).
+   Namespaced .td-* so it never collides with shared component classes.
+   Uses the shared tokens from styles.css; window surface tokens are local.
+   ========================================================================== */
+.td-stage{
+  --twin:#ffffff; --tbar:#f3f2ee; --twin2:#faf9f6;
+  position:relative; width:100%; max-width:880px; margin-inline:auto;
+  aspect-ratio:16/10; border:1px solid var(--rule-strong); border-radius:var(--radius);
+  background:
+    radial-gradient(140% 120% at 50% -10%, color-mix(in srgb,var(--blue) 8%, transparent), transparent 60%),
+    var(--base-2);
+  padding:clamp(14px,2.6vw,30px); display:flex; flex-direction:column;
+  overflow:hidden; box-shadow:0 1px 0 var(--rule) inset;
+}
+[data-theme="dark"] .td-stage{ --twin:#1c1c20; --tbar:#242429; --twin2:#202024; }
+.td-stage::before,.td-stage::after{content:"";position:absolute;width:9px;height:9px;border:1px solid var(--blue);opacity:.5}
+.td-stage::before{left:-1px;top:-1px;border-right:0;border-bottom:0}
+.td-stage::after{right:-1px;bottom:-1px;border-left:0;border-top:0}
+
+.td-rail{display:flex;align-items:center;gap:9px;margin-bottom:clamp(10px,1.8vw,18px);min-height:24px;flex-wrap:wrap}
+.td-pill{
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.04em;text-transform:lowercase;
+  color:var(--ink-3);padding:4px 9px;border:1px solid var(--rule);border-radius:2px;
+  transition:color .4s,border-color .4s,background .4s;white-space:nowrap;background:transparent;
+}
+.td-pill.is-active{color:var(--ink);border-color:var(--blue);background:var(--blue-soft)}
+
+.td-winwrap{position:relative;flex:1;display:flex;min-height:0}
+.td-win{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  background:var(--twin);border:1px solid var(--rule);border-radius:13px;overflow:hidden;
+  box-shadow:0 24px 60px -28px rgba(0,0,0,.55),0 2px 0 color-mix(in srgb,#fff 4%,transparent) inset;
+  opacity:0;will-change:opacity,transform,filter;
+}
+.td-bar{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--tbar);border-bottom:1px solid var(--rule)}
+.td-tl{width:11px;height:11px;border-radius:50%}
+.td-tl.r{background:#ff5f57}.td-tl.y{background:#febc2e}.td-tl.g{background:#28c840}
+.td-title{flex:1;text-align:center;font-family:var(--font-body);font-size:12.5px;color:var(--ink-3);margin-right:33px;font-weight:500}
+.td-body{flex:1;padding:clamp(15px,2.2vw,28px);position:relative;overflow:hidden;font-size:clamp(14px,1.8vw,20px);line-height:1.6;display:flex;flex-direction:column}
+
+.td-line{color:var(--ink);font-weight:500}
+.td-line.mono{font-family:var(--font-mono);font-weight:400;font-size:.92em}
+.td-typed{color:var(--ink)}
+.td-ghosttx{color:var(--ghost)}
+.td-acc{color:var(--ink)}
+.td-flash{background:linear-gradient(color-mix(in srgb,var(--green-soft) 90%,transparent),color-mix(in srgb,var(--green-soft) 90%,transparent)) bottom/100% 100% no-repeat;border-radius:3px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+.td-caret{display:inline-block;width:2px;height:1.05em;background:var(--blue);vertical-align:-.16em;margin:0 1px;border-radius:1px;box-shadow:0 0 7px color-mix(in srgb,var(--blue) 55%,transparent)}
+.td-caret.blink{animation:td-blink 1s step-end infinite}
+@keyframes td-blink{50%{opacity:0}}
+.td-muted{color:var(--ink-3)}
+
+.td-bubbles{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.td-bub{max-width:74%;padding:7px 13px;border-radius:16px;font-size:.84em;line-height:1.4}
+.td-bub.them{align-self:flex-start;background:var(--base-2);color:var(--ink-2);border:1px solid var(--rule);border-bottom-left-radius:5px}
+.td-bub.me{align-self:flex-end;background:var(--blue);color:#fff;border-bottom-right-radius:5px}
+.td-composer{margin-top:auto;border:1px solid var(--rule);border-radius:18px;padding:9px 14px;color:var(--ink);background:var(--twin2);font-size:.9em}
+
+.td-mailrow{display:flex;gap:10px;font-size:.8em;color:var(--ink-3);padding:5px 0;border-bottom:1px solid var(--rule)}
+.td-mailrow b{color:var(--ink-2);font-weight:600;min-width:58px;display:inline-block}
+.td-mailbody{margin-top:14px}
+
+.td-term{font-family:var(--font-mono);font-size:.9em;color:var(--ink)}
+.td-term .pr{color:var(--green)}
+.td-term .cm{color:var(--ink-3);display:block;margin-bottom:8px}
+
+.td-hint{display:flex;align-items:center;gap:13px;margin-top:clamp(10px,1.8vw,18px);min-height:28px;flex-wrap:wrap}
+.td-kbd{font-family:var(--font-mono);font-size:12px;color:var(--ink-2);display:inline-flex;align-items:center;gap:7px}
+.td-key{display:inline-grid;place-items:center;min-width:30px;height:26px;padding:0 8px;border:1px solid var(--rule-strong);border-bottom-width:2px;border-radius:5px;background:var(--base);font-size:12px;color:var(--ink);transition:transform .1s,background .1s,border-color .1s,color .1s}
+.td-key.press{transform:translateY(2px);border-bottom-width:1px;background:var(--blue-soft);border-color:var(--blue);color:var(--blue)}
+.td-sep{width:1px;height:16px;background:var(--rule)}
+.td-cap{font-family:var(--font-mono);font-size:12px;color:var(--ink-3)}
+
+@media (prefers-reduced-motion: reduce){
+  .td-win{transition:none!important}.td-caret{animation:none}
+}

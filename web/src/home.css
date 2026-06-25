@@ -53,30 +53,9 @@
   border-color: var(--green);
 }
 
-/* ---- DEMO VIDEO ----------------------------------------------------------- */
+/* ---- INTERACTIVE DEMO (see demo.css / demo.ts) ---------------------------- */
 .hero__demo {
   margin-top: var(--sp-8);
-}
-.demo {
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  background: var(--base-2);
-  overflow: hidden;
-}
-.demo__video {
-  width: 100%;
-  height: auto;
-  display: block;
-  background: var(--base-2);
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
-}
-.demo__cap {
-  font-size: var(--t-label);
-  color: var(--ink-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-top: 1px solid var(--rule);
-  background: var(--base);
 }
 
 /* ---- THE KEYS ------------------------------------------------------------- */

@@ -12,8 +12,10 @@
  */
 import "./styles.css";
 import "./home.css";
+import "./demo.css";
 import { mountChrome } from "./shell";
 import { homeMarkup } from "./home-content";
+import { mountDemo } from "./demo";
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -86,69 +88,12 @@ function playHeroType(): void {
   window.setTimeout(tick, 650);
 }
 
-/* ---- theme-aware, play-on-visible demo video ------------------------------ */
-function currentThemeIsDark(): boolean {
-  const attr = document.documentElement.getAttribute("data-theme");
-  if (attr === "dark") return true;
-  if (attr === "light") return false;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function setVideoSourceForTheme(video: HTMLVideoElement): void {
-  const dark = currentThemeIsDark();
-  const src = dark ? "/demo/typer-demo-dark.mp4" : "/demo/typer-demo-light.mp4";
-  const poster = dark ? "/demo/poster-dark.png" : "/demo/poster-light.png";
-  video.poster = poster;
-  const source = video.querySelector("source");
-  if (source && source.getAttribute("src") !== src) {
-    source.setAttribute("src", src);
-    const wasPlaying = !video.paused;
-    video.load();
-    if (wasPlaying && !reduceMotion) video.play().catch(() => {});
-  }
-}
-
-function wireDemoVideo(): void {
-  const video = document.getElementById("demo-video") as HTMLVideoElement | null;
-  if (!video) return;
-
-  setVideoSourceForTheme(video);
-
-  // re-pick the source when the theme toggles (the toggle lives in the shared nav)
-  const themeObserver = new MutationObserver(() => setVideoSourceForTheme(video));
-  themeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
-
-  if (reduceMotion) {
-    // static fallback: keep the poster, no autoplay; give the user a control
-    video.controls = true;
-    return;
-  }
-
-  // play only while on screen (and pause off-screen) to keep it cheap
-  if ("IntersectionObserver" in window) {
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            video.play().catch(() => {
-              video.controls = true; // autoplay blocked → expose controls
-            });
-          } else {
-            video.pause();
-          }
-        }
-      },
-      { threshold: 0.35 },
-    );
-    io.observe(video);
-  } else {
-    video.controls = true;
-  }
+/* ---- the interactive demo (theme-aware via CSS tokens; see demo.ts) -------- */
+function wireDemo(): void {
+  const el = document.getElementById("typer-demo");
+  if (el) mountDemo(el);
 }
 
 wireCopyButtons();
 playHeroType();
-wireDemoVideo();
+wireDemo();

@@ -223,17 +223,8 @@ export function homeMarkup(): string {
     </div>
 
     <div class="container hero__demo">
-      <figure class="demo">
-        <video
-          class="demo__video"
-          id="demo-video"
-          playsinline muted loop preload="none"
-          poster="/demo/poster-light.png"
-          aria-label="typer ghost-text demo: a dim suggestion appears at the caret and is accepted with tab">
-          <source src="/demo/typer-demo-light.mp4" type="video/mp4" />
-        </video>
-        <figcaption class="demo__cap mono">the ghost lands on your real caret — here in a native field.</figcaption>
-      </figure>
+      <div id="typer-demo" role="img"
+        aria-label="typer ghost-text demo: a dim suggestion appears at the caret across Notes, Messages, Mail, and Terminal, accepted word-by-word with tab or all at once with backtick"></div>
     </div>
   </section>
 
