@@ -39,9 +39,40 @@ LIBFILES=( "$LIBDIR"/libllama*.dylib "$LIBDIR"/libggml*.dylib )
 shopt -u nullglob
 [ "${#LIBFILES[@]}" -gt 0 ] || { echo "!! No libllama/libggml dylibs in $LIBDIR" >&2; exit 1; }
 
+# ---- Resolve include paths ---------------------------------------------------
+# llama.h does `#include "ggml.h"` (plus ggml-*.h). Some llama.cpp packagings —
+# notably certain Homebrew bottles — install llama.h into include/ but leave the
+# ggml headers out, so the quoted include fails with: 'ggml.h' file not found.
+# Make sure every directory that actually holds those headers is on the include
+# path: keep $INC, and if ggml.h isn't sitting next to llama.h, hunt for it in
+# the install, then fall back to the headers vendored in this repo.
+INCLUDES=( "$INC" )
+if [ ! -f "$INC/ggml.h" ]; then
+  echo "==> ggml.h not next to llama.h — locating it"
+  GGML_H=""
+  for root in "$INC" "$LIBDIR/.." "$BREW_PREFIX" "${TYPER_LLAMA_PREFIX:-}"; do
+    [ -n "$root" ] && [ -d "$root" ] || continue
+    GGML_H="$(find -L "$root" -name ggml.h -type f 2>/dev/null | head -n1)"
+    [ -n "$GGML_H" ] && break
+  done
+  if [ -n "$GGML_H" ]; then
+    GGML_INC="$(cd "$(dirname "$GGML_H")" && pwd)"
+    echo "==> Found ggml headers in: $GGML_INC"
+    INCLUDES+=( "$GGML_INC" )
+  elif [ -f "$ROOT_DIR/vendor/llama.cpp/include/ggml.h" ]; then
+    echo "!! ggml.h is missing from the llama.cpp install; using this repo's vendored headers."
+    echo "!! If you later hit link/ABI errors, run:  brew reinstall llama.cpp"
+    INCLUDES+=( "$ROOT_DIR/vendor/llama.cpp/include" )
+  else
+    echo "!! Could not find ggml.h (needed by llama.h). Try:  brew reinstall llama.cpp" >&2
+    exit 1
+  fi
+fi
+INCLUDE_FLAGS=(); for d in "${INCLUDES[@]}"; do INCLUDE_FLAGS+=( -I"$d" ); done
+
 echo "==> Building typer-llama-server"
 clang++ -std=c++17 -O3 "$ROOT_DIR/scripts/llama_server.cpp" \
-  -I"$INC" "${LIBFILES[@]}" -Wl,-rpath,"$LIBDIR" \
+  "${INCLUDE_FLAGS[@]}" "${LIBFILES[@]}" -Wl,-rpath,"$LIBDIR" \
   -o "$DATA_DIR/typer-llama-server"
 
 echo "==> Building Swift menu-bar app"
