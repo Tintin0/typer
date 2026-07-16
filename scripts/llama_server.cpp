@@ -721,7 +721,16 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                if (context.size() > 2200) context = stable_tail(context, 2200);
+                // Coarse guard against pathologically large inputs before tokenizing —
+                // NOT a prompt budget. The Swift side already token-budgets context to
+                // ~1100 tokens (< n_ctx=1536), and generate_from_tokens() does the precise,
+                // KV-stable front-truncation to fit n_ctx. A tight char cap here would fight
+                // that budget and silently drop the LEADING priming blocks (Instructions /
+                // Writing app / style sample) that sit before the live line — keeping only
+                // the tail. Set it well above 1100 tokens' worth of chars so real prompts
+                // pass through untouched; only absurd (multi-KB paste) inputs get cut. (Was
+                // 2200, ≈550–700 tokens — below the Swift budget, so it dropped priming.)
+                if (context.size() > 8000) context = stable_tail(context, 8000);
                 // Bound the FIM suffix: the trailing text only needs to be enough to
                 // condition the gap (the model fills BETWEEN prefix and suffix), and a
                 // huge trailing document would crowd the context. Keep the head (nearest
@@ -744,7 +753,14 @@ int main(int argc, char **argv) {
                 engine.set_lexicon(json_get_string(line, "lexicon"),
                                    (float)json_get_double(line, "lexicon_bias", 0.5));
 
-                int max_tokens = std::max(8, std::min(18, max_words + 7));
+                // Token ceiling per completion, derived from max_words (+7 slack for
+                // partial words / punctuation before the word limit trips). The hard cap of
+                // 48 is a latency / n_ctx safety bound (prompt ≤1100 tokens, n_ctx=1536), NOT
+                // the effective limit: at the max configurable max_words (32) this yields 39,
+                // so the WORD cap governs length, not the token cap. (Was 18, which silently
+                // clipped any max_words > 11 and made "long" completions structurally
+                // impossible despite max_completion_words accepting up to 32.)
+                int max_tokens = std::max(8, std::min(48, max_words + 7));
                 bool ctx_ends_space = context.empty() || std::isspace((unsigned char)context.back());
                 bool ctx_ends_alnum = !context.empty() && std::isalnum((unsigned char)context.back());
 

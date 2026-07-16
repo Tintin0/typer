@@ -32,13 +32,19 @@ struct TyperConfig {
     // ── Overhaul (Wave 0) new fields ──────────────────────────────────────────
     // Personalization strength 0..1: interim mechanism scales style-sample chars +
     // lexicon weight and builds a logit-bias map from the user's frequent words
-    // (W2A surfaces the slider, W2B/W4 consume it). 0 = neutral.
-    var personalizationStrength: Double = 0
+    // (W2A surfaces the slider, W2B/W4 consume it). 0 = neutral; the 0.4 default is
+    // LIGHT personalization — inert on a fresh install (StyleMemory/PersonalLexicon are
+    // empty until you've typed enough), then strengthens as your own writing accrues, so
+    // it's safe to ship on. Personalization is Cotypist's headline strength; leaving this
+    // at 0 shipped that feature effectively disabled.
+    var personalizationStrength: Double = 0.4
     // Suggested-fix styling (#8): draw the red-strike → green-replacement inline diff.
     var showSuggestedFixes = true
     // Typo-suspicion gate (#8): when the current word looks misspelled, suppress the
-    // inline completion rather than extend a likely-wrong word. Conservative default.
-    var suppressCompletionOnTypoSuspected = false
+    // inline completion rather than extend a likely-wrong word. On by default (matches
+    // Cotypist's behavior). Conservative: only flags 3+ letter dictionary-misses, never a
+    // word in the user's own lexicon, and short-circuits to false when the check is off.
+    var suppressCompletionOnTypoSuspected = true
     // Emoji completion (#7): expand a finished `:shortcode:` to its emoji inline.
     var emojiCompletionsEnabled = false
     // Emoji search (#7): a leading `:prefix` offers a filtered candidate list.

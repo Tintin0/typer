@@ -26,14 +26,16 @@ min_context_chars = 6         # don't suggest until this much has been typed
 
 # ── Overhaul settings (also editable from the menu-bar Settings window) ──────────
 # Personalization strength 0..1. Interim mechanism: scales how much your own recent
-# writing + frequent vocabulary bias each completion (0 = neutral, off).
-personalization_strength = 0
+# writing + frequent vocabulary bias each completion (0 = neutral/off). Default 0.4 is
+# light personalization — inert until you've typed enough for it to have data to learn from.
+personalization_strength = 0.4
 # Suggested-fix styling (#8): show the red-strike → green-replacement inline diff for
 # detected typos.
 show_suggested_fixes = true
 # When the word you're typing looks misspelled, suppress the inline completion instead
-# of extending a likely-wrong word. Conservative; off by default.
-suppress_completion_on_typo_suspected = false
+# of extending a likely-wrong word. Conservative (never flags words in your own lexicon);
+# on by default. Set to false if it over-suppresses for your language/jargon.
+suppress_completion_on_typo_suspected = true
 # Emoji completion (#7). emoji_completions_enabled expands a finished :shortcode: to its
 # emoji inline; emoji_search_enabled offers a filtered list as you type a :prefix.
 emoji_completions_enabled = false
