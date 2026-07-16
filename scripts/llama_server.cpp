@@ -651,6 +651,46 @@ static std::string stable_tail(const std::string &s, size_t max_chars) {
     return tail.substr(cut + 1);
 }
 
+// Mid-line bridge (non-FIM path): with trailing text after the caret and no token-FIM, a
+// plain forward continuation runs into a full new sentence that collides with what follows
+// ("...the report you requested. for your review."). Keep a short bridging FRAGMENT: drop
+// from the first sentence-ender on, then drop a trailing word-run that merely echoes the
+// start of the suffix. Deterministic — no gap-fill guessing (which is unreliable on these
+// models). The leading space (word-boundary marker from shape()) is preserved.
+static std::string bridge_to_suffix(const std::string &s, const std::string &suffix) {
+    bool lead = !s.empty() && std::isspace((unsigned char)s.front());
+    std::string cut = s;
+    size_t p = cut.find_first_of(".!?");
+    if (p != std::string::npos) cut = cut.substr(0, p);
+    cut = trim(cut);
+    if (cut.empty()) return "";
+    auto split_words = [](const std::string &t) {
+        std::vector<std::string> v; std::string w;
+        for (char c : t) { if (std::isspace((unsigned char)c)) { if (!w.empty()) { v.push_back(w); w.clear(); } } else w += c; }
+        if (!w.empty()) v.push_back(w);
+        return v;
+    };
+    auto norm = [](std::string w) {
+        while (!w.empty() && std::ispunct((unsigned char)w.front())) w.erase(w.begin());
+        while (!w.empty() && std::ispunct((unsigned char)w.back())) w.pop_back();
+        for (auto &c : w) c = (char)std::tolower((unsigned char)c);
+        return w;
+    };
+    auto ow = split_words(cut), sw = split_words(suffix);
+    size_t maxk = std::min(ow.size(), sw.size());
+    for (size_t k = maxk; k >= 1; --k) {
+        bool match = true;
+        for (size_t i = 0; i < k; ++i)
+            if (norm(ow[ow.size() - k + i]) != norm(sw[i])) { match = false; break; }
+        if (match) { ow.resize(ow.size() - k); break; }
+    }
+    std::string res;
+    for (size_t i = 0; i < ow.size(); ++i) { if (i) res += ' '; res += ow[i]; }
+    res = trim(res);
+    if (res.empty()) return "";
+    return lead ? " " + res : res;
+}
+
 static std::string prompt_complete(const std::string &context) {
     // The prompt is the plain context. The model's real BOS (if it uses one) is prepended
     // at tokenize time via add_special — see generate(), which tokenizes with add_special
@@ -853,6 +893,9 @@ int main(int argc, char **argv) {
                 std::string out;
                 if (!suppressed) {
                     out = shape(first_line_clean(raw), true);
+                    // Mid-line without token-FIM: keep a bridging fragment that fits before the
+                    // trailing text instead of a full sentence that collides with it.
+                    if (!use_fim && !trim(suffix).empty()) out = bridge_to_suffix(out, suffix);
                     if (looks_bad_completion(out) || is_orphan_number(out, context)) out.clear();
                 }
                 if (out.empty()) {
