@@ -23,6 +23,10 @@ model_path = ""
 
 max_completion_words = 7      # length of each suggestion chunk
 min_context_chars = 6         # don't suggest until this much has been typed
+# Global instruction / persona applied in EVERY app (injected ahead of any per-app
+# instructions). The biggest "sounds like me / knows my context" lever — put your name, the
+# languages you write in, your role, and the tone you want. One line; empty = none.
+global_instructions = ""
 
 # ── Overhaul settings (also editable from the menu-bar Settings window) ──────────
 # Personalization strength 0..1. Interim mechanism: scales how much your own recent

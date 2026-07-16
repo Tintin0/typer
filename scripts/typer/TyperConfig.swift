@@ -28,6 +28,12 @@ struct TyperConfig {
     var modelPath = ""   // explicit .gguf path; empty = auto-pick first in Models dir
     var maxCompletionWords = 7
     var minContextChars = 6
+    // Global instruction / persona prompt (#1): a standing instruction applied in EVERY app,
+    // injected AHEAD of any per-app customInstructions. The biggest "sounds like me / knows my
+    // context" lever — it's how Cotypist's userPrompt works: your name, the languages you write
+    // in, your role, the tone you want. Shapes the prompt only (never the training target), so
+    // the base model isn't overfit to it. Empty = none.
+    var globalInstructions = ""
 
     // ── Overhaul (Wave 0) new fields ──────────────────────────────────────────
     // Personalization strength 0..1: interim mechanism scales style-sample chars +
@@ -159,6 +165,7 @@ struct TyperConfig {
             case "model_path": cfg.modelPath = (value as NSString).expandingTildeInPath
             case "max_completion_words": cfg.maxCompletionWords = Int(value) ?? cfg.maxCompletionWords
             case "min_context_chars": cfg.minContextChars = Int(value) ?? cfg.minContextChars
+            case "global_instructions": cfg.globalInstructions = value
             case "personalization_strength": cfg.personalizationStrength = (Double(value) ?? cfg.personalizationStrength).clamped(0, 1)
             case "show_suggested_fixes": cfg.showSuggestedFixes = value == "true"
             case "suppress_completion_on_typo_suspected": cfg.suppressCompletionOnTypoSuspected = value == "true"

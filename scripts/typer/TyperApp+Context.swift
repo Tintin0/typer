@@ -495,22 +495,23 @@ extension TyperApp {
         return blocks.count == 1 ? immediate : blocks.joined(separator: "\n\n")
     }
 
-    // Resolve the instruction text to inject for the current app (#1, spec E §1). Per-app
-    // `customInstructions` (resolved with the matching web-domain row) take precedence; a
-    // global instruction source would be appended FIRST so the per-app text can override
-    // its tone. No global-instructions config field exists this wave (W0 added only the
-    // per-app `customInstructions` sidecar), so today this returns the per-app text alone;
-    // the join is kept as the seam for a future global field. Bounded so a long instruction
-    // can't dominate the prompt budget.
+    // Resolve the instruction text to inject for the current app (#1, spec E §1). The global
+    // persona (`cfg.globalInstructions`) is injected FIRST — it applies in every app — then the
+    // per-app `customInstructions` (resolved with the matching web-domain row) so a per-app rule
+    // can add to or sharpen the standing persona. Placed in the prompt, never the training
+    // target (spec G #2), so the base model isn't overfit to it. Bounded so a long instruction
+    // can't dominate the prompt budget (600 chars leaves room for a real persona + a per-app line
+    // while staying small against the 1100-token context budget).
     func resolvedInstructions(bundle: String) -> String {
         var parts: [String] = []
-        // (seam) global instructions would go here, before the per-app text.
+        let global = cfg.globalInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !global.isEmpty { parts.append(global) }
         if let perApp = OverrideStore.shared.resolved(bundle: bundle, host: currentWebHost()).customInstructions {
             let t = perApp.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { parts.append(t) }
         }
         let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(joined.prefix(300))
+        return String(joined.prefix(600))
     }
 
     // Token budget for the assembled prompt's context blocks (C.4). The helper runs a 1536

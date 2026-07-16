@@ -679,6 +679,15 @@ int main(int argc, char **argv) {
         if (check) {
             const char *tmpl = llama_model_chat_template(engine.model, nullptr);
             std::cerr << "chat_template=" << (tmpl ? tmpl : "(null)") << std::endl;
+            // FIM/infill availability (spec §E#13): mid-line completion needs the model's
+            // own infill special tokens. Report so the app can decide whether the FIM path
+            // can engage on this GGUF at all (Gemma-instruct: no; Qwen3/coder models: yes).
+            bool fp = llama_vocab_fim_pre(engine.vocab) != LLAMA_TOKEN_NULL;
+            bool fs = llama_vocab_fim_suf(engine.vocab) != LLAMA_TOKEN_NULL;
+            bool fm = llama_vocab_fim_mid(engine.vocab) != LLAMA_TOKEN_NULL;
+            std::cerr << "fim_available=" << ((fp && fs && fm) ? "true" : "false")
+                      << " (pre=" << (fp ? "y" : "n") << " suf=" << (fs ? "y" : "n")
+                      << " mid=" << (fm ? "y" : "n") << ")" << std::endl;
             auto t0 = std::chrono::steady_clock::now();
             std::string out = first_line_clean(engine.generate(prompt_complete("I was walking to the store when I realized"), 14));
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
