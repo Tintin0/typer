@@ -25,6 +25,13 @@ enum CorrectionColors {
     }
     // Advisory grammar notes (no machine-applicable fix): amber, distinct from a real fix.
     static let advisoryAmber = NSColor.systemOrange
+    // Inline completion ghost: ultramarine blue (replaces the faint host-matched grey). Deeper
+    // on a light background, brighter on dark, so it stays legible in either appearance.
+    static let ghostUltramarine = NSColor(name: "ghostUltramarine") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.46, green: 0.56, blue: 1.0, alpha: 1)
+            : NSColor(srgbRed: 0.15, green: 0.20, blue: 0.80, alpha: 1)
+    }
 }
 
 final class SuggestionOverlay: NSPanel {
@@ -57,9 +64,10 @@ final class SuggestionOverlay: NSPanel {
         // Prefer the host font (B.2); fall back to the system font sized to the caret line.
         let font = pendingHostFont ?? NSFont.systemFont(ofSize: fontSize(for: lineHeight))
         let fs = font.pointSize
-        let base = pendingHostColor ?? NSColor.labelColor
+        // Keep the host FONT (so the ghost sits inline) but render it in ultramarine blue, not
+        // the host text colour — the colour is the point. Alpha < 1 keeps it clearly a suggestion.
         let attr = NSAttributedString(string: text, attributes: [
-            .font: font, .foregroundColor: base.withAlphaComponent(0.5)])
+            .font: font, .foregroundColor: CorrectionColors.ghostUltramarine.withAlphaComponent(0.85)])
         place(attr, fontSize: fs, font: font, at: point, lineHeight: lineHeight, shimmer: animate)
     }
 

@@ -174,9 +174,9 @@ extension TyperApp {
         let hasCommandLikeModifier = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
 
         if code == CGKeyCode(kVK_Tab) { return }         // accept tap handles Tab
-        if code == CGKeyCode(kVK_ANSI_Grave) {
-            // Backtick is "accept all" while a suggestion shows (accept tap consumes
-            // it); otherwise it's a literal character the user is typing.
+        if code == CGKeyCode(kVK_ISO_Section) {
+            // The ^/° key (0x0A on the German ISO layout) accepts the next word while a
+            // suggestion shows (the accept tap consumes it); otherwise it's a literal character.
             if completion != nil || active != nil { return }
         }
         if code == CGKeyCode(kVK_Escape) {
@@ -237,19 +237,27 @@ extension TyperApp {
         if event.getIntegerValueField(.eventSourceUserData) == syntheticMarker { return Unmanaged.passUnretained(event) }
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         if code == CGKeyCode(kVK_Tab) {
-            if acceptCompletionWord() { return nil }
-            if acceptOneWord() { return nil }
-            // A Tab in the grace window right after an accept exhausted the suggestion
-            // is the user asking for MORE, not a focus change — swallow it. Keep the
-            // window open while the next chunk is actually on its way, so Tab-mashing
-            // through a generation never tabs out of the field.
+            // Tab accepts the WHOLE suggestion (it may be several words).
+            if acceptCompletionAll() { return nil }
+            if acceptAll() { return nil }
+            // A Tab in the grace window right after an accept exhausted the suggestion is the
+            // user asking for MORE (the next chunk is on its way), not a focus change — swallow
+            // it so mashing Tab through a generation never tabs out of the field.
             if Date() < acceptGraceUntil {
                 if requestInFlight || (debounce?.isValid ?? false) { armAcceptGrace() }
                 return nil
             }
-        } else if code == CGKeyCode(kVK_ANSI_Grave) {
-            if acceptCompletionAll() { return nil }
-            if acceptAll() { return nil }
+        } else if code == CGKeyCode(kVK_ISO_Section) {
+            // The ^/° key (above Tab, top-left) accepts the NEXT WORD — or, mid-word, finishes
+            // just that word. On the German ISO layout that physical key is kVK_ISO_Section
+            // (0x0A); kVK_ANSI_Grave (0x32) is the <> key there, not ^, so we key off 0x0A.
+            // Same "ask for more" grace so mashing it through a generation doesn't leak a "^".
+            if acceptCompletionWord() { return nil }
+            if acceptOneWord() { return nil }
+            if Date() < acceptGraceUntil {
+                if requestInFlight || (debounce?.isValid ?? false) { armAcceptGrace() }
+                return nil
+            }
         }
         return Unmanaged.passUnretained(event)
     }
