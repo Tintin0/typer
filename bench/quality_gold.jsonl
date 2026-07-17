@@ -1,0 +1,36 @@
+{"context": "Thank you for your email. I have", "expected": "reviewed", "lang": "en"}
+{"context": "Please find attached the", "expected": "contract", "lang": "en"}
+{"context": "I will get back to you", "expected": "shortly", "lang": "en"}
+{"context": "Please let me know if you have any", "expected": "questions", "lang": "en"}
+{"context": "Looking forward to", "expected": "hearing from you", "lang": "en"}
+{"context": "I am writing to", "expected": "inform you", "lang": "en"}
+{"context": "As discussed in our last", "expected": "meeting", "lang": "en"}
+{"context": "Please review the attached document and let me", "expected": "know", "lang": "en"}
+{"context": "I have reviewed the contract and have a few", "expected": "questions", "lang": "en"}
+{"context": "Could you please send me the", "expected": "documents", "lang": "en"}
+{"context": "We would be happy to", "expected": "help", "lang": "en"}
+{"context": "Please do not hesitate to", "expected": "contact me", "lang": "en"}
+{"context": "This agreement shall be governed by the laws of", "expected": "Germany", "lang": "en"}
+{"context": "The parties hereby agree to the", "expected": "following", "lang": "en"}
+{"context": "Kindly confirm receipt of this", "expected": "email", "lang": "en"}
+{"context": "I apologize for the", "expected": "delay", "lang": "en"}
+{"context": "Attached you will find the signed", "expected": "agreement", "lang": "en"}
+{"context": "Let me know if the proposed time", "expected": "works", "lang": "en"}
+{"context": "Vielen Dank für Ihre", "expected": "Nachricht", "lang": "de"}
+{"context": "Ich melde mich bei Ihnen", "expected": "nächste Woche", "lang": "de"}
+{"context": "Bitte finden Sie im Anhang den", "expected": "Vertrag", "lang": "de"}
+{"context": "Mit freundlichen", "expected": "Grüßen", "lang": "de"}
+{"context": "Ich komme auf unser gestriges", "expected": "Gespräch", "lang": "de"}
+{"context": "Können Sie mir das bitte bis morgen", "expected": "zusenden", "lang": "de"}
+{"context": "Anbei erhalten Sie den überarbeiteten", "expected": "Entwurf", "lang": "de"}
+{"context": "Ich habe den Vertrag geprüft und habe noch einige", "expected": "Anmerkungen", "lang": "de"}
+{"context": "Bitte lassen Sie mich wissen, ob der Termin", "expected": "passt", "lang": "de"}
+{"context": "Vielen Dank für die schnelle", "expected": "Rückmeldung", "lang": "de"}
+{"context": "Der Vertrag tritt in Kraft mit", "expected": "Unterzeichnung", "lang": "de"}
+{"context": "Ich freue mich auf Ihre", "expected": "Antwort", "lang": "de"}
+{"context": "Wir bitten Sie, die Unterlagen bis Freitag", "expected": "einzureichen", "lang": "de"}
+{"context": "Für Rückfragen stehe ich Ihnen gerne zur", "expected": "Verfügung", "lang": "de"}
+{"context": "Bitte beachten Sie, dass diese E-Mail", "expected": "vertraulich", "lang": "de"}
+{"context": "Hiermit bestätige ich den Erhalt Ihrer", "expected": "Zahlung", "lang": "de"}
+{"context": "Ich würde gerne einen Termin", "expected": "vereinbaren", "lang": "de"}
+{"context": "Sollten Sie Fragen haben, melden Sie sich", "expected": "gerne", "lang": "de"}
