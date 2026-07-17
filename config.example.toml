@@ -49,6 +49,11 @@ emoji_skin_tone = 0
 # Mid-line completion fidelity (#13): complete at word boundaries in the middle of a
 # line (fill-in-the-middle) instead of only at the end of the text. On by default.
 mid_line_completions_enabled = true
+# Mid-word completion (#13b): finish the PARTIAL word you're typing (e.g. "assis" -> "tance"),
+# not only at word boundaries. Shown ONLY when the completed word is a real word (spell
+# checker + your learned vocabulary), so wrong subword guesses are dropped. Off by default
+# (opt-in; small on-device models finish partial words unreliably, so coverage is partial).
+midword_completions_enabled = false
 # Inline-prediction clash (#4): if macOS's own "Show inline predictive text" is on, warn
 # once and offer a deep-link to the Keyboard settings pane. Set false to silence.
 inline_prediction_warn = true

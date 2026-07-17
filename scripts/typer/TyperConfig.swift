@@ -61,6 +61,13 @@ struct TyperConfig {
     // Mid-line completion fidelity (#13): when true, complete at word boundaries in the
     // middle of a line (FIM suffix) instead of bailing. On by default.
     var midLineCompletionsEnabled = true
+    // Mid-word completion (#13b): when true, offer to finish the PARTIAL word you're typing
+    // (e.g. "assis" → "tance"), not only at word boundaries. The helper relaxes its mid-word
+    // suppression and overlap-trims the model's boundary re-emission ("assis"+"stance" →
+    // "tance", not "assisstance"); Swift shows it ONLY when the completed word is a real word
+    // (NSSpellChecker / your lexicon), so a wrong subword guess is dropped, never shown. Off
+    // by default: opt-in and model-dependent (small models finish partial words unreliably).
+    var midWordCompletionsEnabled = false
     // Inline-prediction clash (#4): when true and the macOS global "Show inline
     // predictive text" default is on, surface a one-time warning + Keyboard deep-link.
     var inlinePredictionWarn = true
@@ -173,6 +180,7 @@ struct TyperConfig {
             case "emoji_search_enabled": cfg.emojiSearchEnabled = value == "true"
             case "emoji_skin_tone": cfg.emojiSkinTone = (Int(value) ?? cfg.emojiSkinTone).clamped(0, 5)
             case "mid_line_completions_enabled": cfg.midLineCompletionsEnabled = value == "true"
+            case "midword_completions_enabled": cfg.midWordCompletionsEnabled = value == "true"
             case "inline_prediction_warn": cfg.inlinePredictionWarn = value == "true"
             case "debounce_ms": cfg.debounceMs = Int(value) ?? cfg.debounceMs
             case "idle_reset_seconds": cfg.idleResetSeconds = Int(value) ?? cfg.idleResetSeconds

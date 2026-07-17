@@ -154,6 +154,7 @@ final class LlamaClient {
     func request(task: String, context: String, maxWords: Int, lexicon: String = "",
                  lexiconBias: Float? = nil,
                  suffix: String = "",
+                 midword: Bool = false,
                  lowPriority: Bool = false,
                  onPartial: ((String, Double?) -> Void)? = nil) throws -> HelperSuggestion? {
         if lowPriority {
@@ -168,7 +169,8 @@ final class LlamaClient {
         // treats a missing/empty "suffix" as plain continuation).
         let req = CompleteRequest(task: task, context: context, max_words: maxWords,
                                   lexicon: lexicon, lexicon_bias: lexiconBias,
-                                  suffix: suffix.isEmpty ? nil : suffix)
+                                  suffix: suffix.isEmpty ? nil : suffix,
+                                  midword: midword ? 1 : nil)
         dlog("request task=\(task) chars=\(context.count) sfx=\(suffix.count) suffix=\(String(context.suffix(40)).replacingOccurrences(of: "\n", with: "\\n"))")
         let data = try encoder.encode(req) + Data([0x0A])
         do {
@@ -204,6 +206,7 @@ final class LlamaClient {
         let lexicon: String
         let lexicon_bias: Float?   // strength-scaled per-word logit bias; nil ⇒ helper default (0.5)
         let suffix: String?
+        let midword: Int?          // 1 ⇒ finish the partial word at the caret; nil ⇒ omitted (unchanged wire)
     }
 
     // Wire type for the helper's tokenize endpoint (spec C.4).

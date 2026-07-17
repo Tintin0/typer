@@ -1,6 +1,13 @@
+// TYPER_TEXT_TEST: defined only by the unit-test build (scripts/tests/text_utils_test.cpp),
+// which #includes this file to test the pure text helpers WITHOUT llama.cpp. In the real
+// build the macro is never defined, so every guard below is inactive and this file is
+// byte-for-byte the same as before.
+#ifndef TYPER_TEXT_TEST
 #include "llama.h"
+#endif
 
 #include <algorithm>
+#include <cstdio>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -264,6 +271,7 @@ static std::string remove_echo(std::string out, const std::string &context) {
     return out;
 }
 
+#ifndef TYPER_TEXT_TEST
 class LlamaEngine {
 public:
     llama_model *model = nullptr;
@@ -630,6 +638,7 @@ public:
         return out;
     }
 };
+#endif  // TYPER_TEXT_TEST — end LlamaEngine
 
 // Tail window with a STABLE start, mirroring the Swift side. A plain "last N bytes"
 // cut slides forward with every request, so the prompt's first tokens differ each
@@ -691,6 +700,29 @@ static std::string bridge_to_suffix(const std::string &s, const std::string &suf
     return lead ? " " + res : res;
 }
 
+// Mid-word overlap trim (#13b): the caret sits INSIDE `partial` (the word being typed) and
+// the model, given that partial, tends to re-emit the boundary letters — "assis" + "stance"
+// -> the naive join "assisstance". Trim the longest prefix of the completion's first word
+// that repeats the tail of `partial`, so "stance" -> "tance" and the join reads "assistance".
+// If the completion starts with a space/punct (the model began a NEW word rather than
+// continuing this one) there is no boundary to trim — return it unchanged; the client's
+// dictionary check then drops it (the partial alone is not a real word).
+static std::string trim_midword_overlap(const std::string &s, const std::string &partial) {
+    if (s.empty() || partial.empty()) return s;
+    if (std::isspace((unsigned char)s.front())) return s;   // new word, not a continuation
+    size_t wend = 0;                                        // leading word-run of the completion
+    while (wend < s.size() && !std::isspace((unsigned char)s[wend])) wend++;
+    size_t maxk = std::min(partial.size(), wend), best = 0;
+    for (size_t k = 1; k <= maxk; ++k) {
+        bool eq = true;
+        for (size_t i = 0; i < k; ++i)
+            if (std::tolower((unsigned char)partial[partial.size() - k + i]) !=
+                std::tolower((unsigned char)s[i])) { eq = false; break; }
+        if (eq) best = k;
+    }
+    return s.substr(best);
+}
+
 static std::string prompt_complete(const std::string &context) {
     // The prompt is the plain context. The model's real BOS (if it uses one) is prepended
     // at tokenize time via add_special — see generate(), which tokenizes with add_special
@@ -701,6 +733,7 @@ static std::string prompt_complete(const std::string &context) {
     return context;
 }
 
+#ifndef TYPER_TEXT_TEST
 int main(int argc, char **argv) {
     std::string model_path;
     bool check = false;
@@ -743,6 +776,11 @@ int main(int argc, char **argv) {
                 // empty for end-of-line, where the plain continuation path is used as before.
                 std::string suffix = json_get_string(line, "suffix");
                 int max_words = std::max(1, std::min(32, json_get_int(line, "max_words", 7)));
+                // Mid-word completion (#13b): when set, the caret is INSIDE a word and the
+                // client wants it finished. Relaxes the mid-word suppression below and
+                // overlap-trims the model's re-emission of the boundary letters. The client
+                // validates the completed word against a dictionary before showing it.
+                int midword = json_get_int(line, "midword", 0);
 
                 // Tokenize helper (W1B / spec C.4): count tokens for an arbitrary block so
                 // the Swift side can budget the prompt in token space instead of by char
@@ -785,6 +823,15 @@ int main(int argc, char **argv) {
                 // huge trailing document would crowd the context. Keep the head (nearest
                 // the caret) since that is what the completion must agree with.
                 if (suffix.size() > 600) suffix.resize(600);
+                // The partial word the caret sits inside (trailing run of non-space bytes of
+                // the finalized context), used to overlap-trim a mid-word completion. Empty
+                // unless midword.
+                std::string partial_word;
+                if (midword && !context.empty()) {
+                    size_t b = context.size();
+                    while (b > 0 && !std::isspace((unsigned char)context[b - 1])) b--;
+                    partial_word = context.substr(b);
+                }
 
                 // Raw baseline path (eval_compare.py): greedy decode, harness logic stripped,
                 // only first-line + trim cleanup so the comparison reflects the model itself.
@@ -826,6 +873,10 @@ int main(int argc, char **argv) {
                     std::string s = dropEcho ? remove_echo(cleaned, context) : cleaned;
                     size_t nl = s.find('\n'); if (nl != std::string::npos) s.resize(nl);
                     s = limit_words(s, max_words);
+                    // Mid-word: strip the model's re-emission of the partial word's tail so the
+                    // join doesn't double the boundary ("assis"+"stance" -> "tance"). Applied to
+                    // partials too, so the streamed ghost never flashes the doubled form.
+                    if (midword && !partial_word.empty()) s = trim_midword_overlap(s, partial_word);
                     if (!s.empty() && !ctx_ends_space && lead_space) s = " " + s;
                     return s;
                 };
@@ -849,9 +900,11 @@ int main(int argc, char **argv) {
                         if (!first_seen) {
                             first_seen = true;
                             lead_space = std::isspace((unsigned char)full[0]) != 0;
-                            // Early mid-word suppression: stop before flashing a
-                            // wrong subword continuation.
-                            if (ctx_ends_alnum && !lead_space && std::isalnum((unsigned char)s[0])) {
+                            // Early mid-word suppression: stop before flashing a wrong subword
+                            // continuation — UNLESS mid-word completion was requested, in which
+                            // case we WANT the continuation (overlap-trimmed in shape(); the
+                            // client's dictionary check drops it if the finished word isn't real).
+                            if (!midword && ctx_ends_alnum && !lead_space && std::isalnum((unsigned char)s[0])) {
                                 suppressed = true; return false;
                             }
                         }
@@ -897,6 +950,11 @@ int main(int argc, char **argv) {
                     // trailing text instead of a full sentence that collides with it.
                     if (!use_fim && !trim(suffix).empty()) out = bridge_to_suffix(out, suffix);
                     if (looks_bad_completion(out) || is_orphan_number(out, context)) out.clear();
+                    // Drop any incomplete trailing multibyte (a word-limit cut can split a
+                    // UTF-8 char), same as the streamed partials — otherwise the final JSON
+                    // line is invalid UTF-8 and the Swift side silently discards the whole
+                    // suggestion. (Found by the integration test's empty-context case.)
+                    out = utf8_safe(out);
                 }
                 if (out.empty()) {
                     std::cout << "{\"ok\":true,\"suggestion\":null}\n" << std::flush;
@@ -916,3 +974,4 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+#endif  // TYPER_TEXT_TEST — end main

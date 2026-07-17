@@ -473,6 +473,13 @@ extension TyperApp {
         // the style-sample size in assembledContext).
         let lex = personalizedLexicon()
         let suffix = fimSuffix
+        // Mid-word completion (#13b): the caret is inside a word — context ends with a letter
+        // and there is no mid-line FIM suffix. Ask the helper to FINISH the partial word (it
+        // relaxes its mid-word suppression + overlap-trims the boundary re-emission); the
+        // partial is kept so presentCompletion can validate the finished word against the
+        // dictionary before showing it. Requires ≥2 letters so a single stray letter is ignored.
+        let midWordPartial = trailingWordFragment(context)
+        let midWord = cfg.midWordCompletionsEnabled && suffix.isEmpty && midWordPartial.count >= 2
         dlog("[\(activeAppKey)] generate source=\(contextSource) chars=\(context.count) promptChars=\(promptContext.count) bg=\(cachedBackground.count) suffix=\(String(context.suffix(50)).replacingOccurrences(of: "\n", with: "\\n"))")
         // Anchor (an AX caret read) only on the FIRST painted partial; the user hasn't
         // typed since the request (guard below), so the caret can't have moved while
@@ -493,6 +500,9 @@ extension TyperApp {
                 DispatchQueue.main.async {
                     guard appKey == self.activeAppKey, self.generationSerial == serial,
                           self.buffer == reqBuffer, !partial.isEmpty else { return }
+                    // Mid-word completions are shown only after the finished word passes the
+                    // dictionary check in presentCompletion — never flash an unvalidated partial.
+                    if midWord { return }
                     // Don't paint a stream the final gate would tear down — flashing
                     // and yanking a bad suggestion is worse than a moment of silence.
                     if let conf, conf < self.effectiveMinConfidence { return }
@@ -502,13 +512,13 @@ extension TyperApp {
                     firstPartial = false
                 }
             }
-            let sug = try? routedClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lexiconBias: self.personalizedLexiconBias(), suffix: suffix, onPartial: onPartial)
+            let sug = try? routedClient.request(task: "complete", context: promptContext, maxWords: maxWords, lexicon: lex, lexiconBias: self.personalizedLexiconBias(), suffix: suffix, midword: midWord, onPartial: onPartial)
             DispatchQueue.main.async {
                 self.requestInFlight = false
                 let again = self.rerequestNeeded
                 self.rerequestNeeded = false
                 if appKey == self.activeAppKey, self.generationSerial == serial {
-                    self.presentCompletion((sug ?? nil)?.text, conf: (sug ?? nil)?.conf, requestedBuffer: reqBuffer)
+                    self.presentCompletion((sug ?? nil)?.text, conf: (sug ?? nil)?.conf, requestedBuffer: reqBuffer, midWord: midWord, midWordPartial: midWordPartial)
                 }
                 // Always converge on the latest context.
                 if again { self.scheduleGenerate() }
@@ -519,7 +529,8 @@ extension TyperApp {
     // Show a freshly generated completion, tolerating that the user may have typed
     // MORE since the request was issued: if they typed along the prediction we show
     // the remaining tail; if they diverged we regenerate.
-    func presentCompletion(_ text: String?, conf: Double? = nil, requestedBuffer: String) {
+    func presentCompletion(_ text: String?, conf: Double? = nil, requestedBuffer: String,
+                           midWord: Bool = false, midWordPartial: String = "") {
         guard let text, !text.isEmpty else {
             // No usable result for this generation (empty, or gated/percentage-suppressed
             // at the final stage). A streamed partial of THIS generation may already be
@@ -540,6 +551,23 @@ extension TyperApp {
             completion = nil
             overlay.orderOut(nil)
             return
+        }
+        // Mid-word completion (#13b): show it ONLY if the FINISHED word is a real word. The
+        // helper overlap-trimmed the boundary re-emission; here we reconstruct partial + the
+        // completion's first word and check it against the spell checker (which already knows
+        // the user's learned vocabulary). A wrong subword guess ("docu"→"that" ⇒ "docuthat")
+        // fails and is dropped rather than shown — that's what makes mid-word safe on a small
+        // model. When the model started a NEW word (leading space), `finished` is just the
+        // partial, which also fails the check.
+        if midWord {
+            let finished = midWordPartial + String(text.prefix { !$0.isWhitespace })
+            // Require BOTH: the completion actually extended the word (else the model treated
+            // the partial as complete — e.g. "bin" → "." — and there's nothing to finish), AND
+            // the finished word is real.
+            guard finished.count > midWordPartial.count, isKnownWord(finished) else {
+                dlog("[\(activeAppKey)] midword drop: '\(midWordPartial)'+'\(text.prefix(12))' ⇒ '\(finished)' (no-extend or not a word)")
+                completion = nil; overlay.orderOut(nil); return
+            }
         }
         // Drop completions that just repeat the text after the caret (showing only a
         // partial mid-word remainder would be confusing) — regenerate instead.
@@ -578,5 +606,27 @@ extension TyperApp {
         showCompletionRemainder(animate: true)
         calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         maybePrefetch()
+    }
+
+    // The partial word the caret sits inside: the trailing run of letters/apostrophe in `s`
+    // (empty if it ends in whitespace or punctuation). Used to detect a mid-word position and,
+    // in presentCompletion, to reconstruct the finished word for the dictionary check.
+    func trailingWordFragment(_ s: String) -> String {
+        var out: [Character] = []
+        for ch in s.reversed() {
+            if ch.isLetter || ch == "'" { out.append(ch) } else { break }
+        }
+        return String(out.reversed())
+    }
+
+    // Is `word` a real word — either in the system dictionary or in the user's own learned
+    // vocabulary (syncLexiconToSpellChecker already teaches the shared checker their words)?
+    // Gates mid-word completion so a wrong subword guess is dropped, never shown. Letters/
+    // apostrophe/hyphen only; the check word is the letter core (leading/trailing punct trimmed).
+    func isKnownWord(_ word: String) -> Bool {
+        let keep = CharacterSet.letters.union(CharacterSet(charactersIn: "'-"))
+        let w = word.trimmingCharacters(in: keep.inverted)
+        guard w.count >= 2, w.unicodeScalars.allSatisfy({ keep.contains($0) }) else { return false }
+        return NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0).location == NSNotFound
     }
 }
