@@ -607,26 +607,4 @@ extension TyperApp {
         calibAnchor = lastCaretPoint; calibPredicted = 0   // fresh calibration epoch
         maybePrefetch()
     }
-
-    // The partial word the caret sits inside: the trailing run of letters/apostrophe in `s`
-    // (empty if it ends in whitespace or punctuation). Used to detect a mid-word position and,
-    // in presentCompletion, to reconstruct the finished word for the dictionary check.
-    func trailingWordFragment(_ s: String) -> String {
-        var out: [Character] = []
-        for ch in s.reversed() {
-            if ch.isLetter || ch == "'" { out.append(ch) } else { break }
-        }
-        return String(out.reversed())
-    }
-
-    // Is `word` a real word — either in the system dictionary or in the user's own learned
-    // vocabulary (syncLexiconToSpellChecker already teaches the shared checker their words)?
-    // Gates mid-word completion so a wrong subword guess is dropped, never shown. Letters/
-    // apostrophe/hyphen only; the check word is the letter core (leading/trailing punct trimmed).
-    func isKnownWord(_ word: String) -> Bool {
-        let keep = CharacterSet.letters.union(CharacterSet(charactersIn: "'-"))
-        let w = word.trimmingCharacters(in: keep.inverted)
-        guard w.count >= 2, w.unicodeScalars.allSatisfy({ keep.contains($0) }) else { return false }
-        return NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0).location == NSNotFound
-    }
 }

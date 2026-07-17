@@ -16,6 +16,15 @@ clang++ -std=c++17 -O1 -Wno-unused-function "$ROOT/scripts/tests/text_utils_test
 "$BUILD/text_utils_test"
 echo
 
+echo "==> Unit tests: Swift text logic (no model)"
+swiftc -O -parse-as-library \
+    "$ROOT/scripts/tests/swift_logic_test.swift" \
+    "$ROOT/scripts/typer/TextLogic.swift" \
+    "$ROOT/scripts/typer/HelperProtocol.swift" \
+    -o "$BUILD/swift_logic_test"
+"$BUILD/swift_logic_test"
+echo
+
 if [ "${1:-}" = "--with-helper" ]; then
     echo "==> Integration tests: helper JSONL protocol (loads a model — slower)"
     python3 "$ROOT/scripts/tests/helper_integration_test.py"
