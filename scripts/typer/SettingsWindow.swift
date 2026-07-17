@@ -325,7 +325,7 @@ struct SettingsView: View {
         SettingsSection(title: "Context") {
             ctxToggle("Window text", { $0.windowContext }, "window_context_enabled")
             ctxToggle("Clipboard", { $0.clipboardContext }, "clipboard_context_enabled")
-            ctxToggle("Screen OCR (noisy)", { $0.screenContext }, "screen_context_enabled")
+            ctxToggle("Screen OCR (filtered)", { $0.screenContext }, "screen_context_enabled")
             ctxToggle("Screenshot caret (terminals; battery-heavy)", { $0.screenshotCaret }, "screenshot_caret_enabled")
             ctxToggle("Remember what I read", { $0.topicMemory }, "topic_memory_enabled")
             ctxToggle("Skip terminal apps", { $0.disableInTerminals }, "disable_in_terminals")
