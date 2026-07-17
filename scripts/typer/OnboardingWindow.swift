@@ -18,7 +18,7 @@ final class OnboardingModel: ObservableObject {
     var onFinish: (() -> Void)?
 
     private var timer: Timer?
-    let lastStep = 3
+    let lastStep = 2
 
     func start() {
         refreshPerms()
@@ -125,7 +125,6 @@ struct OnboardingView: View {
         switch model.step {
         case 0: welcome
         case 1: permissions
-        case 2: modelChoice
         default: howto
         }
     }
@@ -137,9 +136,9 @@ struct OnboardingView: View {
             Text("Inline autocomplete, on your Mac.").font(.system(size: 22, weight: .bold))
             Text("Typer suggests the next few words as grey ghost text in any text field — chat, email, code, notes. Everything runs **on-device**; your typing never leaves your machine.")
                 .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            bullet("Tab accepts one word · ` accepts all · Esc dismisses")
+            bullet("Tab accepts all · ^ accepts one word · Esc dismisses")
             bullet("Learns your style + vocabulary, locally")
-            bullet("Pick a model size that fits your Mac (next steps)")
+            bullet("Runs on a local model — nothing leaves your Mac")
         }
     }
 
@@ -160,36 +159,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 2 — model choice. The tier matching the machine's RAM is flagged Recommended.
-    private var modelChoice: some View {
-        let rec = TyperApp.recommendedVariant()
-        let ramGB = Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0).rounded())
-        return VStack(alignment: .leading, spacing: 14) {
-            Text("Choose your model").font(.system(size: 22, weight: .bold))
-            Text("Your Mac has \(ramGB) GB of memory. We recommend the highlighted tier; you can change it any time from the menu-bar icon.")
-                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            modelOption(v: "s", rec: rec, title: "Small — typer-1s (0.6B)",
-                        desc: "Fast and light, runs on any Mac. First word in ~14 ms, about 0.6 GB. Ships with the app.")
-            modelOption(v: "m", rec: rec, title: "Medium — typer-1m (1.7B)",
-                        desc: "Better suggestions for 16 GB Macs. First word in ~27 ms, about 1.8 GB. Downloads once when selected.")
-            modelOption(v: "l", rec: rec, title: "Large — typer-1l (4B)",
-                        desc: "Longest correct runs, for 32 GB+ Macs. First word in ~57 ms, about 4.3 GB. Downloads once when selected.")
-            if case let .downloading(frac) = downloader.state {
-                VStack(alignment: .leading, spacing: 5) {
-                    ProgressView(value: frac >= 0 ? frac : nil, total: 1).tint(.accentColor)
-                    Text(frac >= 0 ? "Downloading model… \(Int(frac * 100))%" : "Downloading model…")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }.padding(.top, 2)
-            } else if case let .failed(msg) = downloader.state {
-                Text("Download failed — \(msg). You can retry from the menu.")
-                    .font(.system(size: 11)).foregroundStyle(.red)
-            } else if let t = ModelRouter.tier(model.modelVariant), ModelRouter.tierInstalled(t.id) {
-                Text("\(t.label) ready.").font(.system(size: 11)).foregroundStyle(.green)
-            }
-        }
-    }
-
-    // Step 3 — how to use
+    // Step 2 — how to use
     private var howto: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.green)
@@ -197,11 +167,11 @@ struct OnboardingView: View {
             Text("Start typing in any text field — a grey suggestion appears at your cursor.")
                 .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
-                keycap("Tab", "accept the next word")
-                keycap("`", "accept the whole suggestion")
+                keycap("Tab", "accept the whole suggestion")
+                keycap("^", "accept the next word")
                 keycap("Esc", "dismiss it")
             }
-            Text("The ⌨︎ menu-bar icon has everything: toggles, model size, stats, and updates.")
+            Text("The ⌨︎ menu-bar icon has everything: toggles, stats, and updates.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -255,34 +225,6 @@ struct OnboardingView: View {
                 Button("Enable") { action() }
             }
         }
-    }
-
-    private func modelOption(v: String, rec: String, title: String, desc: String) -> some View {
-        let active = model.modelVariant == v
-        let recommended = (v == rec)
-        return Button(action: { model.pickModel(v) }) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: active ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 16)).foregroundStyle(active ? Color.accentColor : Color.secondary).padding(.top, 1)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
-                        if recommended {
-                            Text("Recommended").font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.18)))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    }
-                    Text(desc).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-            }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(active ? 0.06 : 0.02)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(active ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.15), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
     }
 
     private func keycap(_ key: String, _ desc: String) -> some View {

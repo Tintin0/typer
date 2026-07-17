@@ -154,37 +154,12 @@ struct MenuRootView: View {
 
     // MARK: model size + preference
 
-    // The Small/Large picker, on-demand download progress, and (for Small) the live A/B race bar.
+    // The active model, read-only. The S/M/L size picker (and the on-demand tier downloads
+    // behind it) was removed — the model is pinned via `model_path` in config.toml, so a
+    // picker here would be misleading. Left as a labelled line so the served model stays visible.
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Model").font(.system(size: 11)).foregroundStyle(.secondary)
-                Spacer()
-                ModelSizePicker(variant: s.modelVariant, downloading: downloader.isDownloading) { model.setModel($0) }
-            }.padding(.horizontal, kInset)
-
-            if case let .downloading(frac) = downloader.state {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: frac >= 0 ? frac : nil, total: 1)
-                        .progressViewStyle(.linear).tint(.accentColor)
-                    Text(frac >= 0 ? "Downloading model… \(Int(frac * 100))%" : "Downloading model…")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }.padding(.horizontal, kInset)
-            } else if case let .failed(msg) = downloader.state {
-                Text("Download failed — \(msg)").font(.system(size: 10)).foregroundStyle(.red)
-                    .padding(.horizontal, kInset)
-            } else if s.modelVariant == "m" {
-                Text("typer-1m active · 1.7B · best on 16 GB+")
-                    .font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, kInset)
-            } else if s.modelVariant == "l" {
-                Text("typer-1l active · 4B · best on 32 GB+")
-                    .font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, kInset)
-            }
-
-            // Small tier: surface the live raw-vs-distill race when two arms are running.
-            if s.modelVariant == "s" {
-                if s.racing { modelCard } else if !s.singleModel.isEmpty { caption("Model", s.singleModel) }
-            }
+            if !s.singleModel.isEmpty { caption("Model", s.singleModel) }
         }
     }
 
