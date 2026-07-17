@@ -180,7 +180,10 @@ extension TyperApp {
                 if m < xr.lo - 0.1 || m > xr.hi + 0.1 { continue }
             }
             guard let cand = o.topCandidates(1).first, cand.confidence >= 0.5 else { continue }
-            if isLikelyText(cand.string) { lines.append(cand.string) }
+            // isLikelyText drops glyph soup / numeric chrome; looksLikeProse additionally drops
+            // UI-label chrome that IS clean text (menu items, ribbon/tab labels, a lone font
+            // name like "Aptos") so only prose the user might be writing enters the context (#2).
+            if isLikelyText(cand.string) && looksLikeProse(cand.string) { lines.append(cand.string) }
         }
         return String(lines.joined(separator: "\n").suffix(limit))
     }

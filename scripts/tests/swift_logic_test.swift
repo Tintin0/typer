@@ -35,6 +35,15 @@ struct SwiftLogicTest {
         check(!isKnownWord("ab3cd"), "contains a digit -> false")
         check(!isKnownWord(""), "empty -> false")
 
+        print("== looksLikeProse (screenshot-OCR chrome filter, #2) ==")
+        check(looksLikeProse("Please find the attached contract"), "EN prose -> keep")
+        check(looksLikeProse("Ich melde mich nächste Woche."), "DE prose (ends '.') -> keep")
+        check(looksLikeProse("Vielen Dank für Ihre Nachricht"), "DE prose (function word 'für') -> keep")
+        check(!looksLikeProse("Aptos"), "lone font name -> drop")
+        check(!looksLikeProse("File Edit View Insert Format"), "menu bar -> drop")
+        check(!looksLikeProse("Inbox Sent Drafts Junk Trash"), "sidebar labels -> drop")
+        check(!looksLikeProse("Send Reply Forward"), "toolbar (short) -> drop")
+
         print("== ActiveCompletion (word-by-word accept, behind the ^ key) ==")
         let c = ActiveCompletion(chars: Array("tance"))
         check(c.nextWordEnd() == 5, "nextWordEnd finishes the whole word 'tance'")

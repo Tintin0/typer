@@ -26,3 +26,20 @@ func isKnownWord(_ word: String) -> Bool {
     guard w.count >= 2, w.unicodeScalars.allSatisfy({ keep.contains($0) }) else { return false }
     return NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0).location == NSNotFound
 }
+
+// Chrome filter for screenshot-OCR context (#2). An OCR'd line is kept as background context
+// ONLY if it reads like PROSE the user might be writing/reading — not UI chrome (toolbar/
+// ribbon labels, menu bars, tab titles, sidebar entries, a lone font name like "Aptos").
+// Prose has several words AND either sentence punctuation or a common EN/DE function word;
+// chrome is short, isolated, and lacks both. Deliberately errs toward dropping — background
+// context is "framing, not content to copy", so a false drop is cheaper than leaked chrome.
+func looksLikeProse(_ line: String) -> Bool {
+    let t = line.trimmingCharacters(in: .whitespaces)
+    let words = t.split(separator: " ").filter { !$0.isEmpty }
+    guard words.count >= 4 else { return false }                 // labels/menus are short
+    if let last = t.last, ".!?,;:".contains(last) { return true } // a real sentence
+    let fw: Set<String> = [
+        "the","a","an","and","or","to","of","in","is","are","for","with","that","you","your","this","at","by","from","as","we","on","be","it","have","has",
+        "der","die","das","und","oder","ich","sie","wir","ist","sind","für","mit","dass","den","dem","ein","eine","auf","im","zu","von","nicht","sich","haben","werden"]
+    return words.contains { fw.contains($0.lowercased()) }        // connective word => prose
+}
